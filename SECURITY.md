@@ -1,8 +1,8 @@
 # Security notes
 
-This app was built to specifically avoid four vulnerability classes common in
-AI-generated apps. Here's how each is addressed, and what it would look like
-if it *weren't*.
+This app was built to specifically avoid several vulnerability classes
+common in AI-generated apps. Here's how each is addressed, and what it
+would look like if it *weren't*.
 
 ## 1. Broken access control / missing row-level security
 
@@ -75,22 +75,73 @@ is still validated, because "no database yet" isn't a permanent excuse:
   queries/prepared statements — never string-concatenate user input into a
   query — and keep the same allow-list validation at the boundary.
 
+## 5. Profile picture uploads
+
+**The mistake this avoids:** trusting a client-supplied filename (path
+traversal — `../../server.js`) or a client-supplied `Content-Type` header
+(an attacker can label an HTML or SVG file `image/png` and get it served
+back with a browser-executable type, or smuggle a polyglot file past an
+extension check).
+
+**What this app does instead:**
+- `POST /api/avatar` reads the request body as opaque bytes and never looks
+  at any filename or the request's `Content-Type` header for validation.
+  The real type is decided ONLY by sniffing the first bytes of the file
+  against the actual JPEG/PNG/WebP magic numbers (`detectImageType` in
+  `server.js`); anything else is rejected with `400`, regardless of what it
+  claims to be.
+- Uploads are capped at 3MB, enforced while reading the stream (the
+  connection is dropped once the cap is exceeded, not after buffering the
+  whole thing).
+- The file is saved server-side under a name derived from the session's
+  *own* validated username (`^[A-Za-z0-9_]{3,20}$`) — never from anything
+  in the upload itself — so there's no path to write outside
+  `data/avatars/`.
+- `GET /api/avatar/<username>` requires the same `stage === 'active'`
+  check as chat itself — profile pictures aren't reachable by anyone who
+  hasn't passed the password gate and joined the room, and aren't served
+  from the public static directory. A user with no uploaded picture gets a
+  small generated "initial" avatar instead of a broken image or a 404 that
+  would leak whether a name has ever been used.
+- Uploading requires the same per-session CSRF token as every other
+  state-changing request.
+
+**Known limitation:** validation is magic-byte sniffing plus a size cap,
+not a full image decode — there's no dependency-free way to fully parse
+JPEG/PNG/WebP structure with zero third-party packages. This is enough to
+block non-image files and mislabeled MIME types, which is the actual
+attack this defends against (nothing is ever interpreted as HTML/SVG/JS,
+and nothing is written with an attacker-chosen path). If you later add an
+image-processing library, re-encoding every upload (e.g. to a fixed-size
+PNG) instead of storing the original bytes verbatim would be a further
+hardening step.
+
 ## Known limitations (by design, for a single-process demo)
 
-- **Chat history and usernames persist; sessions don't.** Messages and
-  taken usernames are written to `data/messages.json` and
-  `data/usernames.json` (debounced, roughly every 2 seconds, plus a
-  synchronous flush on `SIGINT`/`SIGTERM` so a normal shutdown doesn't lose
-  the last couple of seconds of chat). A restart keeps the conversation and
-  reserved names, but active login sessions still reset — everyone has to
-  re-enter the password and reuse (or re-pick) their name. If you outgrow
-  flat JSON files (heavy traffic, need to query/filter messages), swap them
-  for a real datastore — SQLite via parameterized queries, or Postgres — the
-  validation/authorization logic above doesn't need to change, only the
-  storage layer. On a host with an ephemeral filesystem (some free-tier
-  containers wipe local disk on redeploy, though not on a simple restart),
-  you'd need a persistent volume or an external database for this to
-  survive a redeploy specifically.
+- **Chat history persists; usernames and sessions don't.** Messages are
+  written to `data/messages.json` (debounced, roughly every 2 seconds, plus
+  a synchronous flush on `SIGINT`/`SIGTERM` so a normal shutdown doesn't
+  lose the last couple of seconds of chat). Usernames, on the other hand,
+  are deliberately **not** persisted — a name is reserved only for as long
+  as the session that claimed it is still active, and is released the
+  moment that session logs out or expires (or the process restarts, since
+  sessions are in-memory only). That's what lets the same person reuse
+  their usual name the next time they show up, instead of every name
+  becoming permanently unusable after a single use. It also means two
+  different people can end up using the same display name at different
+  times — there's no per-user identity to prevent that (see below).
+  Uploaded avatars persist on disk under `data/avatars/`, keyed to the
+  username string itself, independent of any session — if you free up a
+  name and someone else claims it later, they'll see whatever picture was
+  last uploaded for that name until they replace it. If you outgrow flat
+  JSON files for chat history (heavy traffic, need to query/filter
+  messages), swap them for a real datastore — SQLite via parameterized
+  queries, or Postgres — the validation/authorization logic above doesn't
+  need to change, only the storage layer. On a host with an ephemeral
+  filesystem (some free-tier containers wipe local disk on redeploy, though
+  not on a simple restart), you'd need a persistent volume or an external
+  database for chat history and avatars to survive a redeploy
+  specifically.
 - **Single shared room, no moderation.** There's no reporting, muting, or
   banning. If this goes further than a couple of trusted people, add those
   before anything else.

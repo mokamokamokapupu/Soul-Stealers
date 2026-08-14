@@ -5,9 +5,16 @@
   var input = document.getElementById('password');
   var errorEl = document.getElementById('error');
   var submitBtn = document.getElementById('submit-btn');
+  var card = document.getElementById('card');
   var csrfToken = null;
 
   function setError(msg) { errorEl.textContent = msg || ''; }
+
+  function goTo(url) {
+    // A brief, smooth transition out rather than an abrupt jump.
+    card.classList.add('is-leaving');
+    setTimeout(function () { window.location.href = url; }, 280);
+  }
 
   async function bootstrap() {
     var res = await fetch('/api/session', { credentials: 'same-origin' });
@@ -34,7 +41,9 @@
       });
       var data = await res.json();
       if (res.ok) {
-        window.location.href = '/setup';
+        submitBtn.textContent = 'Entering…';
+        goTo('/setup');
+        return;
       } else if (res.status === 429) {
         setError('Too many attempts. Try again in ' + Math.ceil((data.retryAfterSec || 60) / 60) + ' min.');
       } else {
@@ -45,7 +54,7 @@
     } catch (err) {
       setError('Something went wrong. Try again.');
     } finally {
-      submitBtn.disabled = false;
+      if (!card.classList.contains('is-leaving')) submitBtn.disabled = false;
     }
   });
 

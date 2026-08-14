@@ -10,14 +10,24 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
-<main class="essay">
+<div class="atmosphere" aria-hidden="true"></div>
 
-  <header class="essay-header">
-    <p class="eyebrow">Soul Studies · an inquiry</p>
-    <h1>What do we mean, when we say <em>soul</em>?</h1>
-    <p class="dek">The word survives in a hundred languages and a thousand arguments,
-      long after most of us stopped agreeing on what — if anything — it names.</p>
-  </header>
+<section class="hero">
+  <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
+    <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
+    <circle cx="12" cy="19.5" r="1.6"/>
+  </svg>
+  <p class="eyebrow">Soul Studies · an inquiry</p>
+  <h1>What do we mean, when we say <em>soul</em>?</h1>
+  <p class="dek">The word survives in a hundred languages and a thousand arguments,
+    long after most of us stopped agreeing on what — if anything — it names.</p>
+  <div class="scroll-cue" aria-hidden="true">
+    <span>read on</span>
+    <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+  </div>
+</section>
+
+<main class="essay">
 
   <section>
     <p>Say the word out loud and it means something different depending on who's
@@ -126,5 +136,6 @@
   </div>
 
 </main>
+<script src="/assets/site.js"></script>
 </body>
 </html>

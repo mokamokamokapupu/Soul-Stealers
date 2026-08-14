@@ -31,23 +31,26 @@ const { URL } = require('url');
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.join(ROOT, 'data');
+const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const MESSAGES_PATH = path.join(DATA_DIR, 'messages.json');
-const USERNAMES_PATH = path.join(DATA_DIR, 'usernames.json');
 const PORT = process.env.PORT || 3000;
 
 const MAX_BODY_BYTES = 8 * 1024; // 8KB — plenty for password/username/chat payloads
+const MAX_AVATAR_BYTES = 3 * 1024 * 1024; // 3MB — reasonable cap for a profile picture
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
 const RESERVED_USERNAMES = new Set(['admin', 'system', 'moderator', 'root', 'soulstudies']);
 const MAX_MESSAGE_LEN = 500;
 const MAX_MESSAGES_KEPT = 300;
+const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 
 // ---------------------------------------------------------------------------
 // Setup / config (password hash lives ONLY here, server-side, never sent out)
 // ---------------------------------------------------------------------------
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(AVATARS_DIR)) fs.mkdirSync(AVATARS_DIR, { recursive: true });
 
 function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
@@ -114,11 +117,38 @@ const sessions = new Map();
 /** ip -> { failCount, windowStart, lockedUntil } */
 const loginAttempts = new Map();
 
-/** lowercase username -> true. Persisted to disk so names don't collide across restarts. */
-const takenUsernames = new Set(loadJsonArray(USERNAMES_PATH));
+/**
+ * lowercase username -> sid that currently holds it. A name is only
+ * unavailable while an active session is actually using it — it's freed
+ * as soon as that session logs out or expires (or the server restarts,
+ * since sessions themselves are in-memory and don't survive that either).
+ * This intentionally does NOT persist to disk: usernames are a claim tied
+ * to a live session, not a permanent registry, so the same person (or
+ * anyone, once it's free) can reuse a name after the previous holder
+ * leaves — fixing the earlier bug where a name became unusable forever
+ * after a single use.
+ */
+const usernameOwners = new Map();
 
 /** { id, username, text, ts }. Persisted to disk so chat history survives restarts. */
 const messages = loadJsonArray(MESSAGES_PATH);
+
+/**
+ * lowercase username -> file extension ('jpg'|'png'|'webp') of an uploaded
+ * avatar for that name. Rebuilt from disk at startup. Avatars are tied to
+ * the username string itself (as requested), independent of any live
+ * session, and stored server-side only — never as attacker-controlled
+ * filenames or trusted client MIME types (see saveAvatarFile / detectImageType).
+ */
+const avatarExtByUser = new Map();
+for (const entry of fs.readdirSync(AVATARS_DIR, { withFileTypes: true })) {
+  if (!entry.isFile()) continue;
+  const ext = path.extname(entry.name).slice(1).toLowerCase();
+  const base = path.basename(entry.name, path.extname(entry.name)).toLowerCase();
+  if (ALLOWED_AVATAR_EXTS.includes(ext) && USERNAME_RE.test(base)) {
+    avatarExtByUser.set(base, ext);
+  }
+}
 
 function loadJsonArray(filePath) {
   try {
@@ -134,11 +164,9 @@ function loadJsonArray(filePath) {
  * doing a synchronous fs write on every single message. Worst case on an
  * unclean shutdown you lose the last ~2s of messages, not the whole history. */
 let messagesDirty = false;
-let usernamesDirty = false;
 
 function scheduleSave() {
   messagesDirty = true;
-  usernamesDirty = true;
 }
 
 setInterval(() => {
@@ -146,16 +174,11 @@ setInterval(() => {
     messagesDirty = false;
     fs.writeFile(MESSAGES_PATH, JSON.stringify(messages), () => {});
   }
-  if (usernamesDirty) {
-    usernamesDirty = false;
-    fs.writeFile(USERNAMES_PATH, JSON.stringify(Array.from(takenUsernames)), () => {});
-  }
 }, 2000).unref();
 
 function flushSaveSync() {
   try {
     fs.writeFileSync(MESSAGES_PATH, JSON.stringify(messages));
-    fs.writeFileSync(USERNAMES_PATH, JSON.stringify(Array.from(takenUsernames)));
   } catch (e) { /* best effort on shutdown */ }
 }
 
@@ -173,6 +196,16 @@ function newSession(ip) {
   };
   sessions.set(sid, session);
   return { sid, session };
+}
+
+/** Release a username claim held by this session, if any — called on
+ * logout and on session expiry so the name becomes available again. */
+function releaseUsername(sid, session) {
+  if (!session || !session.username) return;
+  const key = session.username.toLowerCase();
+  if (usernameOwners.get(key) === sid) {
+    usernameOwners.delete(key);
+  }
 }
 
 function getSession(req) {
@@ -298,6 +331,97 @@ function readJsonBody(req) {
   });
 }
 
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject({ status: 413, message: 'Image is too large.' });
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', () => reject({ status: 400, message: 'Bad request' }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Avatar handling — validated ONLY by sniffing real file bytes. The
+// client-supplied filename and Content-Type header are never trusted for
+// this decision; they're not even read.
+// ---------------------------------------------------------------------------
+
+const AVATAR_MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+
+function detectImageType(buf) {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { ext: 'jpg' };
+  }
+  if (
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+  ) {
+    return { ext: 'png' };
+  }
+  if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') {
+    return { ext: 'webp' };
+  }
+  return null;
+}
+
+function saveAvatarFile(usernameKey, ext, buf) {
+  // Remove any previous avatar for this name under a different extension,
+  // so switching file types doesn't leave orphaned files being served.
+  for (const otherExt of ALLOWED_AVATAR_EXTS) {
+    if (otherExt === ext) continue;
+    const stale = path.join(AVATARS_DIR, usernameKey + '.' + otherExt);
+    if (fs.existsSync(stale)) {
+      try { fs.unlinkSync(stale); } catch (e) { /* best effort */ }
+    }
+  }
+  // Write to a temp file then rename — avoids ever serving a partially
+  // written file if a read races an in-progress upload.
+  const finalPath = path.join(AVATARS_DIR, usernameKey + '.' + ext);
+  const tmpPath = finalPath + '.tmp-' + crypto.randomBytes(6).toString('hex');
+  fs.writeFileSync(tmpPath, buf, { mode: 0o600 });
+  fs.renameSync(tmpPath, finalPath);
+  avatarExtByUser.set(usernameKey, ext);
+}
+
+function escapeXml(str) {
+  return String(str).replace(/[<>&"']/g, (c) => ({
+    '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;',
+  }[c]));
+}
+
+const AVATAR_PALETTE = ['#8b7355', '#6f8f76', '#93b89a', '#a65b4b', '#5b7fa6', '#a68b5b'];
+
+function letterAvatarSvg(username) {
+  const letter = escapeXml((username.charAt(0) || '?').toUpperCase());
+  let hash = 0;
+  for (let i = 0; i < username.length; i++) hash = (hash * 31 + username.charCodeAt(i)) >>> 0;
+  const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    '<rect width="64" height="64" rx="14" fill="' + color + '"/>' +
+    '<text x="32" y="43" font-family="Georgia, serif" font-size="26" fill="#0f1219" ' +
+    'text-anchor="middle">' + letter + '</text></svg>'
+  );
+}
+
+function sendSvg(res, svg) {
+  res.writeHead(200, {
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': 'private, max-age=120',
+  });
+  res.end(svg);
+}
+
 function requireCsrf(req, session) {
   const header = req.headers['x-csrf-token'];
   if (typeof header !== 'string') return false;
@@ -410,11 +534,11 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 400, { error: 'Use 3-20 letters, numbers, or underscores.' });
     }
     const key = username.toLowerCase();
-    if (RESERVED_USERNAMES.has(key) || takenUsernames.has(key)) {
+    const owner = usernameOwners.get(key);
+    if (RESERVED_USERNAMES.has(key) || (owner && owner !== sid)) {
       return sendJson(res, 409, { error: 'That name is taken. Try another.' });
     }
-    takenUsernames.add(key);
-    scheduleSave();
+    usernameOwners.set(key, sid);
     session.username = username;
     session.stage = 'active';
     session.csrfToken = crypto.randomBytes(16).toString('hex'); // rotate on privilege change
@@ -455,9 +579,77 @@ async function handleApi(req, res, pathname) {
 
   // POST /api/logout
   if (pathname === '/api/logout' && req.method === 'POST') {
+    releaseUsername(sid, session);
     sessions.delete(sid);
     res.setHeader('Set-Cookie', 'sid=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0');
     return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/avatar — upload/replace the profile picture for the CURRENT
+  // session's username. Requires an active (username-created) session, so
+  // this is exactly as gated as chat itself.
+  if (pathname === '/api/avatar' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+
+    let buf;
+    try {
+      buf = await readRawBody(req, MAX_AVATAR_BYTES);
+    } catch (e) {
+      return sendJson(res, e.status || 400, { error: e.message });
+    }
+    if (!buf || buf.length === 0) return sendJson(res, 400, { error: 'No image received.' });
+
+    // The client-declared Content-Type and any filename are never trusted.
+    // The real file type is determined ONLY by sniffing the file's magic
+    // bytes, and only JPEG/PNG/WebP are accepted.
+    const detected = detectImageType(buf);
+    if (!detected) {
+      return sendJson(res, 400, { error: 'Only JPEG, PNG, or WebP images are allowed.' });
+    }
+
+    const key = session.username.toLowerCase();
+    try {
+      saveAvatarFile(key, detected.ext, buf);
+    } catch (e) {
+      return sendJson(res, 500, { error: 'Could not save image.' });
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      avatarUrl: '/api/avatar/' + encodeURIComponent(session.username) + '?v=' + Date.now(),
+    });
+  }
+
+  // GET /api/avatar/<username> — serve a profile picture. Gated behind the
+  // same "active session" check as chat itself: avatars aren't served from
+  // the public static directory and aren't reachable by anyone who hasn't
+  // passed the password gate and joined the room. Falls back to a generated
+  // "initial" avatar if the user hasn't uploaded one.
+  if (pathname.startsWith('/api/avatar/') && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+
+    const raw = pathname.slice('/api/avatar/'.length);
+    let username;
+    try { username = decodeURIComponent(raw); } catch (e) { username = raw; }
+    if (!USERNAME_RE.test(username)) return sendJson(res, 400, { error: 'Invalid username' });
+
+    const key = username.toLowerCase();
+    const ext = avatarExtByUser.get(key);
+    if (ext) {
+      const filePath = path.join(AVATARS_DIR, key + '.' + ext);
+      fs.readFile(filePath, (err, data) => {
+        if (err) {
+          return sendSvg(res, letterAvatarSvg(username));
+        }
+        res.writeHead(200, {
+          'Content-Type': AVATAR_MIME[ext],
+          'Cache-Control': 'private, max-age=120',
+        });
+        res.end(data);
+      });
+      return;
+    }
+    return sendSvg(res, letterAvatarSvg(username));
   }
 
   return sendJson(res, 404, { error: 'Not found' });
@@ -486,11 +678,15 @@ const server = http.createServer((req, res) => {
   res.writeHead(405); res.end('Method not allowed');
 });
 
-// Periodic cleanup of expired sessions
+// Periodic cleanup of expired sessions — also frees any username the
+// session was holding, so it becomes available for reuse.
 setInterval(() => {
   const now = Date.now();
   for (const [sid, s] of sessions) {
-    if (s.expires < now) sessions.delete(sid);
+    if (s.expires < now) {
+      releaseUsername(sid, s);
+      sessions.delete(sid);
+    }
   }
 }, 60 * 1000).unref();
 

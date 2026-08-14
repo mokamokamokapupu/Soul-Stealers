@@ -57,7 +57,9 @@ thing this app doesn't do for you (TLS termination) if you go that route.
 2. **`/portal`** — enter the password.
 3. **`/setup`** — pick a display name (3–20 letters/numbers/underscores).
 4. **`/chat`** — one shared room, everyone who's in sees the same
-   messages.
+   messages. Each name can have a profile picture (click your avatar in
+   the top bar to upload one); a name is only reserved while someone's
+   actively using it, so it's free again once they leave.
 
 Read `SECURITY.md` for what's actually enforcing that flow (hint: never the
 frontend by itself).
