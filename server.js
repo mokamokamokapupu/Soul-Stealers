@@ -452,11 +452,20 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
 };
 
+// The frontend is now a single-page app: every one of these paths serves
+// the exact same shell (public/index.html), which then renders the right
+// view client-side based on /api/session — see public/assets/app.js. This
+// is UX-routing convenience only, identical in spirit to the old pretty
+// routes; it grants nothing. Every API endpoint in handleApi() below
+// independently re-checks session.stage on every request regardless of
+// which path loaded the page, so hitting /chat or /setup directly without
+// a valid session still can't reach any protected data — try it with curl
+// and no cookie, you still get 403, not chat history.
 const PRETTY_ROUTES = {
   '/': '/index.html',
-  '/portal': '/portal.html',
-  '/setup': '/setup.html',
-  '/chat': '/chat.html',
+  '/portal': '/index.html',
+  '/setup': '/index.html',
+  '/chat': '/index.html',
 };
 
 function serveStatic(req, res, urlPath) {

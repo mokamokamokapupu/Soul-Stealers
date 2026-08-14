@@ -626,3 +626,174 @@ button:disabled{ opacity: 0.55; cursor: not-allowed; }
   body{ font-size: 16.5px; }
   .hero .sigil{ width: 28px; height: 28px; }
 }
+
+/* ---------------------------------------------------------------------
+   SPA view switching — one shell, four views, no page loads.
+------------------------------------------------------------------------ */
+
+.view{ display: none; }
+.view.active{ display: block; }
+#view-chat.active{ display: block; }
+
+.link-btn{
+  background: none;
+  border: none;
+  padding: 0;
+  width: auto;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+/* ---------------------------------------------------------------------
+   Scroll-progress rail — a thin colorful bar tracking read progress,
+   the first small signal that this is a live, built thing rather than
+   a static slideshow.
+------------------------------------------------------------------------ */
+
+.progress-rail{
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  z-index: 40;
+  background: rgba(139,115,85,0.12);
+  pointer-events: none;
+}
+.progress-fill{
+  height: 100%;
+  width: 100%;
+  transform-origin: left;
+  transform: scaleX(0);
+  background: linear-gradient(90deg,
+    var(--accent-greek), var(--accent-dualism), var(--accent-abrahamic),
+    var(--accent-dharmic), var(--accent-secular));
+  transition: transform 0.12s linear;
+}
+
+/* ---------------------------------------------------------------------
+   Tradition accent palette — gives each section of the essay its own
+   quiet hue instead of one uniform verdigris, and drives the index nav.
+------------------------------------------------------------------------ */
+
+:root{
+  --accent-greek:     #c9a15a;
+  --accent-dualism:   #6f93c9;
+  --accent-abrahamic: #c97a6f;
+  --accent-dharmic:   #9b7fd6;
+  --accent-secular:   #6fc9a1;
+}
+
+.essay section[data-accent] .eyebrow{ color: var(--section-accent, var(--brass)); }
+.essay section[data-accent]{
+  border-left: 2px solid transparent;
+  padding-left: 1.1rem;
+  margin-left: -1.1rem;
+  transition: border-color 0.8s var(--ease), opacity 0.8s var(--ease), transform 0.8s var(--ease);
+}
+.essay section[data-accent].in-view{ border-left-color: var(--section-accent, transparent); }
+
+.essay section[data-accent="greek"]{ --section-accent: var(--accent-greek); }
+.essay section[data-accent="dualism"]{ --section-accent: var(--accent-dualism); }
+.essay section[data-accent="abrahamic"]{ --section-accent: var(--accent-abrahamic); }
+.essay section[data-accent="dharmic"]{ --section-accent: var(--accent-dharmic); }
+.essay section[data-accent="secular"]{ --section-accent: var(--accent-secular); }
+
+@media (max-width: 640px){
+  .essay section[data-accent]{ padding-left: 0.8rem; margin-left: -0.8rem; }
+}
+
+/* Hero sigil accent-cycling (click) */
+.sigil[data-accent="greek"]{ fill: var(--accent-greek); filter: drop-shadow(0 0 6px rgba(201,161,90,0.55)); }
+.sigil[data-accent="dualism"]{ fill: var(--accent-dualism); filter: drop-shadow(0 0 6px rgba(111,147,201,0.55)); }
+.sigil[data-accent="abrahamic"]{ fill: var(--accent-abrahamic); filter: drop-shadow(0 0 6px rgba(201,122,111,0.55)); }
+.sigil[data-accent="dharmic"]{ fill: var(--accent-dharmic); filter: drop-shadow(0 0 6px rgba(155,127,214,0.55)); }
+.sigil[data-accent="secular"]{ fill: var(--accent-secular); filter: drop-shadow(0 0 6px rgba(111,201,161,0.55)); }
+
+/* ---------------------------------------------------------------------
+   Index nav — a small fixed rail of dots (desktop only) that lets a
+   reader jump between traditions and see, at a glance, where they are.
+   Absent on narrow screens where it would just get in the way.
+------------------------------------------------------------------------ */
+
+.index-nav{
+  position: fixed;
+  top: 50%;
+  right: 1.75rem;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.index-dot{
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  padding: 0;
+  border: 1.5px solid rgba(233,225,208,0.28);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.35s var(--ease);
+  position: relative;
+}
+.index-dot::before{
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+.index-dot:hover{
+  transform: scale(1.3);
+  border-color: rgba(233,225,208,0.6);
+}
+.index-dot[data-accent="greek"].is-active{ background: var(--accent-greek); border-color: var(--accent-greek); box-shadow: 0 0 10px rgba(201,161,90,0.6); }
+.index-dot[data-accent="dualism"].is-active{ background: var(--accent-dualism); border-color: var(--accent-dualism); box-shadow: 0 0 10px rgba(111,147,201,0.6); }
+.index-dot[data-accent="abrahamic"].is-active{ background: var(--accent-abrahamic); border-color: var(--accent-abrahamic); box-shadow: 0 0 10px rgba(201,122,111,0.6); }
+.index-dot[data-accent="dharmic"].is-active{ background: var(--accent-dharmic); border-color: var(--accent-dharmic); box-shadow: 0 0 10px rgba(155,127,214,0.6); }
+.index-dot[data-accent="secular"].is-active{ background: var(--accent-secular); border-color: var(--accent-secular); box-shadow: 0 0 10px rgba(111,201,161,0.6); }
+
+@media (max-width: 900px){
+  .index-nav{ display: none; }
+}
+
+/* ---------------------------------------------------------------------
+   Discreet entry mark — replaces the old, plainly-labeled "there is a
+   room for this" link. No text, tiny, and nearly invisible until you
+   notice it (or hover it). Meant to be found, not advertised.
+------------------------------------------------------------------------ */
+
+.threshold-mark{
+  position: fixed;
+  bottom: 1.4rem;
+  right: 1.5rem;
+  z-index: 20;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  opacity: 0.14;
+  transition: opacity 0.5s var(--ease), transform 0.4s var(--ease);
+}
+.threshold-mark:hover, .threshold-mark:focus-visible{
+  opacity: 0.85;
+  transform: scale(1.08);
+}
+.threshold-mark .ember{
+  width: 100%;
+  height: 100%;
+  fill: var(--verdigris);
+  filter: drop-shadow(0 0 4px rgba(111,143,118,0.5));
+  animation: breathe 4.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce){
+  .threshold-mark .ember{ animation: none; }
+}
+
+@media (max-width: 640px){
+  .threshold-mark{ bottom: 1rem; right: 1rem; width: 26px; height: 26px; opacity: 0.2; }
+}
