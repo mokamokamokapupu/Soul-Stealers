@@ -16,12 +16,11 @@
 <!-- ===================== VIEW: essay (public facade) ===================== -->
 <div class="view active" id="view-essay">
 
-  <nav class="index-nav" id="index-nav" aria-label="Section navigation">
-    <button class="index-dot" data-target="sec-greek" data-accent="greek" aria-label="Greek philosophy"></button>
-    <button class="index-dot" data-target="sec-dualism" data-accent="dualism" aria-label="Dualism"></button>
-    <button class="index-dot" data-target="sec-abrahamic" data-accent="abrahamic" aria-label="Abrahamic traditions"></button>
-    <button class="index-dot" data-target="sec-dharmic" data-accent="dharmic" aria-label="Dharmic traditions"></button>
-    <button class="index-dot" data-target="sec-secular" data-accent="secular" aria-label="After the soul"></button>
+  <nav class="index-nav" id="index-nav" aria-label="Research sections">
+    <button class="index-dot" data-target="research-studio" aria-label="Research studio"></button>
+    <button class="index-dot" data-target="sec-greek" aria-label="Greek philosophy"></button>
+    <button class="index-dot" data-target="sec-dualism" aria-label="Dualism"></button>
+    <button class="index-dot" data-target="sec-secular" aria-label="After the soul"></button>
   </nav>
 
   <section class="hero">
@@ -40,6 +39,143 @@
   </section>
 
   <main class="essay">
+
+    <section class="research-intro" id="research-studio">
+      <div class="section-kicker"><span>FIELD LAB</span><span>07 DOMAINS · INTERACTIVE</span></div>
+      <h2>A field guide to <em>how people become people</em>.</h2>
+      <p class="intro-copy">Move beyond the word “soul” and into the machinery around it: attention, identity, influence, belief, conflict, cooperation, and the stories groups tell about themselves.</p>
+
+      <div class="research-tabs" role="tablist" aria-label="Research domains">
+        <button class="research-tab is-active" role="tab" aria-selected="true" aria-controls="panel-psychology" data-panel="psychology">Psychology</button>
+        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-influence" data-panel="influence">Social influence</button>
+        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-persuasion" data-panel="persuasion">Persuasion</button>
+        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-biases" data-panel="biases">Cognitive biases</button>
+        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-coercion" data-panel="coercion">Manipulation &amp; coercion</button>
+        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-behavior" data-panel="behavior">Human behavior</button>
+        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-dynamics" data-panel="dynamics">Social dynamics</button>
+      </div>
+
+      <div class="research-panels">
+        <article class="research-panel is-active" id="panel-psychology" data-panel-view="psychology" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">01</span><h3>Psychology</h3><span class="panel-tag">INDIVIDUAL</span></div>
+          <p>Explore how perception, memory, motivation, emotion, and identity interact. Psychology is less a catalog of traits than a study of processes unfolding over time.</p>
+          <div class="micro-grid">
+            <button class="info-card expandable"><span>Attention</span><small>What gets noticed?</small><b>+</b><div>Attention is selective. What enters awareness depends on goals, expectations, salience, and competing demands.</div></button>
+            <button class="info-card expandable"><span>Memory</span><small>Not a recording</small><b>+</b><div>Remembering reconstructs an event from stored traces, context, cues, and what we currently believe.</div></button>
+            <button class="info-card expandable"><span>Identity</span><small>A moving target</small><b>+</b><div>Identity can be experienced as personal continuity while still shifting with roles, relationships, and social feedback.</div></button>
+          </div>
+        </article>
+
+        <article class="research-panel" id="panel-influence" data-panel-view="influence" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">02</span><h3>Social influence</h3><span class="panel-tag">GROUPS</span></div>
+          <p>People constantly calibrate behavior against other people. Norms can guide cooperation, suppress dissent, or make a strange behavior feel ordinary.</p>
+          <div class="scenario-card">
+            <span class="scenario-label">SCENARIO 01</span><h4>The silent room</h4>
+            <p>You enter a meeting where everyone is quiet after a controversial proposal. No one says they oppose it.</p>
+            <div class="choice-row"><button data-scenario="conformity">Speak up</button><button data-scenario="observation">Ask what others think</button><button data-scenario="compliance">Stay silent</button></div>
+            <p class="scenario-result" id="scenario-result">Choose a response to see the social mechanism it can activate.</p>
+          </div>
+        </article>
+
+        <article class="research-panel" id="panel-persuasion" data-panel-view="persuasion" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">03</span><h3>Persuasion</h3><span class="panel-tag">MESSAGES</span></div>
+          <p>Persuasion changes what people consider, believe, or do. The same argument can land differently depending on source credibility, framing, timing, identity, and perceived choice.</p>
+          <div class="persuasion-lab">
+            <div><span class="lab-label">FRAME A</span><button class="frame-choice" data-frame="loss">“Don’t lose what you already have.”</button></div>
+            <div><span class="lab-label">FRAME B</span><button class="frame-choice" data-frame="gain">“Gain more control over what comes next.”</button></div>
+            <div class="lab-readout"><strong id="frame-readout">Framing lab</strong><span id="frame-detail">Tap either message to compare how a gain or loss frame can change the emphasis without changing the underlying offer.</span></div>
+          </div>
+        </article>
+
+        <article class="research-panel" id="panel-biases" data-panel-view="biases" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">04</span><h3>Cognitive biases</h3><span class="panel-tag">DECISIONS</span></div>
+          <p>Biases are recurring shortcuts and distortions in judgment. They are not simply “bad thinking”; many emerge because a fast decision is useful under uncertainty.</p>
+          <div class="bias-meter">
+            <div class="bias-question"><span>QUICK TEST</span><h4>A product costs $100. It is discounted by 20%, then another 20%. Is the final price $60?</h4></div>
+            <div class="bias-options"><button data-answer="yes">Yes</button><button data-answer="no">No</button></div>
+            <p class="quiz-result" id="bias-result"></p>
+          </div>
+        </article>
+
+        <article class="research-panel" id="panel-coercion" data-panel-view="coercion" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">05</span><h3>Manipulation &amp; coercion</h3><span class="panel-tag">BOUNDARIES</span></div>
+          <p>Influence becomes ethically concerning when meaningful choice is undermined. Coercion involves pressure or threats; manipulation can exploit vulnerabilities, obscure intentions, or engineer a choice without transparent consent.</p>
+          <div class="warning-grid">
+            <div><strong>Transparent influence</strong><span>Reasons are visible. A person can disagree without punishment.</span></div>
+            <div><strong>Manipulative influence</strong><span>Important context is hidden or distorted to steer a choice.</span></div>
+            <div><strong>Coercive influence</strong><span>Refusal carries an imposed threat, penalty, or loss of basic freedom.</span></div>
+          </div>
+        </article>
+
+        <article class="research-panel" id="panel-behavior" data-panel-view="behavior" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">06</span><h3>Human behavior</h3><span class="panel-tag">SYSTEMS</span></div>
+          <p>Behavior is shaped by the interaction between person, environment, incentives, learning, habit, and circumstance. A useful question is often not “what kind of person does this?” but “what conditions make this behavior likely?”</p>
+          <div class="behavior-map">
+            <div class="behavior-node">PERSON</div><span>↔</span><div class="behavior-node">SITUATION</div><span>↔</span><div class="behavior-node">INCENTIVE</div><span>↔</span><div class="behavior-node">HABIT</div>
+          </div>
+        </article>
+
+        <article class="research-panel" id="panel-dynamics" data-panel-view="dynamics" role="tabpanel">
+          <div class="panel-head"><span class="panel-number">07</span><h3>Social dynamics</h3><span class="panel-tag">NETWORKS</span></div>
+          <p>Groups develop status systems, coalitions, shared stories, informal rules, and patterns of inclusion. Small interactions can accumulate into durable structures.</p>
+          <div class="timeline" aria-label="Illustrative group dynamics timeline">
+            <button class="timeline-step is-active" data-step="1"><b>01</b><span>Encounter</span></button>
+            <button class="timeline-step" data-step="2"><b>02</b><span>Alignment</span></button>
+            <button class="timeline-step" data-step="3"><b>03</b><span>Norms</span></button>
+            <button class="timeline-step" data-step="4"><b>04</b><span>Identity</span></button>
+          </div>
+          <p class="timeline-copy" id="timeline-copy">A group begins with contact: people notice one another, assess safety and relevance, and form initial impressions.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="explore-strip">
+      <div><span class="section-kicker">INTERACTIVE INDEX</span><h3>Three ways to investigate a human behavior.</h3></div>
+      <button class="explore-chip" data-jump="lab-notes">Read a case</button>
+      <button class="explore-chip" data-jump="quiz-deck">Test a hypothesis</button>
+      <button class="explore-chip" data-jump="field-notes">Trace an idea</button>
+    </section>
+
+    <section class="lab-notes" id="lab-notes">
+      <p class="eyebrow small">Case file · 01</p>
+      <h2>The power of the room</h2>
+      <div class="case-layout">
+        <div><p>Imagine three people privately disagree with a group decision. When the discussion starts, each person sees the others remaining quiet. The silence becomes evidence: “Maybe I’m the only one who sees a problem.”</p><p>Change one variable — let one person voice a minority view — and the social information available to everyone changes.</p></div>
+        <div class="fact-stack"><span>VARIABLE <b>visibility</b></span><span>MECHANISM <b>social proof</b></span><span>QUESTION <b>who speaks first?</b></span></div>
+      </div>
+    </section>
+
+    <section class="quiz-deck" id="quiz-deck">
+      <p class="eyebrow small">Field test · 02</p>
+      <h2>Check your intuition</h2>
+      <div class="quiz-card">
+        <p class="quiz-progress">QUESTION 1 / 3</p>
+        <h3>Which statement best describes confirmation bias?</h3>
+        <div class="quiz-answer-grid">
+          <button data-quiz="wrong">Remembering everything equally</button>
+          <button data-quiz="right">Favoring information that supports an existing belief</button>
+          <button data-quiz="wrong">Always changing your mind when evidence appears</button>
+        </div>
+        <p id="quiz-feedback" class="quiz-feedback" aria-live="polite">Choose an answer.</p>
+      </div>
+    </section>
+
+    <section class="field-notes" id="field-notes">
+      <p class="eyebrow small">Field notes · 03</p>
+      <h2>Questions worth carrying</h2>
+      <div class="question-grid">
+        <details open><summary>What changes when nobody is watching?</summary><p>Private behavior can reveal which motives depend on social evaluation and which are internally maintained.</p></details>
+        <details><summary>When does a norm become invisible?</summary><p>Repeated behavior can stop feeling like a choice and start feeling like “just how things are.”</p></details>
+        <details><summary>Can a belief be useful and inaccurate?</summary><p>Yes. A simplified model can guide action effectively while still failing to describe the world completely.</p></details>
+        <details><summary>Where does agency sit?</summary><p>Agency can be studied as a relationship between choice, constraints, knowledge, habits, and consequences rather than as an all-or-nothing property.</p></details>
+      </div>
+    </section>
+
+    <section class="section-divider">
+      <span>THE LONG QUESTION</span>
+      <i></i>
+      <span>SOUL · SELF · SOCIETY</span>
+    </section>
 
     <section>
       <p>Say the word out loud and it means something different depending on who's
@@ -139,7 +275,7 @@
 
   </main>
 
-  <button class="threshold-mark" id="threshold-mark" aria-label="Enter" type="button">
+  <button class="threshold-mark" id="threshold-mark" aria-label="Entry" type="button">
     <svg viewBox="0 0 24 24" class="ember" aria-hidden="true">
       <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
       <circle cx="12" cy="19.5" r="1.6"/>
@@ -149,27 +285,11 @@
 
 <!-- ===================== VIEW: gate (password) ===================== -->
 <div class="view" id="view-gate">
-  <div class="shell">
-    <div class="card" id="gate-card">
-      <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
-        <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
-        <circle cx="12" cy="19.5" r="1.6"/>
-      </svg>
-      <p class="eyebrow">Soul Studies</p>
-      <h1>Not everyone finds this room.</h1>
-      <p class="lede">If you were meant to, you were given the word.</p>
-
-      <form id="gate-form" autocomplete="off">
-        <div class="field">
-          <label for="password">Word</label>
-          <input type="password" id="password" name="password" required>
-        </div>
-        <p class="error-msg" id="gate-error" role="alert"></p>
-        <button type="submit" id="gate-submit">Enter</button>
-      </form>
-
-      <p class="hint"><button type="button" class="link-btn" id="gate-back">&larr; back to the reading</button></p>
-    </div>
+  <div class="minimal-gate">
+    <form id="gate-form" autocomplete="off">
+      <input type="password" id="password" name="password" aria-label="Entry code" autocomplete="current-password" required>
+      <p class="error-msg" id="gate-error" role="alert"></p>
+    </form>
   </div>
 </div>
 

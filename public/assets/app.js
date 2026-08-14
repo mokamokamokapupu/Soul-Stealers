@@ -121,22 +121,16 @@
   var gateForm = document.getElementById('gate-form');
   var gateInput = document.getElementById('password');
   var gateError = document.getElementById('gate-error');
-  var gateSubmit = document.getElementById('gate-submit');
-  var gateCard = document.getElementById('gate-card');
-  var gateBack = document.getElementById('gate-back');
+  var gateSubmit = null;
+  var gateCard = document.querySelector('.minimal-gate');
+  var gateBack = null;
 
   function setGateError(msg) { gateError.textContent = msg || ''; }
-
-  gateBack.addEventListener('click', function () {
-    setGateError('');
-    gateInput.value = '';
-    showView('essay');
-  });
 
   gateForm.addEventListener('submit', async function (e) {
     e.preventDefault();
     setGateError('');
-    gateSubmit.disabled = true;
+    gateInput.disabled = true;
     try {
       var res = await fetch('/api/login', {
         method: 'POST',
@@ -147,15 +141,13 @@
       var data = await res.json();
       if (res.ok) {
         applySessionData(data);
-        gateSubmit.textContent = 'Entering…';
         gateCard.classList.add('is-leaving');
         setTimeout(function () {
           gateCard.classList.remove('is-leaving');
-          gateSubmit.textContent = 'Enter';
-          gateSubmit.disabled = false;
+          gateInput.disabled = false;
           gateInput.value = '';
           showView('setup');
-        }, 280);
+        }, 220);
         return;
       } else if (res.status === 429) {
         setGateError('Too many attempts. Try again in ' + Math.ceil((data.retryAfterSec || 60) / 60) + ' min.');
@@ -167,7 +159,7 @@
     } catch (err) {
       setGateError('Something went wrong. Try again.');
     } finally {
-      if (!gateCard.classList.contains('is-leaving')) gateSubmit.disabled = false;
+      if (!gateCard.classList.contains('is-leaving')) gateInput.disabled = false;
     }
   });
 
@@ -487,6 +479,98 @@
     } else {
       heroSigil.removeAttribute('data-accent');
     }
+  });
+
+
+  // Research studio interactions
+  var researchTabs = Array.prototype.slice.call(document.querySelectorAll('.research-tab'));
+  var researchPanels = Array.prototype.slice.call(document.querySelectorAll('.research-panel'));
+  researchTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var name = tab.dataset.panel;
+      researchTabs.forEach(function (t) {
+        var active = t === tab;
+        t.classList.toggle('is-active', active);
+        t.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      researchPanels.forEach(function (panel) {
+        panel.classList.toggle('is-active', panel.dataset.panelView === name);
+      });
+    });
+  });
+
+  document.querySelectorAll('.expandable').forEach(function (card) {
+    card.addEventListener('click', function () {
+      card.classList.toggle('is-open');
+      var marker = card.querySelector('b');
+      if (marker) marker.textContent = card.classList.contains('is-open') ? '−' : '+';
+    });
+  });
+
+  var scenarioResult = document.getElementById('scenario-result');
+  document.querySelectorAll('[data-scenario]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var responses = {
+        conformity: 'Speaking up can introduce a minority viewpoint and make disagreement socially visible.',
+        observation: 'Asking what others think can surface hidden disagreement without immediately taking a side.',
+        compliance: 'Staying silent may preserve harmony, but it can also reinforce the appearance of unanimous agreement.'
+      };
+      scenarioResult.textContent = responses[button.dataset.scenario];
+    });
+  });
+
+  var frameReadout = document.getElementById('frame-readout');
+  var frameDetail = document.getElementById('frame-detail');
+  document.querySelectorAll('.frame-choice').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var loss = button.dataset.frame === 'loss';
+      frameReadout.textContent = loss ? 'Loss frame' : 'Gain frame';
+      frameDetail.textContent = loss
+        ? 'The message emphasizes avoiding a negative outcome; the reference point is what could be lost.'
+        : 'The message emphasizes a positive outcome; the reference point is what could be gained.';
+    });
+  });
+
+  var biasResult = document.getElementById('bias-result');
+  document.querySelectorAll('[data-answer]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      biasResult.textContent = button.dataset.answer === 'no'
+        ? 'Correct. 20% off $100 is $80; another 20% off is $64. Sequential percentages apply to the new price.'
+        : 'Not quite. The second 20% applies to $80, not the original $100.';
+    });
+  });
+
+  var timelineCopy = document.getElementById('timeline-copy');
+  var timelineText = {
+    '1': 'A group begins with contact: people notice one another, assess safety and relevance, and form initial impressions.',
+    '2': 'People begin to align around shared interests, roles, expectations, or influential members.',
+    '3': 'Repeated patterns become norms. What was once negotiated can become assumed.',
+    '4': 'The group can become part of how members describe themselves, changing the meaning of belonging.'
+  };
+  document.querySelectorAll('.timeline-step').forEach(function (step) {
+    step.addEventListener('click', function () {
+      document.querySelectorAll('.timeline-step').forEach(function (s) { s.classList.remove('is-active'); });
+      step.classList.add('is-active');
+      timelineCopy.textContent = timelineText[step.dataset.step];
+    });
+  });
+
+  document.querySelectorAll('[data-quiz]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var feedback = document.getElementById('quiz-feedback');
+      document.querySelectorAll('[data-quiz]').forEach(function (b) { b.classList.remove('picked'); });
+      button.classList.add('picked');
+      feedback.textContent = button.dataset.quiz === 'right'
+        ? 'Correct. Confirmation bias describes the tendency to seek, interpret, or remember information in ways that support an existing belief.'
+        : 'Try again. The key idea is selective processing around an existing belief.';
+    });
+  });
+
+  document.querySelectorAll('[data-jump]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var target = document.getElementById(button.dataset.jump);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   });
 
   // ---------------------------------------------------------------------
