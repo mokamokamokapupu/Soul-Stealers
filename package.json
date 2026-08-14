@@ -1,0 +1,13 @@
+{
+  "name": "soul-studies",
+  "version": "1.0.0",
+  "description": "Soul Studies — password-gated site with essay, username creation, and a shared chat room.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

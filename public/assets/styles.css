@@ -1,0 +1,346 @@
+/* ---------------------------------------------------------------------
+   Soul Studies — design tokens
+   Palette: deep ink background, parchment text, aged-verdigris accent
+   (a copper patina — the oldest visual metaphor for something that
+   persists and changes at once). Deliberately not the cream/terracotta
+   or neon-on-black defaults.
+   Display face: Fraunces (characterful, manuscript weight range)
+   Body face:    Source Serif 4 (quiet, readable)
+   Utility face: IBM Plex Mono (system/threshold moments: gate, chat)
+------------------------------------------------------------------------ */
+
+:root{
+  --ink:        #0f1219;
+  --ink-raised: #161a23;
+  --parchment:  #e9e1d0;
+  --parchment-dim: #b9b2a2;
+  --brass:      #8b7355;
+  --verdigris:  #6f8f76;
+  --verdigris-bright: #93b89a;
+  --danger:     #a65b4b;
+
+  --font-display: 'Fraunces', serif;
+  --font-body: 'Source Serif 4', serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+
+*{ box-sizing: border-box; }
+
+html{ background: var(--ink); }
+
+body{
+  margin:0;
+  background: var(--ink);
+  color: var(--parchment);
+  font-family: var(--font-body);
+  font-size: 18px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+a{ color: inherit; }
+
+::selection{ background: var(--verdigris); color: var(--ink); }
+
+:focus-visible{
+  outline: 2px solid var(--verdigris-bright);
+  outline-offset: 3px;
+}
+
+/* ---------------------------- Essay page ---------------------------- */
+
+.essay{
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 6rem 1.5rem 8rem;
+}
+
+.eyebrow{
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin: 0 0 1rem;
+}
+.eyebrow.small{ margin-bottom: 0.6rem; font-size: 0.68rem; }
+
+.essay-header h1{
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-size: clamp(2rem, 5vw, 2.9rem);
+  line-height: 1.15;
+  margin: 0 0 1.4rem;
+  color: var(--parchment);
+}
+
+.essay-header em, .essay em{
+  font-style: italic;
+  color: var(--verdigris-bright);
+}
+
+.dek{
+  font-size: 1.15rem;
+  color: var(--parchment-dim);
+  margin: 0 0 3rem;
+}
+
+.essay h2{
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 1.6rem;
+  margin: 0 0 1rem;
+  color: var(--parchment);
+}
+
+.essay p{ margin: 0 0 1.4rem; color: var(--parchment); }
+
+.essay section{ margin-bottom: 2.6rem; }
+
+.rule{
+  border: none;
+  border-top: 1px solid rgba(139,115,85,0.35);
+  margin: 3rem 0;
+}
+
+.closing p{
+  font-style: italic;
+  color: var(--parchment-dim);
+}
+
+/* Signature element: the ember-threshold link */
+
+.threshold-wrap{
+  margin-top: 5rem;
+  display: flex;
+  justify-content: center;
+}
+
+.threshold{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  padding: 1rem;
+  opacity: 0.55;
+  transition: opacity 0.4s ease;
+}
+.threshold:hover, .threshold:focus-visible{ opacity: 1; }
+
+.threshold .ember{
+  width: 22px;
+  height: 22px;
+  fill: var(--verdigris);
+  filter: drop-shadow(0 0 4px rgba(111,143,118,0.5));
+  animation: breathe 3.4s ease-in-out infinite;
+}
+
+@keyframes breathe{
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(111,143,118,0.35)); transform: scale(1); }
+  50% { filter: drop-shadow(0 0 9px rgba(147,184,154,0.8)); transform: scale(1.06); }
+}
+
+.threshold span{
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
+  color: var(--parchment-dim);
+}
+
+@media (prefers-reduced-motion: reduce){
+  .threshold .ember{ animation: none; }
+}
+
+/* ---------------------------- Gate / setup / chat shell ---------------------------- */
+
+.shell{
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.card{
+  width: 100%;
+  max-width: 420px;
+  background: var(--ink-raised);
+  border: 1px solid rgba(139,115,85,0.25);
+  border-radius: 4px;
+  padding: 2.6rem 2.2rem;
+}
+
+.card .eyebrow{ text-align: center; }
+
+.card h1{
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 1.7rem;
+  text-align: center;
+  margin: 0 0 0.6rem;
+}
+
+.card .lede{
+  text-align: center;
+  color: var(--parchment-dim);
+  font-size: 0.98rem;
+  margin: 0 0 2rem;
+}
+
+label{
+  display:block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin-bottom: 0.5rem;
+}
+
+input[type="password"], input[type="text"]{
+  width: 100%;
+  background: var(--ink);
+  border: 1px solid rgba(139,115,85,0.4);
+  color: var(--parchment);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 3px;
+  margin-bottom: 1.4rem;
+}
+
+input:focus{ border-color: var(--verdigris); }
+
+button{
+  width: 100%;
+  background: var(--verdigris);
+  color: var(--ink);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  padding: 0.85rem;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+button:hover{ background: var(--verdigris-bright); }
+button:disabled{ opacity: 0.5; cursor: not-allowed; }
+
+.error-msg{
+  color: var(--danger);
+  font-size: 0.88rem;
+  margin: -0.6rem 0 1.2rem;
+  min-height: 1.2em;
+}
+
+.hint{
+  text-align:center;
+  font-size: 0.82rem;
+  color: var(--parchment-dim);
+  margin-top: 1.6rem;
+}
+
+/* ---------------------------- Chat room ---------------------------- */
+
+.chat-shell{
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.chat-topbar{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(139,115,85,0.3);
+  margin-bottom: 1rem;
+}
+
+.chat-topbar h1{
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+.chat-topbar .who{
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--parchment-dim);
+}
+
+.chat-topbar .who strong{ color: var(--verdigris-bright); }
+
+.logout-link{
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--brass);
+  text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: auto;
+  padding: 0;
+}
+.logout-link:hover{ color: var(--parchment); }
+
+.messages{
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 0.5rem 0.2rem 1.5rem;
+}
+
+.msg{ max-width: 80%; }
+.msg .meta{
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--brass);
+  margin-bottom: 0.2rem;
+}
+.msg .meta .name{ color: var(--verdigris-bright); }
+.msg .text{
+  background: var(--ink-raised);
+  border: 1px solid rgba(139,115,85,0.2);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.self{ align-self: flex-end; }
+.msg.self .text{ border-color: rgba(111,143,118,0.4); }
+
+.composer{
+  display:flex;
+  gap: 0.6rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(139,115,85,0.3);
+}
+
+.composer input{ margin-bottom:0; flex:1; }
+.composer button{ width: auto; padding: 0 1.4rem; }
+
+.empty-state{
+  text-align:center;
+  color: var(--parchment-dim);
+  font-style: italic;
+  margin-top: 2rem;
+}
+
+@media (max-width: 480px){
+  .essay{ padding: 4rem 1.2rem 6rem; }
+  .card{ padding: 2rem 1.5rem; }
+}
