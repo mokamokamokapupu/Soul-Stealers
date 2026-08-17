@@ -59,7 +59,11 @@ thing this app doesn't do for you (TLS termination) if you go that route.
 4. **`/chat`** — one shared room, everyone who's in sees the same
    messages. Each name can have a profile picture (click your avatar in
    the top bar to upload one); a name is only reserved while someone's
-   actively using it, so it's free again once they leave.
+   actively using it, so it's free again once they leave. Messages support
+   replies (hover a message → Reply), images (📷 in the composer), and an
+   emoji picker (😊 in the composer). Text messages are end-to-end
+   encrypted with a key derived from the site password — see `SECURITY.md`
+   for exactly what that does and doesn't protect against.
 
 Read `SECURITY.md` for what's actually enforcing that flow (hint: never the
 frontend by itself).

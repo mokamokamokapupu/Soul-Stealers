@@ -16,14 +16,65 @@
 <!-- ===================== VIEW: essay (public facade) ===================== -->
 <div class="view active" id="view-essay">
 
-  <nav class="index-nav" id="index-nav" aria-label="Research sections">
-    <button class="index-dot" data-target="research-studio" aria-label="Research studio"></button>
-    <button class="index-dot" data-target="sec-greek" aria-label="Greek philosophy"></button>
-    <button class="index-dot" data-target="sec-dualism" aria-label="Dualism"></button>
-    <button class="index-dot" data-target="sec-secular" aria-label="After the soul"></button>
-  </nav>
+  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar-nav">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="nav-scrim" id="nav-scrim" hidden></div>
 
-  <section class="hero">
+  <aside class="sidebar-nav" id="sidebar-nav" aria-label="Site navigation">
+    <div class="sidebar-brand">
+      <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
+        <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
+        <circle cx="12" cy="19.5" r="1.6"/>
+      </svg>
+      <div class="sidebar-titles">
+        <span class="sidebar-title">Soul Studies</span>
+        <span class="sidebar-subtitle">Dept. of Psychological Inquiry</span>
+      </div>
+    </div>
+
+    <nav class="sidebar-groups" id="index-nav" aria-label="Research sections">
+      <div class="sidebar-group">
+        <span class="sidebar-group-label">Overview</span>
+        <a class="sidebar-link" data-target="hero" href="#hero">Introduction</a>
+      </div>
+
+      <div class="sidebar-group">
+        <span class="sidebar-group-label">Field lab · interactive</span>
+        <a class="sidebar-link" data-target="research-studio" href="#research-studio">Research studio</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="psychology" href="#research-studio">Psychology</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="influence" href="#research-studio">Social influence</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="persuasion" href="#research-studio">Persuasion</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="biases" href="#research-studio">Cognitive biases</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="coercion" href="#research-studio">Manipulation &amp; coercion</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="behavior" href="#research-studio">Human behavior</a>
+        <a class="sidebar-sublink" data-target="research-studio" data-panel="dynamics" href="#research-studio">Social dynamics</a>
+      </div>
+
+      <div class="sidebar-group">
+        <span class="sidebar-group-label">Exercises</span>
+        <a class="sidebar-link" data-target="lab-notes" href="#lab-notes">Case file</a>
+        <a class="sidebar-link" data-target="quiz-deck" href="#quiz-deck">Test your intuition</a>
+        <a class="sidebar-link" data-target="field-notes" href="#field-notes">Field notes</a>
+      </div>
+
+      <div class="sidebar-group">
+        <span class="sidebar-group-label">Traditions</span>
+        <a class="sidebar-link" data-accent="greek" data-target="sec-greek" href="#sec-greek">Greek philosophy</a>
+        <a class="sidebar-link" data-accent="dualism" data-target="sec-dualism" href="#sec-dualism">Dualism</a>
+        <a class="sidebar-link" data-accent="abrahamic" data-target="sec-abrahamic" href="#sec-abrahamic">Abrahamic traditions</a>
+        <a class="sidebar-link" data-accent="dharmic" data-target="sec-dharmic" href="#sec-dharmic">Dharmic traditions</a>
+        <a class="sidebar-link" data-accent="secular" data-target="sec-secular" href="#sec-secular">After the soul</a>
+        <a class="sidebar-link" data-target="sec-closing" href="#sec-closing">Closing thoughts</a>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <span class="sidebar-hint">an independent research essay</span>
+    </div>
+  </aside>
+
+  <section class="hero" id="hero">
     <svg viewBox="0 0 24 24" class="sigil" id="hero-sigil" aria-hidden="true">
       <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
       <circle cx="12" cy="19.5" r="1.6"/>
@@ -264,7 +315,7 @@
         described as an "old soul." The word outlived the doctrine.</p>
     </section>
 
-    <section class="closing">
+    <section class="closing" id="sec-closing">
       <p>Maybe that's the honest place to leave it: not a settled fact, but a
         question every tradition has taken seriously enough to keep asking,
         each landing somewhere different, none of them able to fully let it go.
@@ -275,12 +326,9 @@
 
   </main>
 
-  <button class="threshold-mark" id="threshold-mark" aria-label="Entry" type="button">
-    <svg viewBox="0 0 24 24" class="ember" aria-hidden="true">
-      <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
-      <circle cx="12" cy="19.5" r="1.6"/>
-    </svg>
-  </button>
+  <!-- No visible entry point into the gate anymore — reaching it is a
+       keyboard shortcut (Q+W+O+P held together) handled in app.js, with
+       F5 as a quick escape back out from anywhere past this page. -->
 </div>
 
 <!-- ===================== VIEW: gate (password) ===================== -->
@@ -342,13 +390,54 @@
 
     <p class="avatar-status" id="avatar-status"></p>
 
-    <div class="messages" id="messages">
-      <p class="empty-state">It's quiet. Say something.</p>
+    <div class="messages-wrap">
+      <div class="unlock-overlay" id="unlock-overlay" hidden>
+        <div class="unlock-card">
+          <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
+            <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
+            <circle cx="12" cy="19.5" r="1.6"/>
+          </svg>
+          <p class="eyebrow small">Messages are locked</p>
+          <h2>Enter the site password to unlock this room</h2>
+          <p class="unlock-copy">Messages here are encrypted with a key built from the site password. This browser tab doesn't have that key cached yet. Nothing is sent to the server for this — it just rebuilds the key locally.</p>
+          <form id="unlock-form" autocomplete="off">
+            <input type="password" id="unlock-password" aria-label="Site password" autocomplete="current-password" required>
+            <p class="error-msg" id="unlock-error" role="alert"></p>
+            <button type="submit">Unlock</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="messages" id="messages">
+        <p class="empty-state">It's quiet. Say something.</p>
+      </div>
     </div>
 
+    <div class="reply-preview" id="reply-preview" hidden>
+      <div class="reply-preview-body">
+        <span class="reply-preview-label">Replying to <strong id="reply-preview-name"></strong></span>
+        <span class="reply-preview-text" id="reply-preview-text"></span>
+      </div>
+      <button type="button" class="reply-preview-cancel" id="reply-preview-cancel" aria-label="Cancel reply">×</button>
+    </div>
+
+    <p class="chat-status" id="chat-status"></p>
+
     <form class="composer" id="composer" autocomplete="off">
+      <div class="composer-tools">
+        <label class="composer-btn" id="image-btn" title="Send an image" aria-label="Send an image">
+          <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="9" cy="10" r="1.6" fill="currentColor"/><path d="M4 16l5-5 4 4 3-3 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp" hidden>
+        </label>
+        <div class="emoji-wrap">
+          <button type="button" class="composer-btn" id="emoji-btn" title="Insert an emoji" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8.5" cy="10.5" r="1.1" fill="currentColor"/><circle cx="15.5" cy="10.5" r="1.1" fill="currentColor"/><path d="M8 14.5c.9 1.3 2.3 2 4 2s3.1-.7 4-2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
+          <div class="emoji-popover" id="emoji-popover" hidden></div>
+        </div>
+      </div>
       <input type="text" id="msg-input" maxlength="500" placeholder="Write something…" required>
-      <button type="submit">Send</button>
+      <button type="submit" id="send-btn">Send</button>
     </form>
   </div>
 </div>

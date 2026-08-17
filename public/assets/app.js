@@ -61,6 +61,107 @@
   }
 
   // ---------------------------------------------------------------------
+  // Chat content encryption
+  // -----------------------
+  // The server stores and relays chat text as an opaque blob — it never
+  // sees plaintext. The key is an AES-GCM key derived (PBKDF2) from the
+  // *site password itself*, which is the one secret every room member is
+  // guaranteed to already know. The salt below is public/fixed (all the
+  // secrecy comes from the password), which is what makes this workable
+  // for a single shared room rather than a 1:1 conversation.
+  //
+  // Honest limits, worth knowing:
+  //  - Anyone who knows the site password can decrypt every message —
+  //    same trust boundary the room already has today, just extended to
+  //    message content instead of only "who's allowed to see the room".
+  //  - Images are NOT covered by this (still gated server-side by session,
+  //    same as avatars, but not encrypted) — see SECURITY.md.
+  //  - The key lives in this tab's sessionStorage so a page refresh keeps
+  //    working without re-typing the password. Opening the room in a new
+  //    tab (or after closing the old one) needs the password once to
+  //    re-derive the same key locally — nothing is sent to the server for
+  //    this, it's just how the local decrypt key gets rebuilt.
+  // ---------------------------------------------------------------------
+
+  var ROOM_KEY_STORAGE = 'ss_room_key_v1';
+  var PBKDF2_SALT = new TextEncoder().encode('soul-studies-chat-room-v1');
+  var PBKDF2_ITERATIONS = 150000;
+  var roomKey = null;
+  var cryptoAvailable = !!(window.crypto && window.crypto.subtle);
+
+  function bytesToBase64(bytes) {
+    var bin = '';
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+  function base64ToBytes(b64) {
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  async function deriveRoomKey(password) {
+    var enc = new TextEncoder().encode(password);
+    var baseKey = await crypto.subtle.importKey('raw', enc, 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: PBKDF2_SALT, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      baseKey,
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  async function setRoomKey(password) {
+    roomKey = await deriveRoomKey(password);
+    try {
+      var raw = await crypto.subtle.exportKey('raw', roomKey);
+      sessionStorage.setItem(ROOM_KEY_STORAGE, bytesToBase64(new Uint8Array(raw)));
+    } catch (e) { /* sessionStorage unavailable (private mode etc.) — key just won't survive a refresh */ }
+  }
+
+  async function loadCachedRoomKey() {
+    var b64;
+    try { b64 = sessionStorage.getItem(ROOM_KEY_STORAGE); } catch (e) { return null; }
+    if (!b64) return null;
+    try {
+      return await crypto.subtle.importKey('raw', base64ToBytes(b64), 'AES-GCM', true, ['encrypt', 'decrypt']);
+    } catch (e) { return null; }
+  }
+
+  function clearRoomKey() {
+    roomKey = null;
+    try { sessionStorage.removeItem(ROOM_KEY_STORAGE); } catch (e) { /* ignore */ }
+  }
+
+  async function encryptText(plaintext) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var data = new TextEncoder().encode(plaintext);
+    var cipherBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, roomKey, data);
+    var combined = new Uint8Array(iv.length + cipherBuf.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(cipherBuf), iv.length);
+    return bytesToBase64(combined);
+  }
+
+  // Returns the decrypted string, or null if it can't be decrypted (wrong/
+  // missing key, or a message that predates encryption being turned on).
+  async function decryptText(b64) {
+    if (!roomKey || typeof b64 !== 'string') return null;
+    try {
+      var combined = base64ToBytes(b64);
+      if (combined.length < 13) return null;
+      var iv = combined.slice(0, 12);
+      var data = combined.slice(12);
+      var plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, roomKey, data);
+      return new TextDecoder().decode(plainBuf);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Initial routing on load / refresh — this is the ONLY place that maps
   // the current stage + entry path to a starting view. The path a user
   // landed on (e.g. a bookmark to /chat) is treated as a *hint*, never a
@@ -100,6 +201,8 @@
       myUsername = data.username;
       whoNameEl.textContent = myUsername || '—';
       myAvatarEl.src = avatarUrl(myUsername);
+      if (cryptoAvailable) roomKey = await loadCachedRoomKey();
+      setUnlockVisible(cryptoAvailable && !roomKey);
     }
 
     showView(startView);
@@ -141,6 +244,12 @@
       var data = await res.json();
       if (res.ok) {
         applySessionData(data);
+        // Derive the room encryption key from the password while it's still
+        // in memory — it's never sent anywhere for this purpose, and the
+        // server never receives it after this point.
+        if (cryptoAvailable) {
+          try { await setRoomKey(gateInput.value); } catch (e) { /* chat will fall back to an unlock prompt */ }
+        }
         gateCard.classList.add('is-leaving');
         setTimeout(function () {
           gateCard.classList.remove('is-leaving');
@@ -219,14 +328,33 @@
   var messagesEl = document.getElementById('messages');
   var composer = document.getElementById('composer');
   var msgInput = document.getElementById('msg-input');
+  var sendBtn = document.getElementById('send-btn');
   var whoNameEl = document.getElementById('who-name');
   var logoutBtn = document.getElementById('logout-btn');
   var myAvatarEl = document.getElementById('my-avatar');
   var avatarInput = document.getElementById('avatar-input');
   var avatarStatusEl = document.getElementById('avatar-status');
+  var chatStatusEl = document.getElementById('chat-status');
+
+  var imageBtnInput = document.getElementById('image-input');
+  var emojiBtn = document.getElementById('emoji-btn');
+  var emojiPopover = document.getElementById('emoji-popover');
+
+  var replyPreviewEl = document.getElementById('reply-preview');
+  var replyPreviewNameEl = document.getElementById('reply-preview-name');
+  var replyPreviewTextEl = document.getElementById('reply-preview-text');
+  var replyPreviewCancelBtn = document.getElementById('reply-preview-cancel');
+
+  var unlockOverlay = document.getElementById('unlock-overlay');
+  var unlockForm = document.getElementById('unlock-form');
+  var unlockInput = document.getElementById('unlock-password');
+  var unlockError = document.getElementById('unlock-error');
 
   var since = 0;
   var pollTimer = null;
+  var pollInFlight = false; // guards against overlapping poll() calls racing on `since`
+  var renderedIds = Object.create(null); // message id -> true, once its DOM node exists — the actual fix for double-rendered messages
+  var replyingTo = null; // { id, username, preview } or null
 
   var NEAR_BOTTOM_PX = 80;
 
@@ -234,12 +362,20 @@
     return messagesEl.scrollTop + messagesEl.clientHeight >= messagesEl.scrollHeight - NEAR_BOTTOM_PX;
   }
 
-  function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+  function scrollToBottom(smooth) {
+    if (smooth && 'scrollTo' in messagesEl) {
+      messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+    } else {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
   }
 
   function avatarUrl(username) {
     return '/api/avatar/' + encodeURIComponent(username || '');
+  }
+
+  function chatImageUrl(imageId) {
+    return '/api/chat-image/' + encodeURIComponent(imageId || '');
   }
 
   function fmtTime(ts) {
@@ -247,50 +383,286 @@
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
-  function renderMessages(list) {
+  function truncate(str, n) {
+    if (str.length <= n) return str;
+    return str.slice(0, n - 1) + '…';
+  }
+
+  // ---- reply state -------------------------------------------------
+
+  function setReplyPreviewVisible(visible) {
+    replyPreviewEl.hidden = !visible;
+    replyPreviewEl.classList.toggle('is-open', visible);
+  }
+
+  function startReply(id, username, previewText) {
+    replyingTo = { id: id, username: username, preview: previewText };
+    replyPreviewNameEl.textContent = username;
+    replyPreviewTextEl.textContent = previewText;
+    setReplyPreviewVisible(true);
+    msgInput.focus();
+  }
+
+  function cancelReply() {
+    replyingTo = null;
+    setReplyPreviewVisible(false);
+  }
+
+  replyPreviewCancelBtn.addEventListener('click', cancelReply);
+
+  // ---- emoji picker --------------------------------------------------
+
+  var EMOJI_SET = ['😀','😄','😁','😂','🤣','😊','🙂','😉','😍','🥰','😘','😎','🤔','🙄','😴',
+    '😭','😢','😅','😳','😱','🥺','😡','🤯','🤗','🤩','😇','🙃','😬','😏','🫠',
+    '👍','👎','👏','🙌','🙏','🤝','💪','✌️','🤞','👋',
+    '❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','💯',
+    '🔥','✨','🎉','🎊','💡','⭐','🌟','☀️','🌙','🌈',
+    '🐱','🐶','🦋','🌸','🍀','☕','🍕','🎵','📚','🧠'];
+
+  var emojiPopulated = false;
+  function populateEmojiPicker() {
+    if (emojiPopulated) return;
+    emojiPopulated = true;
+    EMOJI_SET.forEach(function (emoji) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'emoji-option';
+      btn.textContent = emoji;
+      btn.addEventListener('click', function () {
+        insertAtCursor(msgInput, emoji);
+      });
+      emojiPopover.appendChild(btn);
+    });
+  }
+
+  function insertAtCursor(input, str) {
+    var start = input.selectionStart != null ? input.selectionStart : input.value.length;
+    var end = input.selectionEnd != null ? input.selectionEnd : input.value.length;
+    input.value = input.value.slice(0, start) + str + input.value.slice(end);
+    var pos = start + str.length;
+    input.focus();
+    if (input.setSelectionRange) input.setSelectionRange(pos, pos);
+  }
+
+  function setEmojiPopoverOpen(open) {
+    populateEmojiPicker();
+    emojiPopover.hidden = !open;
+    emojiBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    emojiBtn.classList.toggle('is-active', open);
+  }
+
+  emojiBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    setEmojiPopoverOpen(emojiPopover.hidden);
+  });
+  document.addEventListener('click', function (e) {
+    if (!emojiPopover.hidden && !emojiPopover.contains(e.target) && e.target !== emojiBtn) {
+      setEmojiPopoverOpen(false);
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !emojiPopover.hidden) setEmojiPopoverOpen(false);
+  });
+
+  // ---- unlock (room key) overlay -------------------------------------
+
+  function setUnlockVisible(visible) {
+    unlockOverlay.hidden = !visible;
+    if (visible) setTimeout(function () { unlockInput.focus(); }, 50);
+  }
+
+  unlockForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    unlockError.textContent = '';
+    var candidate = unlockInput.value;
+    unlockInput.disabled = true;
+    try {
+      var candidateKey = await deriveRoomKey(candidate);
+      // Verify by trying to decrypt something already on screen/in hand.
+      // With nothing to check against yet (empty room), we accept it —
+      // there's no way to verify offline, and worst case a mistyped
+      // password just means your own first message won't decrypt for
+      // others either, which you'd immediately notice.
+      var probe = messagesEl.querySelector('.msg[data-cipher]');
+      var ok = true;
+      if (probe) {
+        var savedKey = roomKey;
+        roomKey = candidateKey;
+        var decrypted = await decryptText(probe.getAttribute('data-cipher'));
+        ok = decrypted !== null;
+        roomKey = savedKey;
+      }
+      if (!ok) {
+        unlockError.textContent = 'That doesn\'t look right — try again.';
+        unlockInput.value = '';
+        unlockInput.disabled = false;
+        unlockInput.focus();
+        return;
+      }
+      roomKey = candidateKey;
+      try {
+        var raw = await crypto.subtle.exportKey('raw', roomKey);
+        sessionStorage.setItem(ROOM_KEY_STORAGE, bytesToBase64(new Uint8Array(raw)));
+      } catch (err) { /* ignore — key still works for this tab session */ }
+      unlockInput.value = '';
+      unlockInput.disabled = false;
+      setUnlockVisible(false);
+      // Re-render anything currently on screen with the freshly unlocked key.
+      messagesEl.innerHTML = '';
+      renderedIds = Object.create(null);
+      since = 0;
+      await poll();
+      scrollToBottom();
+    } catch (err) {
+      unlockError.textContent = 'Something went wrong. Try again.';
+      unlockInput.disabled = false;
+    }
+  });
+
+  // ---- rendering -------------------------------------------------------
+
+  async function buildReplyQuoteEl(replyTo) {
+    var quote = document.createElement('button');
+    quote.type = 'button';
+    quote.className = 'msg-quote';
+    var quoteName = document.createElement('span');
+    quoteName.className = 'msg-quote-name';
+    quoteName.textContent = replyTo.username;
+    var quoteText = document.createElement('span');
+    quoteText.className = 'msg-quote-text';
+    if (replyTo.type === 'image') {
+      quoteText.textContent = '📷 Photo';
+    } else if (cryptoAvailable) {
+      var decrypted = await decryptText(replyTo.cipher);
+      quoteText.textContent = decrypted === null ? '🔒 message' : truncate(decrypted, 80);
+    } else {
+      quoteText.textContent = truncate(replyTo.cipher || '', 80);
+    }
+    quote.appendChild(quoteName);
+    quote.appendChild(quoteText);
+    quote.addEventListener('click', function () {
+      var target = messagesEl.querySelector('[data-msg-id="' + CSS.escape(replyTo.id) + '"]');
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('is-highlighted');
+        setTimeout(function () { target.classList.remove('is-highlighted'); }, 1200);
+      }
+    });
+    return quote;
+  }
+
+  async function renderOne(m) {
+    if (renderedIds[m.id]) { since = Math.max(since, m.ts); return; }
+    renderedIds[m.id] = true;
+
+    var wrap = document.createElement('div');
+    wrap.className = 'msg msg-enter' + (m.username === myUsername ? ' self' : '');
+    wrap.dataset.msgId = m.id;
+
+    var avatar = document.createElement('img');
+    avatar.className = 'avatar';
+    avatar.alt = '';
+    avatar.src = avatarUrl(m.username);
+    avatar.loading = 'lazy';
+
+    var body = document.createElement('div');
+    body.className = 'body';
+
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    var nameSpan = document.createElement('span');
+    nameSpan.className = 'name';
+    nameSpan.textContent = m.username; // textContent — never innerHTML — no HTML injection possible
+    meta.appendChild(nameSpan);
+    meta.appendChild(document.createTextNode(' · ' + fmtTime(m.ts)));
+    body.appendChild(meta);
+
+    if (m.replyTo) {
+      body.appendChild(await buildReplyQuoteEl(m.replyTo));
+    }
+
+    var previewForReply; // plain text used if *this* message later gets replied to
+
+    if (m.type === 'image') {
+      var figure = document.createElement('button');
+      figure.type = 'button';
+      figure.className = 'msg-image-btn';
+      var img = document.createElement('img');
+      img.className = 'msg-image';
+      img.alt = m.username + ' sent an image';
+      img.loading = 'lazy';
+      img.src = chatImageUrl(m.imageId);
+      figure.appendChild(img);
+      figure.addEventListener('click', function () { openLightbox(img.src); });
+      body.appendChild(figure);
+      previewForReply = '📷 Photo';
+    } else {
+      var text = document.createElement('div');
+      text.className = 'text';
+      var plain = m.text;
+      if (cryptoAvailable) {
+        var decrypted = await decryptText(m.text);
+        plain = decrypted === null ? null : decrypted;
+        wrap.setAttribute('data-cipher', m.text); // lets the unlock flow probe against a real message
+      }
+      text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain; // safe: textContent, never innerHTML
+      if (plain === null) text.classList.add('is-locked');
+      body.appendChild(text);
+      previewForReply = plain === null ? '🔒 message' : plain;
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'msg-actions';
+    var replyBtn = document.createElement('button');
+    replyBtn.type = 'button';
+    replyBtn.className = 'msg-action-btn';
+    replyBtn.textContent = '↩ Reply';
+    replyBtn.addEventListener('click', function () { startReply(m.id, m.username, truncate(previewForReply, 80)); });
+    actions.appendChild(replyBtn);
+    body.appendChild(actions);
+
+    wrap.appendChild(avatar);
+    wrap.appendChild(body);
+    messagesEl.appendChild(wrap);
+    since = Math.max(since, m.ts);
+
+    // Let the browser paint the base state before triggering the enter
+    // transition, then drop the marker class once it's done.
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { wrap.classList.add('msg-enter-active'); });
+    });
+    setTimeout(function () { wrap.classList.remove('msg-enter', 'msg-enter-active'); }, 500);
+  }
+
+  async function renderMessages(list) {
     if (list.length === 0) return;
     var wasEmpty = messagesEl.querySelector('.empty-state');
     if (wasEmpty) wasEmpty.remove();
 
     var stickToBottom = isNearBottom();
+    for (var i = 0; i < list.length; i++) {
+      await renderOne(list[i]);
+    }
+    if (stickToBottom) scrollToBottom(true);
+  }
 
-    list.forEach(function (m) {
-      var wrap = document.createElement('div');
-      wrap.className = 'msg' + (m.username === myUsername ? ' self' : '');
-
-      var avatar = document.createElement('img');
-      avatar.className = 'avatar';
-      avatar.alt = '';
-      avatar.src = avatarUrl(m.username);
-      avatar.loading = 'lazy';
-
-      var body = document.createElement('div');
-      body.className = 'body';
-
-      var meta = document.createElement('div');
-      meta.className = 'meta';
-      var nameSpan = document.createElement('span');
-      nameSpan.className = 'name';
-      nameSpan.textContent = m.username; // textContent — never innerHTML — no HTML injection possible
-      meta.appendChild(nameSpan);
-      meta.appendChild(document.createTextNode(' · ' + fmtTime(m.ts)));
-
-      var text = document.createElement('div');
-      text.className = 'text';
-      text.textContent = m.text; // safe: rendered as plain text, not parsed as HTML
-
-      body.appendChild(meta);
-      body.appendChild(text);
-      wrap.appendChild(avatar);
-      wrap.appendChild(body);
-      messagesEl.appendChild(wrap);
-      since = Math.max(since, m.ts);
+  function openLightbox(src) {
+    var overlay = document.createElement('div');
+    overlay.className = 'lightbox';
+    var img = document.createElement('img');
+    img.src = src;
+    overlay.appendChild(img);
+    overlay.addEventListener('click', function () { overlay.remove(); });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', esc); }
     });
-
-    if (stickToBottom) scrollToBottom();
+    document.body.appendChild(overlay);
+    requestAnimationFrame(function () { overlay.classList.add('is-open'); });
   }
 
   async function poll() {
+    if (pollInFlight) return; // avoid overlapping fetches racing on `since`
+    pollInFlight = true;
     try {
       var res = await fetch('/api/chat/messages?since=' + since, { credentials: 'same-origin' });
       if (res.status === 403) {
@@ -301,15 +673,17 @@
         return;
       }
       var data = await res.json();
-      renderMessages(data.messages || []);
+      await renderMessages(data.messages || []);
     } catch (e) { /* transient network hiccup — next poll will retry */ }
+    finally { pollInFlight = false; }
   }
 
   function startChatPolling() {
     if (pollTimer) return;
     since = 0;
+    renderedIds = Object.create(null);
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
-    poll().then(scrollToBottom);
+    poll().then(function () { scrollToBottom(false); });
     pollTimer = setInterval(poll, 1800);
   }
 
@@ -317,21 +691,96 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
+  function setChatStatus(msg, isError) {
+    if (!chatStatusEl) return;
+    chatStatusEl.textContent = msg || '';
+    chatStatusEl.classList.toggle('is-error', !!isError);
+  }
+
   composer.addEventListener('submit', async function (e) {
     e.preventDefault();
     var text = msgInput.value.trim();
     if (!text) return;
+    if (cryptoAvailable && !roomKey) { setUnlockVisible(true); return; }
+
     msgInput.value = '';
+    sendBtn.disabled = true;
+    sendBtn.classList.add('is-sending');
+    var pendingReplyTo = replyingTo ? replyingTo.id : undefined;
+    cancelReply();
+
     try {
+      var payloadText = cryptoAvailable ? await encryptText(text) : text;
       var res = await fetch('/api/chat/send', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({ text: text }),
+        body: JSON.stringify({ text: payloadText, replyTo: pendingReplyTo }),
       });
       if (res.status === 403) { showView('gate'); return; }
-      if (res.ok) { await poll(); scrollToBottom(); }
-    } catch (e) { msgInput.value = text; }
+      var data = await res.json();
+      if (res.ok && data.message) {
+        // Render straight from the send response instead of triggering
+        // another poll() — this was the actual source of doubled messages:
+        // the periodic poll and a post-send poll could both read the same
+        // stale `since` and both append the same message. Rendering it
+        // directly here means there's nothing to race, and the id-based
+        // dedup in renderOne() covers the interval poll picking it up too.
+        await renderMessages([data.message]);
+        scrollToBottom(true);
+      } else if (!res.ok) {
+        setChatStatus(data.error || 'Could not send that message.', true);
+        setTimeout(function () { setChatStatus(''); }, 3000);
+      }
+    } catch (e) {
+      msgInput.value = text;
+    } finally {
+      sendBtn.disabled = false;
+      sendBtn.classList.remove('is-sending');
+    }
+  });
+
+  imageBtnInput.addEventListener('change', async function () {
+    var file = imageBtnInput.files && imageBtnInput.files[0];
+    if (!file) return;
+    var allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (allowed.indexOf(file.type) === -1) {
+      setChatStatus('Use a JPEG, PNG, or WebP image.', true);
+      imageBtnInput.value = '';
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setChatStatus('Image is too large (5MB max).', true);
+      imageBtnInput.value = '';
+      return;
+    }
+
+    var pendingReplyTo = replyingTo ? replyingTo.id : undefined;
+    cancelReply();
+    setChatStatus('Sending image…');
+    try {
+      var url = '/api/chat/image' + (pendingReplyTo ? '?replyTo=' + encodeURIComponent(pendingReplyTo) : '');
+      var res = await fetch(url, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrfToken },
+        body: file,
+      });
+      if (res.status === 403) { showView('gate'); return; }
+      var data = await res.json();
+      if (res.ok && data.message) {
+        await renderMessages([data.message]);
+        scrollToBottom(true);
+        setChatStatus('');
+      } else {
+        setChatStatus(data.error || 'Could not send that image.', true);
+        setTimeout(function () { setChatStatus(''); }, 3000);
+      }
+    } catch (e) {
+      setChatStatus('Something went wrong. Try again.', true);
+    } finally {
+      imageBtnInput.value = '';
+    }
   });
 
   function setAvatarStatus(msg, isError) {
@@ -387,6 +836,8 @@
     stopChatPolling();
     myUsername = null;
     csrfToken = null;
+    clearRoomKey();
+    cancelReply();
     // Re-bootstrap to pick up a fresh session/CSRF token, then land on essay.
     var res = await fetch('/api/session', { credentials: 'same-origin' }).catch(function () { return null; });
     if (res) {
@@ -400,10 +851,62 @@
   // nav with active-section highlighting, and scroll-progress rail.
   // ---------------------------------------------------------------------
 
-  var threshold = document.getElementById('threshold-mark');
-  threshold.addEventListener('click', function () {
-    setGateError('');
-    showView('gate');
+  // ---------------------------------------------------------------------
+  // Entry to the gate is now keyboard-only: hold Q+W+O+P together while on
+  // the essay page. There's no visible button hinting this exists. F5 is a
+  // quick-escape back to the essay page from anywhere past it (gate, setup,
+  // or chat) — it's intercepted (default refresh suppressed) only when
+  // there's actually somewhere to escape from; on the essay page itself F5
+  // behaves like a normal refresh.
+  // ---------------------------------------------------------------------
+
+  var ENTRY_COMBO = ['q', 'w', 'o', 'p'];
+  var heldKeys = Object.create(null);
+  var entryComboFired = false;
+
+  function entryComboHeld() {
+    return ENTRY_COMBO.every(function (k) { return heldKeys[k]; });
+  }
+
+  function isTypingTarget(el) {
+    if (!el) return false;
+    var tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'F5') {
+      if (currentView !== 'essay') {
+        e.preventDefault();
+        setGateError('');
+        showView('essay');
+      }
+      return;
+    }
+
+    var k = e.key ? e.key.toLowerCase() : '';
+    if (ENTRY_COMBO.indexOf(k) === -1) return;
+    if (isTypingTarget(e.target)) return; // don't hijack typing into the password/username/message fields
+
+    heldKeys[k] = true;
+    if (!entryComboFired && currentView === 'essay' && entryComboHeld()) {
+      entryComboFired = true;
+      setGateError('');
+      showView('gate');
+    }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    var k = e.key ? e.key.toLowerCase() : '';
+    if (ENTRY_COMBO.indexOf(k) !== -1) delete heldKeys[k];
+    if (!entryComboHeld()) entryComboFired = false;
+  });
+
+  // Held keys can't be tracked across a focus/tab switch — reset so a
+  // stale key doesn't silently count toward the next attempt.
+  window.addEventListener('blur', function () {
+    heldKeys = Object.create(null);
+    entryComboFired = false;
   });
 
   var essaySections = document.querySelectorAll('.essay section');
@@ -424,33 +927,64 @@
     essaySections.forEach(function (s) { s.classList.add('in-view'); });
   }
 
-  // Index nav: click a dot to smooth-scroll to its section; highlight the
-  // dot matching whichever tradition section is currently in view.
-  var indexNav = document.getElementById('index-nav');
-  var indexDots = Array.prototype.slice.call(document.querySelectorAll('.index-dot'));
-  indexDots.forEach(function (dot) {
-    dot.addEventListener('click', function () {
-      var target = document.getElementById(dot.dataset.target);
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Sidebar navigation: click a link to smooth-scroll to its section (a
+  // "sublink" additionally jumps straight to the matching research-studio
+  // tab). Whichever tracked section is currently in view gets its link(s)
+  // highlighted, so the sidebar always shows roughly where you are.
+  var sidebarNav = document.getElementById('sidebar-nav');
+  var navToggle = document.getElementById('nav-toggle');
+  var navScrim = document.getElementById('nav-scrim');
+  var sidebarLinks = Array.prototype.slice.call(document.querySelectorAll('.sidebar-link, .sidebar-sublink'));
+
+  function closeMobileNav() {
+    sidebarNav.classList.remove('is-open');
+    navToggle.setAttribute('aria-expanded', 'false');
+    navScrim.hidden = true;
+  }
+  function openMobileNav() {
+    sidebarNav.classList.add('is-open');
+    navToggle.setAttribute('aria-expanded', 'true');
+    navScrim.hidden = false;
+  }
+  navToggle.addEventListener('click', function () {
+    if (sidebarNav.classList.contains('is-open')) closeMobileNav(); else openMobileNav();
+  });
+  navScrim.addEventListener('click', closeMobileNav);
+
+  sidebarLinks.forEach(function (link) {
+    link.addEventListener('click', function (e) {
+      e.preventDefault();
+      var target = document.getElementById(link.dataset.target);
+      if (link.dataset.panel) {
+        var tabBtn = document.querySelector('.research-tab[data-panel="' + link.dataset.panel + '"]');
+        if (tabBtn) tabBtn.click();
+      }
+      // Always align to the section's top edge (with a bit of breathing room
+      // via `scroll-margin-top` in CSS), not center — the active-link
+      // IntersectionObserver below watches a band near the top of the
+      // viewport, matching this, rather than the middle.
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      closeMobileNav();
     });
   });
 
-  var accentSections = Array.prototype.slice.call(document.querySelectorAll('.essay section[data-accent]'));
-  if (accentSections.length && 'IntersectionObserver' in window) {
+  var trackedSections = Array.prototype.slice.call(document.querySelectorAll(
+    '#hero, #research-studio, #lab-notes, #quiz-deck, #field-notes, .essay section[data-accent], #sec-closing'
+  ));
+  if (trackedSections.length && 'IntersectionObserver' in window) {
     var navObserver = new IntersectionObserver(
       function (entries) {
         entries.forEach(function (entry) {
-          var dot = indexNav.querySelector('[data-target="' + entry.target.id + '"]');
-          if (!dot) return;
-          if (entry.isIntersecting) {
-            indexDots.forEach(function (d) { d.classList.remove('is-active'); });
-            dot.classList.add('is-active');
-          }
+          if (!entry.isIntersecting) return;
+          var links = sidebarNav.querySelectorAll('[data-target="' + entry.target.id + '"]');
+          if (!links.length) return;
+          sidebarLinks.forEach(function (l) { l.classList.remove('is-active'); });
+          links.forEach(function (l) { l.classList.add('is-active'); });
         });
       },
-      { threshold: 0.5 }
+      { threshold: 0.25, rootMargin: '0px 0px -55% 0px' }
     );
-    accentSections.forEach(function (s) { navObserver.observe(s); });
+    trackedSections.forEach(function (s) { navObserver.observe(s); });
   }
 
   // Scroll-progress rail across the whole page.

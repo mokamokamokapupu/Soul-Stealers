@@ -116,6 +116,80 @@ image-processing library, re-encoding every upload (e.g. to a fixed-size
 PNG) instead of storing the original bytes verbatim would be a further
 hardening step.
 
+## 6. Chat image uploads
+
+Same threat model and defenses as profile pictures (section 5) — magic-byte
+sniffing via `detectImageType`, a size cap (5MB, enforced while streaming),
+no trust in client filename/`Content-Type`, write-to-temp-then-rename, and
+the same `stage === 'active'` + CSRF gating. The one difference: each chat
+image gets a fresh random id (`crypto.randomUUID()`) rather than being keyed
+to a username, since a room can have many images per person and — unlike an
+avatar — a chat image is never replaced in place.
+
+**Known limitation:** chat images are stored and served as plaintext files
+server-side (not covered by the encryption in section 7 below) — anyone with
+disk access to the server, or the server operator, can view them. This is
+the same trust boundary the room already had for "who can see this content
+at all" (an active, password-gated session), just not extended to
+content-at-rest confidentiality for images specifically. If that matters for
+your use of this app, don't send images you wouldn't want the operator to be
+able to see.
+
+## 7. Chat message content encryption
+
+Text messages are encrypted client-side (AES-GCM, Web Crypto API) with a key
+derived (`PBKDF2`, 150,000 iterations, SHA-256) from the site password
+itself — the one secret every room member already has. The server stores
+and relays only the ciphertext in `data/messages.json`; it has no way to
+decrypt it, including the server operator reading that file directly.
+
+**How the key is obtained, and its limits:**
+- The key is derived client-side at the moment someone types the password
+  into the gate — the password itself is never transmitted for this
+  purpose, only used locally to compute the key.
+- It's cached in that browser tab's `sessionStorage` so a page refresh
+  doesn't require re-entering the password. Opening the room in a new tab
+  (or after closing the old one) shows an "unlock" prompt asking for the
+  password again, purely to rebuild the same key locally — again, nothing
+  is sent to the server for this step.
+- Because the salt is fixed and public (not secret — all the entropy comes
+  from the password), **anyone who knows the site password can derive the
+  same key and read every message.** This doesn't add a new privacy
+  boundary beyond "who's allowed in the room" — it adds protection against
+  a different threat: someone with access to the server's disk, backups, or
+  logs (including the operator) being able to read message content without
+  also knowing the room password.
+- Reactions/edits aren't a thing here, so there's no metadata leak from
+  those — but message *timestamps* and the *sender's username* are still
+  visible to the server in the clear (needed for ordering, rate limiting,
+  and display), only the message text itself is opaque to it.
+- If a message can't be decrypted (wrong/missing key, or a message stored
+  before this feature existed), the UI shows a "🔒 Unable to decrypt this
+  message" placeholder rather than crashing or showing garbage.
+
+## Network privacy / "untraceability"
+
+This app follows standard privacy hygiene rather than anything built to
+defeat abuse investigation or make senders unidentifiable within the room:
+
+- The server never sends any client's IP address to any other client — it's
+  used only in-memory, only for the login rate-limiter (section 3), and is
+  never written to disk or exposed through any API response.
+- The session cookie (`sid`) is `HttpOnly` (invisible to JavaScript, so a
+  malicious script on the page can't read or exfiltrate it) and is likewise
+  never shown to other users. There's no "device ID" concept anywhere in
+  this app to begin with — nothing device-specific is collected, fingerprinted,
+  or transmitted.
+- Transport security (HTTPS) is a hosting-layer concern, not something this
+  zero-dependency app can add to itself — see "No HTTPS built in" below.
+  Put it behind TLS if you deploy it publicly; that's what actually protects
+  traffic from network-level observation, not application code.
+- What this app deliberately does **not** do: route traffic through
+  Tor/relays, pad or delay messages to defeat timing analysis, or otherwise
+  try to make the room resistant to a legal/abuse investigation. Within the
+  room, whoever posts a message is still visibly that username to everyone
+  else present — that's necessary for the chat to function as a chat.
+
 ## Known limitations (by design, for a single-process demo)
 
 - **Chat history persists; usernames and sessions don't.** Messages are

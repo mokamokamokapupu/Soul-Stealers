@@ -32,18 +32,26 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.join(ROOT, 'data');
 const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
+const CHAT_IMAGES_DIR = path.join(DATA_DIR, 'chat-images');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const MESSAGES_PATH = path.join(DATA_DIR, 'messages.json');
 const PORT = process.env.PORT || 3000;
 
 const MAX_BODY_BYTES = 8 * 1024; // 8KB — plenty for password/username/chat payloads
 const MAX_AVATAR_BYTES = 3 * 1024 * 1024; // 3MB — reasonable cap for a profile picture
+const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB — cap for an in-chat image
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
 const RESERVED_USERNAMES = new Set(['admin', 'system', 'moderator', 'root', 'soulstudies']);
-const MAX_MESSAGE_LEN = 500;
+// Message text is now an opaque, client-encrypted (AES-GCM) blob, base64-encoded
+// with a 12-byte IV prepended — see public/assets/app.js. The server never sees
+// plaintext chat content, so this cap sizes the ciphertext, not the message a
+// person actually typed (the real 500-character limit is still enforced
+// client-side on the input itself before it's ever encrypted).
+const MAX_MESSAGE_LEN = 4000;
 const MAX_MESSAGES_KEPT = 300;
 const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
+const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
 
 // ---------------------------------------------------------------------------
 // Setup / config (password hash lives ONLY here, server-side, never sent out)
@@ -51,6 +59,7 @@ const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(AVATARS_DIR)) fs.mkdirSync(AVATARS_DIR, { recursive: true });
+if (!fs.existsSync(CHAT_IMAGES_DIR)) fs.mkdirSync(CHAT_IMAGES_DIR, { recursive: true });
 
 function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
@@ -130,8 +139,19 @@ const loginAttempts = new Map();
  */
 const usernameOwners = new Map();
 
-/** { id, username, text, ts }. Persisted to disk so chat history survives restarts. */
+/**
+ * { id, username, text, ts, type }. Persisted to disk so chat history
+ * survives restarts. `text` for type:'text' messages is an opaque
+ * client-encrypted blob (see MAX_MESSAGE_LEN comment above) — the server
+ * stores and relays it byte-for-byte and never decrypts it. type:'image'
+ * messages instead carry imageId/imageExt pointing at a file under
+ * data/chat-images/ and are NOT encrypted (see SECURITY.md).
+ */
 const messages = loadJsonArray(MESSAGES_PATH);
+
+/** id -> message, kept in sync with `messages` for O(1) reply-target lookup. */
+const messagesById = new Map();
+for (const m of messages) messagesById.set(m.id, m);
 
 /**
  * lowercase username -> file extension ('jpg'|'png'|'webp') of an uploaded
@@ -148,6 +168,45 @@ for (const entry of fs.readdirSync(AVATARS_DIR, { withFileTypes: true })) {
   if (ALLOWED_AVATAR_EXTS.includes(ext) && USERNAME_RE.test(base)) {
     avatarExtByUser.set(base, ext);
   }
+}
+
+/** chat-image id (uuid) -> file extension. Rebuilt from disk at startup,
+ * mirroring avatarExtByUser above but keyed by the random per-image id
+ * rather than username, since a room can have many images per person. */
+const chatImageExtById = new Map();
+for (const entry of fs.readdirSync(CHAT_IMAGES_DIR, { withFileTypes: true })) {
+  if (!entry.isFile()) continue;
+  const ext = path.extname(entry.name).slice(1).toLowerCase();
+  const base = path.basename(entry.name, path.extname(entry.name)).toLowerCase();
+  if (ALLOWED_AVATAR_EXTS.includes(ext)) {
+    chatImageExtById.set(base, ext);
+  }
+}
+
+/** Resolve an optional client-supplied reply target into a safe, server-
+ * verified preview object — or undefined if it doesn't check out. Never
+ * trusts client-provided username/text for the preview: it's always looked
+ * up from the actual stored message. For a type:'text' parent, the parent's
+ * ciphertext is copied onto the reply so any recipient can render the quoted
+ * snippet locally (with their own room key) even if that older message has
+ * since scrolled out of their poll window — the server still never sees
+ * plaintext, it's just shuttling opaque bytes around a second time. */
+function resolveReplyTo(rawId) {
+  if (typeof rawId !== 'string' || !REPLY_ID_RE.test(rawId)) return undefined;
+  const parent = messagesById.get(rawId);
+  if (!parent) return undefined;
+  const preview = { id: parent.id, username: parent.username, ts: parent.ts, type: parent.type || 'text' };
+  if (preview.type === 'text') preview.cipher = parent.text;
+  return preview;
+}
+
+/** Shared 400ms-between-messages throttle for both text and image sends,
+ * so the two endpoints can't be combined to double the effective rate. */
+function tooFast(session) {
+  const now = Date.now();
+  if (session.lastMessageAt && now - session.lastMessageAt < 400) return true;
+  session.lastMessageAt = now;
+  return false;
 }
 
 function loadJsonArray(filePath) {
@@ -393,6 +452,18 @@ function saveAvatarFile(usernameKey, ext, buf) {
   avatarExtByUser.set(usernameKey, ext);
 }
 
+function saveChatImageFile(id, ext, buf) {
+  // Chat images are content-addressed by a fresh random id each time (unlike
+  // avatars, which are replaced in place per-username), so there's no stale
+  // file to clean up here — just write-to-temp-then-rename as usual so a
+  // concurrent read never sees a partially written file.
+  const finalPath = path.join(CHAT_IMAGES_DIR, id + '.' + ext);
+  const tmpPath = finalPath + '.tmp-' + crypto.randomBytes(6).toString('hex');
+  fs.writeFileSync(tmpPath, buf, { mode: 0o600 });
+  fs.renameSync(tmpPath, finalPath);
+  chatImageExtById.set(id, ext);
+}
+
 function escapeXml(str) {
   return String(str).replace(/[<>&"']/g, (c) => ({
     '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;',
@@ -563,27 +634,112 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { messages: recent, serverTime: Date.now() });
   }
 
-  // POST /api/chat/send — requires an active session
+  // POST /api/chat/send — requires an active session. `text` is an opaque
+  // client-encrypted blob (see MAX_MESSAGE_LEN comment) — the server just
+  // stores and relays it. Optional `replyTo` is the id of the message being
+  // replied to; resolveReplyTo() re-derives everything about it server-side
+  // rather than trusting whatever the client claims.
   if (pathname === '/api/chat/send' && req.method === 'POST') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
-
-    const now = Date.now();
-    if (session.lastMessageAt && now - session.lastMessageAt < 400) {
-      return sendJson(res, 429, { error: 'Sending too fast.' });
-    }
+    if (tooFast(session)) return sendJson(res, 429, { error: 'Sending too fast.' });
 
     let body;
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
     const text = sanitizeText(body.text, MAX_MESSAGE_LEN);
-    if (!text) return sendJson(res, 400, { error: 'Message must be 1-500 characters.' });
+    if (!text) return sendJson(res, 400, { error: 'Message could not be sent.' });
 
-    session.lastMessageAt = now;
-    const msg = { id: crypto.randomUUID(), username: session.username, text, ts: now };
+    const now = Date.now();
+    const msg = { id: crypto.randomUUID(), username: session.username, type: 'text', text, ts: now };
+    const replyTo = resolveReplyTo(body.replyTo);
+    if (replyTo) msg.replyTo = replyTo;
     messages.push(msg);
-    if (messages.length > MAX_MESSAGES_KEPT) messages.splice(0, messages.length - MAX_MESSAGES_KEPT);
+    messagesById.set(msg.id, msg);
+    if (messages.length > MAX_MESSAGES_KEPT) {
+      messages.splice(0, messages.length - MAX_MESSAGES_KEPT);
+      messagesById.clear();
+      for (const m of messages) messagesById.set(m.id, m);
+    }
     scheduleSave();
     return sendJson(res, 200, { ok: true, message: msg });
+  }
+
+  // POST /api/chat/image[?replyTo=<id>] — requires an active session. The
+  // raw request body is the image itself (mirrors /api/avatar). Images are
+  // NOT end-to-end encrypted in this version — see SECURITY.md — they're
+  // gated the same way avatars are: only reachable by an authenticated,
+  // active session, never served from the public static directory.
+  if (pathname === '/api/chat/image' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (tooFast(session)) return sendJson(res, 429, { error: 'Sending too fast.' });
+
+    let buf;
+    try {
+      buf = await readRawBody(req, MAX_CHAT_IMAGE_BYTES);
+    } catch (e) {
+      return sendJson(res, e.status || 400, { error: e.message });
+    }
+    if (!buf || buf.length === 0) return sendJson(res, 400, { error: 'No image received.' });
+
+    const detected = detectImageType(buf);
+    if (!detected) {
+      return sendJson(res, 400, { error: 'Only JPEG, PNG, or WebP images are allowed.' });
+    }
+
+    const now = Date.now();
+    const imgId = crypto.randomUUID();
+    try {
+      saveChatImageFile(imgId, detected.ext, buf);
+    } catch (e) {
+      return sendJson(res, 500, { error: 'Could not save image.' });
+    }
+
+    const url = new URL(req.url, 'http://internal');
+    const msg = {
+      id: crypto.randomUUID(),
+      username: session.username,
+      type: 'image',
+      imageId: imgId,
+      imageExt: detected.ext,
+      ts: now,
+    };
+    const replyTo = resolveReplyTo(url.searchParams.get('replyTo'));
+    if (replyTo) msg.replyTo = replyTo;
+    messages.push(msg);
+    messagesById.set(msg.id, msg);
+    if (messages.length > MAX_MESSAGES_KEPT) {
+      messages.splice(0, messages.length - MAX_MESSAGES_KEPT);
+      messagesById.clear();
+      for (const m of messages) messagesById.set(m.id, m);
+    }
+    scheduleSave();
+    return sendJson(res, 200, { ok: true, message: msg });
+  }
+
+  // GET /api/chat-image/<id> — serve a previously sent chat image. Gated
+  // behind the same "active session" check as chat itself, exactly like
+  // /api/avatar/<username> below.
+  if (pathname.startsWith('/api/chat-image/') && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+
+    const id = pathname.slice('/api/chat-image/'.length);
+    if (!REPLY_ID_RE.test(id)) return sendJson(res, 400, { error: 'Invalid image id' });
+    const ext = chatImageExtById.get(id);
+    if (!ext) return sendJson(res, 404, { error: 'Not found' });
+
+    const filePath = path.join(CHAT_IMAGES_DIR, id + '.' + ext);
+    fs.readFile(filePath, (err, data) => {
+      if (err) return sendJson(res, 404, { error: 'Not found' });
+      res.writeHead(200, {
+        'Content-Type': AVATAR_MIME[ext],
+        // Each id is freshly random and content never changes once sent,
+        // so this is safe to cache hard, unlike the mutable avatar URLs.
+        'Cache-Control': 'private, max-age=31536000, immutable',
+      });
+      res.end(data);
+    });
+    return;
   }
 
   // POST /api/logout
