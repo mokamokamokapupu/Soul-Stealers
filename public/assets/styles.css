@@ -459,6 +459,19 @@ button:disabled{ opacity: 0.55; cursor: not-allowed; }
   margin: 0;
 }
 
+.room-tag{
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  color: var(--verdigris-bright);
+  border: 1px solid rgba(139,115,85,0.4);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  text-transform: lowercase;
+}
+
+.room-tag:empty{ display: none; }
+
 .chat-identity{
   display: flex;
   align-items: center;

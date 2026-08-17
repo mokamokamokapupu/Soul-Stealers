@@ -54,10 +54,19 @@
 
   var csrfToken = null;
   var myUsername = null;
+  var myRoom = null;
+
+  var ROOM_LABELS = { overwatch: 'Overwatch', meowmeow: 'meowmeow' };
 
   function applySessionData(data) {
     csrfToken = data.csrfToken || csrfToken;
     if (data.username) myUsername = data.username;
+    if (data.room) myRoom = data.room;
+  }
+
+  function updateRoomTag() {
+    if (!roomTagEl) return;
+    roomTagEl.textContent = myRoom ? (ROOM_LABELS[myRoom] || myRoom) : '';
   }
 
   // ---------------------------------------------------------------------
@@ -201,6 +210,7 @@
       myUsername = data.username;
       whoNameEl.textContent = myUsername || '—';
       myAvatarEl.src = avatarUrl(myUsername);
+      updateRoomTag();
       if (cryptoAvailable) roomKey = await loadCachedRoomKey();
       setUnlockVisible(cryptoAvailable && !roomKey);
     }
@@ -308,6 +318,7 @@
           setupInput.value = '';
           whoNameEl.textContent = myUsername;
           myAvatarEl.src = avatarUrl(myUsername);
+          updateRoomTag();
           showView('chat');
         }, 280);
         return;
@@ -330,6 +341,7 @@
   var msgInput = document.getElementById('msg-input');
   var sendBtn = document.getElementById('send-btn');
   var whoNameEl = document.getElementById('who-name');
+  var roomTagEl = document.getElementById('room-tag');
   var logoutBtn = document.getElementById('logout-btn');
   var myAvatarEl = document.getElementById('my-avatar');
   var avatarInput = document.getElementById('avatar-input');
@@ -835,9 +847,11 @@
     } catch (e) { /* best effort */ }
     stopChatPolling();
     myUsername = null;
+    myRoom = null;
     csrfToken = null;
     clearRoomKey();
     cancelReply();
+    updateRoomTag();
     // Re-bootstrap to pick up a fresh session/CSRF token, then land on essay.
     var res = await fetch('/api/session', { credentials: 'same-origin' }).catch(function () { return null; });
     if (res) {
