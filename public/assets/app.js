@@ -19,7 +19,7 @@
   // gate had never been passed.
   // ---------------------------------------------------------------------
 
-  var VIEWS = ['essay', 'gate', 'setup', 'chat'];
+  var VIEWS = ['essay', 'gate', 'setup', 'chat', 'gpt', 'games'];
   var currentView = 'essay';
 
   function showView(name) {
@@ -30,19 +30,43 @@
     });
     document.body.dataset.view = name;
     var wasChat = currentView === 'chat';
+    var wasGames = currentView === 'games';
     currentView = name;
+    applyUiScale();
 
     if (name === 'chat') {
       startChatPolling();
     } else if (wasChat) {
       stopChatPolling();
     }
+    if (wasGames && name !== 'games') leaveGames();
+    if (name === 'games') enterGames();
+    // Chat polling doubles as a keepalive; the assistant and arcade views
+    // have no steady traffic of their own, so ping the session there to
+    // keep the server from treating this username's claim as stale.
+    setKeepalive(name === 'gpt' || name === 'games');
+
     if (name === 'gate') {
       var pw = document.getElementById('password');
       if (pw) pw.focus();
     } else if (name === 'setup') {
       var un = document.getElementById('username');
       if (un) un.focus();
+    } else if (name === 'gpt') {
+      var gi = document.getElementById('gpt-input');
+      if (gi) gi.focus();
+    }
+  }
+
+  var keepaliveTimer = null;
+  function setKeepalive(on) {
+    if (on && !keepaliveTimer) {
+      keepaliveTimer = setInterval(function () {
+        fetch('/api/session', { credentials: 'same-origin' }).catch(function () { /* transient */ });
+      }, 45000);
+    } else if (!on && keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
     }
   }
 
@@ -366,6 +390,7 @@
   var pollTimer = null;
   var pollInFlight = false; // guards against overlapping poll() calls racing on `since`
   var renderedIds = Object.create(null); // message id -> true, once its DOM node exists — the actual fix for double-rendered messages
+  var lastAuthor = null; // who sent the most recently rendered message, for grouping
   var replyingTo = null; // { id, username, preview } or null
 
   var NEAR_BOTTOM_PX = 80;
@@ -522,6 +547,7 @@
       // Re-render anything currently on screen with the freshly unlocked key.
       messagesEl.innerHTML = '';
       renderedIds = Object.create(null);
+      lastAuthor = null;
       since = 0;
       await poll();
       scrollToBottom();
@@ -567,27 +593,39 @@
     if (renderedIds[m.id]) { since = Math.max(since, m.ts); return; }
     renderedIds[m.id] = true;
 
+    // Consecutive messages from the same person render as one stream: no
+    // repeated avatar or name, just the bubble, aligned under the first.
+    var grouped = lastAuthor !== null && m.username === lastAuthor;
+
     var wrap = document.createElement('div');
-    wrap.className = 'msg msg-enter' + (m.username === myUsername ? ' self' : '');
+    wrap.className = 'msg msg-enter' + (m.username === myUsername ? ' self' : '') + (grouped ? ' grouped' : '');
     wrap.dataset.msgId = m.id;
 
-    var avatar = document.createElement('img');
-    avatar.className = 'avatar';
-    avatar.alt = '';
-    avatar.src = avatarUrl(m.username);
-    avatar.loading = 'lazy';
+    var lead;
+    if (grouped) {
+      lead = document.createElement('div');
+      lead.className = 'avatar-spacer';
+    } else {
+      lead = document.createElement('img');
+      lead.className = 'avatar';
+      lead.alt = '';
+      lead.src = avatarUrl(m.username);
+      lead.loading = 'lazy';
+    }
 
     var body = document.createElement('div');
     body.className = 'body';
 
-    var meta = document.createElement('div');
-    meta.className = 'meta';
-    var nameSpan = document.createElement('span');
-    nameSpan.className = 'name';
-    nameSpan.textContent = m.username; // textContent — never innerHTML — no HTML injection possible
-    meta.appendChild(nameSpan);
-    meta.appendChild(document.createTextNode(' · ' + fmtTime(m.ts)));
-    body.appendChild(meta);
+    if (!grouped) {
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'name';
+      nameSpan.textContent = m.username; // textContent — never innerHTML — no HTML injection possible
+      meta.appendChild(nameSpan);
+      meta.appendChild(document.createTextNode(' · ' + fmtTime(m.ts)));
+      body.appendChild(meta);
+    }
 
     if (m.replyTo) {
       body.appendChild(await buildReplyQuoteEl(m.replyTo));
@@ -633,9 +671,10 @@
     actions.appendChild(replyBtn);
     body.appendChild(actions);
 
-    wrap.appendChild(avatar);
+    wrap.appendChild(lead);
     wrap.appendChild(body);
     messagesEl.appendChild(wrap);
+    lastAuthor = m.username;
     since = Math.max(since, m.ts);
 
     // Let the browser paint the base state before triggering the enter
@@ -694,6 +733,7 @@
     if (pollTimer) return;
     since = 0;
     renderedIds = Object.create(null);
+    lastAuthor = null;
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
     poll().then(function () { scrollToBottom(false); });
     pollTimer = setInterval(poll, 1800);
@@ -857,8 +897,766 @@
     if (res) {
       try { applySessionData(await res.json()); } catch (e) { /* ignore */ }
     }
+    resetGpt();
+    lastSubmitted = { snake: 0, tetris: 0, cookie: 0 };
     showView('essay');
   });
+
+  // ---------------------------------------------------------------------
+  // Appearance settings: interface scale + color skins, persisted locally.
+  // The scale works by resizing the root font (everything downstream is
+  // rem-based); skins swap the CSS custom properties while in the private
+  // views only, so the public essay always looks untouched.
+  // ---------------------------------------------------------------------
+
+  var SCALE_KEY = 'ss_ui_scale';
+  var SKIN_KEY = 'ss_chat_skin';
+  var SKINS = ['', 'abyss', 'plum', 'crimson', 'paper'];
+  var uiScale = 1;
+  var chatSkin = '';
+  try {
+    var savedScale = parseFloat(localStorage.getItem(SCALE_KEY));
+    if (savedScale >= 0.8 && savedScale <= 1.3) uiScale = savedScale;
+    var savedSkin = localStorage.getItem(SKIN_KEY);
+    if (SKINS.indexOf(savedSkin) > 0) chatSkin = savedSkin;
+  } catch (e) { /* private mode — settings just won't persist */ }
+
+  var settingsBtn = document.getElementById('chat-settings-btn');
+  var settingsPanel = document.getElementById('chat-settings');
+  var scaleInput = document.getElementById('ui-scale');
+  var scaleValue = document.getElementById('ui-scale-value');
+  var skinButtons = Array.prototype.slice.call(document.querySelectorAll('.skin-swatch'));
+
+  function applyUiScale() {
+    var scaled = currentView === 'chat' || currentView === 'gpt' || currentView === 'games';
+    document.documentElement.style.fontSize = (scaled && uiScale !== 1) ? (uiScale * 100) + '%' : '';
+  }
+
+  function applySkin() {
+    if (chatSkin) {
+      document.body.dataset.chatSkin = chatSkin;
+    } else {
+      delete document.body.dataset.chatSkin;
+    }
+    skinButtons.forEach(function (b) {
+      b.classList.toggle('is-active', (b.dataset.skin || '') === chatSkin);
+    });
+  }
+
+  settingsBtn.addEventListener('click', function () {
+    var open = settingsPanel.hidden;
+    settingsPanel.hidden = !open;
+    settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    settingsBtn.classList.toggle('is-active', open);
+  });
+
+  scaleInput.value = String(uiScale);
+  scaleValue.textContent = Math.round(uiScale * 100) + '%';
+  scaleInput.addEventListener('input', function () {
+    uiScale = parseFloat(scaleInput.value) || 1;
+    scaleValue.textContent = Math.round(uiScale * 100) + '%';
+    try { localStorage.setItem(SCALE_KEY, String(uiScale)); } catch (e) { /* ignore */ }
+    applyUiScale();
+  });
+
+  skinButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      chatSkin = btn.dataset.skin || '';
+      try { localStorage.setItem(SKIN_KEY, chatSkin); } catch (e) { /* ignore */ }
+      applySkin();
+    });
+  });
+  applySkin();
+
+  // ---------------------------------------------------------------------
+  // Assistant view (G+P+T). History lives only in this tab's memory; the
+  // server relays the conversation to its configured backend and never
+  // stores it.
+  // ---------------------------------------------------------------------
+
+  var gptMessagesEl = document.getElementById('gpt-messages');
+  var gptForm = document.getElementById('gpt-form');
+  var gptInput = document.getElementById('gpt-input');
+  var gptSend = document.getElementById('gpt-send');
+  var gptFallback = document.getElementById('gpt-fallback');
+  var gptBack = document.getElementById('gpt-back');
+  var gptClear = document.getElementById('gpt-clear');
+  var GPT_EMPTY_HTML = '<p class="empty-state">Ask anything. This conversation lives only in this tab and is never stored.</p>';
+  var gptHistory = [];
+  var gptBusy = false;
+
+  function addGptBubble(role, text, pending) {
+    var empty = gptMessagesEl.querySelector('.empty-state');
+    if (empty) empty.remove();
+    var el = document.createElement('div');
+    el.className = 'gpt-msg ' + role + (pending ? ' pending' : '');
+    el.textContent = text;
+    gptMessagesEl.appendChild(el);
+    gptMessagesEl.scrollTop = gptMessagesEl.scrollHeight;
+    return el;
+  }
+
+  function resetGpt() {
+    gptHistory = [];
+    gptMessagesEl.innerHTML = GPT_EMPTY_HTML;
+    gptFallback.hidden = true;
+  }
+
+  gptClear.addEventListener('click', resetGpt);
+  gptBack.addEventListener('click', function () { showView('chat'); });
+
+  gptForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    if (gptBusy) return;
+    var text = gptInput.value.trim();
+    if (!text) return;
+    gptInput.value = '';
+    gptFallback.hidden = true;
+    gptHistory.push({ role: 'user', content: text });
+    addGptBubble('user', text);
+    var pendingEl = addGptBubble('assistant', '…', true);
+    gptBusy = true;
+    gptSend.disabled = true;
+    try {
+      var res = await fetch('/api/gpt', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({
+          messages: gptHistory.slice(-12).map(function (m) {
+            return { role: m.role, content: m.content.slice(0, 6000) };
+          }),
+        }),
+      });
+      if (res.status === 403) { showView('gate'); return; }
+      var data = await res.json();
+      if (res.ok && data.reply) {
+        pendingEl.classList.remove('pending');
+        pendingEl.textContent = data.reply;
+        gptHistory.push({ role: 'assistant', content: data.reply });
+      } else {
+        pendingEl.remove();
+        gptHistory.pop();
+        gptInput.value = text;
+        gptFallback.hidden = false;
+      }
+    } catch (err) {
+      pendingEl.remove();
+      gptHistory.pop();
+      gptInput.value = text;
+      gptFallback.hidden = false;
+    } finally {
+      gptBusy = false;
+      gptSend.disabled = false;
+      gptMessagesEl.scrollTop = gptMessagesEl.scrollHeight;
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Arcade (G+M+E): Snake, Tetris, and a cookie clicker, with a per-room
+  // leaderboard keyed to chat usernames. Scores are personal bests; the
+  // server only ever raises them.
+  // ---------------------------------------------------------------------
+
+  var gamesWho = document.getElementById('games-who');
+  var gamesBack = document.getElementById('games-back');
+  var gameTabs = Array.prototype.slice.call(document.querySelectorAll('.game-tab'));
+  var activeGame = 'snake';
+  var lastSubmitted = { snake: 0, tetris: 0, cookie: 0 };
+
+  gamesBack.addEventListener('click', function () { showView('chat'); });
+
+  function fmtScore(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'b';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'm';
+    if (n >= 1e4) return Math.round(n / 1e3) + 'k';
+    return String(Math.floor(n));
+  }
+
+  function renderLeaderboard(scores) {
+    ['snake', 'tetris', 'cookie'].forEach(function (game) {
+      var ol = document.getElementById('lb-' + game);
+      if (!ol) return;
+      ol.innerHTML = '';
+      var list = (scores && scores[game]) || [];
+      if (!list.length) {
+        var empty = document.createElement('li');
+        empty.className = 'lb-empty';
+        empty.textContent = 'no scores yet';
+        ol.appendChild(empty);
+        return;
+      }
+      list.forEach(function (row) {
+        var li = document.createElement('li');
+        if (myUsername && row.username && row.username.toLowerCase() === myUsername.toLowerCase()) {
+          li.classList.add('is-me');
+        }
+        var name = document.createElement('span');
+        name.className = 'lb-name';
+        name.textContent = row.username;
+        var val = document.createElement('b');
+        val.textContent = fmtScore(row.score);
+        li.appendChild(name);
+        li.appendChild(val);
+        ol.appendChild(li);
+      });
+    });
+  }
+
+  async function fetchLeaderboard() {
+    try {
+      var res = await fetch('/api/games/scores', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      var data = await res.json();
+      renderLeaderboard(data.scores);
+    } catch (e) { /* leaderboard just stays as-is */ }
+  }
+
+  async function submitScore(game, score) {
+    score = Math.floor(score);
+    if (!(score > 0) || score <= lastSubmitted[game]) return;
+    lastSubmitted[game] = score;
+    try {
+      var res = await fetch('/api/games/score', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ game: game, score: score }),
+      });
+      if (res.ok) {
+        var data = await res.json();
+        if (data.scores) renderLeaderboard(data.scores);
+      }
+    } catch (e) { /* score will resubmit on the next event */ }
+  }
+
+  function setActiveGame(name) {
+    if (activeGame !== name) {
+      stopSnake(true);
+      stopTetris(true);
+    }
+    activeGame = name;
+    gameTabs.forEach(function (t) { t.classList.toggle('is-active', t.dataset.game === name); });
+    document.getElementById('stage-snake').hidden = name !== 'snake';
+    document.getElementById('stage-tetris').hidden = name !== 'tetris';
+    document.getElementById('stage-cookie').hidden = name !== 'cookie';
+  }
+
+  gameTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () { setActiveGame(tab.dataset.game); });
+  });
+
+  function enterGames() {
+    gamesWho.textContent = myUsername || '—';
+    loadCookieState();
+    startCookieLoop();
+    fetchLeaderboard();
+  }
+
+  function leaveGames() {
+    stopSnake(true);
+    stopTetris(true);
+    submitScore('cookie', cookie.total);
+    stopCookieLoop();
+  }
+
+  // ---- snake ---------------------------------------------------------
+
+  var snakeCanvas = document.getElementById('snake-canvas');
+  var snakeCtx = snakeCanvas.getContext('2d');
+  var snakeOverlay = document.getElementById('snake-overlay');
+  var snakeMsg = document.getElementById('snake-msg');
+  var snakeStartBtn = document.getElementById('snake-start');
+  var snakeScoreEl = document.getElementById('snake-score');
+  var snakeBestEl = document.getElementById('snake-best');
+  var SNAKE_CELLS = 19;
+  var SNAKE_PX = 20;
+  var SNAKE_HINT = 'arrows or WASD · eat, grow, don\'t die';
+  var snake = null;
+  var snakeTimer = null;
+  var snakeBest = 0;
+
+  function snakeSpawnFood(s) {
+    while (true) {
+      var p = {
+        x: Math.floor(Math.random() * SNAKE_CELLS),
+        y: Math.floor(Math.random() * SNAKE_CELLS),
+      };
+      var clash = s.body.some(function (b) { return b.x === p.x && b.y === p.y; });
+      if (!clash) return p;
+    }
+  }
+
+  function themeColor(name, fallback) {
+    var v = getComputedStyle(document.body).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  function drawSnake() {
+    snakeCtx.clearRect(0, 0, snakeCanvas.width, snakeCanvas.height);
+    if (!snake) return;
+    var accent = themeColor('--verdigris', '#6f8f76');
+    var bright = themeColor('--verdigris-bright', '#93b89a');
+    snakeCtx.fillStyle = themeColor('--danger', '#a65b4b');
+    snakeCtx.beginPath();
+    snakeCtx.arc(snake.food.x * SNAKE_PX + 10, snake.food.y * SNAKE_PX + 10, 7, 0, Math.PI * 2);
+    snakeCtx.fill();
+    snake.body.forEach(function (b, i) {
+      snakeCtx.fillStyle = i === 0 ? bright : accent;
+      snakeCtx.fillRect(b.x * SNAKE_PX + 1, b.y * SNAKE_PX + 1, SNAKE_PX - 2, SNAKE_PX - 2);
+    });
+  }
+
+  function startSnake() {
+    snake = {
+      body: [{ x: 9, y: 9 }, { x: 8, y: 9 }, { x: 7, y: 9 }],
+      dir: { x: 1, y: 0 },
+      nextDir: { x: 1, y: 0 },
+      score: 0,
+      delay: 130,
+    };
+    snake.food = snakeSpawnFood(snake);
+    snakeScoreEl.textContent = '0';
+    snakeOverlay.hidden = true;
+    drawSnake();
+    snakeTimer = setTimeout(snakeTick, snake.delay);
+  }
+
+  function snakeTick() {
+    snakeTimer = null;
+    if (!snake) return;
+    snake.dir = snake.nextDir;
+    var head = { x: snake.body[0].x + snake.dir.x, y: snake.body[0].y + snake.dir.y };
+    var hitWall = head.x < 0 || head.y < 0 || head.x >= SNAKE_CELLS || head.y >= SNAKE_CELLS;
+    var hitSelf = snake.body.some(function (b) { return b.x === head.x && b.y === head.y; });
+    if (hitWall || hitSelf) { endSnake(); return; }
+    snake.body.unshift(head);
+    if (head.x === snake.food.x && head.y === snake.food.y) {
+      snake.score += 10;
+      snakeScoreEl.textContent = String(snake.score);
+      snake.food = snakeSpawnFood(snake);
+      if (snake.delay > 65) snake.delay -= 2;
+    } else {
+      snake.body.pop();
+    }
+    drawSnake();
+    snakeTimer = setTimeout(snakeTick, snake.delay);
+  }
+
+  function endSnake() {
+    if (snakeTimer) { clearTimeout(snakeTimer); snakeTimer = null; }
+    var finalScore = snake ? snake.score : 0;
+    snake = null;
+    if (finalScore > snakeBest) {
+      snakeBest = finalScore;
+      snakeBestEl.textContent = String(finalScore);
+    }
+    snakeMsg.textContent = 'game over · score ' + finalScore;
+    snakeStartBtn.textContent = 'play again';
+    snakeOverlay.hidden = false;
+    submitScore('snake', finalScore);
+  }
+
+  function stopSnake(abandon) {
+    if (snakeTimer) { clearTimeout(snakeTimer); snakeTimer = null; }
+    if (!snake) return;
+    if (abandon && snake.score > 0) submitScore('snake', snake.score);
+    snake = null;
+    snakeMsg.textContent = SNAKE_HINT;
+    snakeStartBtn.textContent = 'play';
+    snakeOverlay.hidden = false;
+  }
+
+  snakeStartBtn.addEventListener('click', startSnake);
+
+  // ---- tetris --------------------------------------------------------
+
+  var tetrisCanvas = document.getElementById('tetris-canvas');
+  var tetrisCtx = tetrisCanvas.getContext('2d');
+  var tetrisNextCanvas = document.getElementById('tetris-next');
+  var tetrisNextCtx = tetrisNextCanvas.getContext('2d');
+  var tetrisOverlay = document.getElementById('tetris-overlay');
+  var tetrisMsg = document.getElementById('tetris-msg');
+  var tetrisStartBtn = document.getElementById('tetris-start');
+  var tetrisScoreEl = document.getElementById('tetris-score');
+  var tetrisLinesEl = document.getElementById('tetris-lines');
+  var tetrisLevelEl = document.getElementById('tetris-level');
+  var TETRIS_HINT = '← → move · ↑ rotate · ↓ soft drop · space hard drop';
+  var TETRIS_COLS = 10;
+  var TETRIS_ROWS = 20;
+  var TETRIS_PX = 24;
+  var TETROMINOES = {
+    I: { color: '#6fc0c9', size: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },
+    J: { color: '#6f93c9', size: 3, cells: [[0, 0], [0, 1], [1, 1], [2, 1]] },
+    L: { color: '#c9a15a', size: 3, cells: [[2, 0], [0, 1], [1, 1], [2, 1]] },
+    O: { color: '#c9c26f', size: 2, cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
+    S: { color: '#6fc9a1', size: 3, cells: [[1, 0], [2, 0], [0, 1], [1, 1]] },
+    T: { color: '#9b7fd6', size: 3, cells: [[1, 0], [0, 1], [1, 1], [2, 1]] },
+    Z: { color: '#c97a6f', size: 3, cells: [[0, 0], [1, 0], [1, 1], [2, 1]] },
+  };
+  var TETRIS_LINE_SCORES = [0, 100, 300, 500, 800];
+  var tetris = null;
+  var tetrisTimer = null;
+
+  function shuffle(arr) {
+    for (var i = arr.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+
+  function tetrisNewPiece() {
+    if (!tetris.bag.length) tetris.bag = shuffle(['I', 'J', 'L', 'O', 'S', 'T', 'Z']);
+    var type = tetris.bag.pop();
+    return {
+      type: type,
+      cells: TETROMINOES[type].cells.map(function (c) { return [c[0], c[1]]; }),
+      x: type === 'O' ? 4 : 3,
+      y: -1,
+    };
+  }
+
+  function tetrisCollides(piece, dx, dy, cells) {
+    var cs = cells || piece.cells;
+    for (var i = 0; i < cs.length; i++) {
+      var bx = piece.x + cs[i][0] + dx;
+      var by = piece.y + cs[i][1] + dy;
+      if (bx < 0 || bx >= TETRIS_COLS || by >= TETRIS_ROWS) return true;
+      if (by >= 0 && tetris.grid[by][bx]) return true;
+    }
+    return false;
+  }
+
+  function tryMovePiece(dx, dy) {
+    if (tetrisCollides(tetris.piece, dx, dy)) return false;
+    tetris.piece.x += dx;
+    tetris.piece.y += dy;
+    return true;
+  }
+
+  function tetrisDelay() {
+    return Math.max(90, 700 - (tetris.level - 1) * 60);
+  }
+
+  function updateTetrisHud() {
+    tetrisScoreEl.textContent = String(tetris.score);
+    tetrisLinesEl.textContent = String(tetris.lines);
+    tetrisLevelEl.textContent = String(tetris.level);
+  }
+
+  function drawTetrisCell(ctx, x, y, color, px) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
+  }
+
+  function drawTetris() {
+    tetrisCtx.clearRect(0, 0, tetrisCanvas.width, tetrisCanvas.height);
+    if (!tetris) return;
+    for (var y = 0; y < TETRIS_ROWS; y++) {
+      for (var x = 0; x < TETRIS_COLS; x++) {
+        if (tetris.grid[y][x]) drawTetrisCell(tetrisCtx, x, y, tetris.grid[y][x], TETRIS_PX);
+      }
+    }
+    var p = tetris.piece;
+    var color = TETROMINOES[p.type].color;
+    p.cells.forEach(function (c) {
+      var by = p.y + c[1];
+      if (by >= 0) drawTetrisCell(tetrisCtx, p.x + c[0], by, color, TETRIS_PX);
+    });
+  }
+
+  function drawTetrisNext() {
+    tetrisNextCtx.clearRect(0, 0, tetrisNextCanvas.width, tetrisNextCanvas.height);
+    if (!tetris || !tetris.next) return;
+    var t = TETROMINOES[tetris.next.type];
+    var px = 20;
+    var offset = (tetrisNextCanvas.width - t.size * px) / 2;
+    tetris.next.cells.forEach(function (c) {
+      tetrisNextCtx.fillStyle = t.color;
+      tetrisNextCtx.fillRect(offset + c[0] * px + 1, offset + c[1] * px + 1, px - 2, px - 2);
+    });
+  }
+
+  function startTetris() {
+    var grid = [];
+    for (var y = 0; y < TETRIS_ROWS; y++) grid.push(new Array(TETRIS_COLS).fill(null));
+    tetris = { grid: grid, bag: [], score: 0, lines: 0, level: 1, piece: null, next: null };
+    tetris.piece = tetrisNewPiece();
+    tetris.next = tetrisNewPiece();
+    updateTetrisHud();
+    tetrisOverlay.hidden = true;
+    drawTetris();
+    drawTetrisNext();
+    tetrisTimer = setTimeout(tetrisTick, tetrisDelay());
+  }
+
+  function tetrisTick() {
+    tetrisTimer = null;
+    if (!tetris) return;
+    if (!tryMovePiece(0, 1)) lockPiece();
+    if (!tetris) return;
+    drawTetris();
+    tetrisTimer = setTimeout(tetrisTick, tetrisDelay());
+  }
+
+  function lockPiece() {
+    var p = tetris.piece;
+    var over = false;
+    p.cells.forEach(function (c) {
+      var bx = p.x + c[0];
+      var by = p.y + c[1];
+      if (by < 0) { over = true; return; }
+      tetris.grid[by][bx] = TETROMINOES[p.type].color;
+    });
+    if (over) { endTetris(); return; }
+    var cleared = 0;
+    for (var y = TETRIS_ROWS - 1; y >= 0; y--) {
+      if (tetris.grid[y].every(Boolean)) {
+        tetris.grid.splice(y, 1);
+        tetris.grid.unshift(new Array(TETRIS_COLS).fill(null));
+        cleared++;
+        y++;
+      }
+    }
+    if (cleared) {
+      tetris.lines += cleared;
+      tetris.level = Math.floor(tetris.lines / 10) + 1;
+      tetris.score += TETRIS_LINE_SCORES[cleared] * tetris.level;
+    }
+    tetris.piece = tetris.next;
+    tetris.next = tetrisNewPiece();
+    updateTetrisHud();
+    drawTetrisNext();
+    if (tetrisCollides(tetris.piece, 0, 0)) endTetris();
+  }
+
+  function tetrisMove(dx) {
+    if (tryMovePiece(dx, 0)) drawTetris();
+  }
+
+  function tetrisRotate() {
+    var p = tetris.piece;
+    var size = TETROMINOES[p.type].size;
+    var rotated = p.cells.map(function (c) { return [size - 1 - c[1], c[0]]; });
+    var kicks = [0, -1, 1, -2, 2];
+    for (var i = 0; i < kicks.length; i++) {
+      if (!tetrisCollides(p, kicks[i], 0, rotated)) {
+        p.cells = rotated;
+        p.x += kicks[i];
+        drawTetris();
+        return;
+      }
+    }
+  }
+
+  function tetrisSoftDrop() {
+    if (tryMovePiece(0, 1)) {
+      tetris.score += 1;
+      updateTetrisHud();
+      drawTetris();
+    }
+  }
+
+  function tetrisHardDrop() {
+    var n = 0;
+    while (tryMovePiece(0, 1)) n++;
+    tetris.score += n * 2;
+    updateTetrisHud();
+    lockPiece();
+    if (tetris) drawTetris();
+  }
+
+  function endTetris() {
+    if (tetrisTimer) { clearTimeout(tetrisTimer); tetrisTimer = null; }
+    var finalScore = tetris ? tetris.score : 0;
+    tetris = null;
+    tetrisMsg.textContent = 'game over · score ' + finalScore;
+    tetrisStartBtn.textContent = 'play again';
+    tetrisOverlay.hidden = false;
+    submitScore('tetris', finalScore);
+  }
+
+  function stopTetris(abandon) {
+    if (tetrisTimer) { clearTimeout(tetrisTimer); tetrisTimer = null; }
+    if (!tetris) return;
+    if (abandon && tetris.score > 0) submitScore('tetris', tetris.score);
+    tetris = null;
+    tetrisMsg.textContent = TETRIS_HINT;
+    tetrisStartBtn.textContent = 'play';
+    tetrisOverlay.hidden = false;
+  }
+
+  tetrisStartBtn.addEventListener('click', startTetris);
+
+  var SNAKE_DIRS = {
+    arrowup: { x: 0, y: -1 }, w: { x: 0, y: -1 },
+    arrowdown: { x: 0, y: 1 }, s: { x: 0, y: 1 },
+    arrowleft: { x: -1, y: 0 }, a: { x: -1, y: 0 },
+    arrowright: { x: 1, y: 0 }, d: { x: 1, y: 0 },
+  };
+
+  document.addEventListener('keydown', function (e) {
+    if (currentView !== 'games') return;
+    var k = e.key ? e.key.toLowerCase() : '';
+    if (activeGame === 'snake' && snake) {
+      var d = SNAKE_DIRS[k];
+      if (d) {
+        e.preventDefault();
+        if (d.x !== -snake.dir.x || d.y !== -snake.dir.y) snake.nextDir = d;
+      }
+    } else if (activeGame === 'tetris' && tetris) {
+      if (k === 'arrowleft') { e.preventDefault(); tetrisMove(-1); }
+      else if (k === 'arrowright') { e.preventDefault(); tetrisMove(1); }
+      else if (k === 'arrowdown') { e.preventDefault(); tetrisSoftDrop(); }
+      else if (k === 'arrowup' || k === 'x') { e.preventDefault(); tetrisRotate(); }
+      else if (k === ' ') { e.preventDefault(); tetrisHardDrop(); }
+    }
+  });
+
+  // ---- cookie clicker --------------------------------------------------
+
+  var cookieBtn = document.getElementById('cookie-btn');
+  var cookieShopEl = document.getElementById('cookie-shop');
+  var cookieCountEl = document.getElementById('cookie-count');
+  var cookieCpsEl = document.getElementById('cookie-cps');
+  var cookieTotalEl = document.getElementById('cookie-total');
+  var COOKIE_BUILDINGS = [
+    { id: 'cursor', name: 'Cursor', base: 15, cps: 0.1 },
+    { id: 'grandma', name: 'Grandma', base: 100, cps: 1 },
+    { id: 'farm', name: 'Farm', base: 1100, cps: 8 },
+    { id: 'factory', name: 'Factory', base: 12000, cps: 47 },
+    { id: 'bank', name: 'Bank', base: 140000, cps: 260 },
+    { id: 'temple', name: 'Temple', base: 2000000, cps: 1400 },
+  ];
+  var cookie = { cookies: 0, total: 0, owned: {} };
+  var cookieTimer = null;
+  var cookieDirty = false;
+  var cookieSubmitCounter = 0;
+
+  function cookieStorageKey() {
+    return 'ss_cookie_' + (myRoom || '') + '_' + (myUsername || '').toLowerCase();
+  }
+
+  function loadCookieState() {
+    cookie = { cookies: 0, total: 0, owned: {} };
+    try {
+      var raw = localStorage.getItem(cookieStorageKey());
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (p && typeof p === 'object') {
+          cookie.cookies = Math.max(0, Number(p.cookies) || 0);
+          cookie.total = Math.max(0, Number(p.total) || 0);
+          if (p.owned && typeof p.owned === 'object') {
+            COOKIE_BUILDINGS.forEach(function (b) {
+              var n = Math.floor(Number(p.owned[b.id]) || 0);
+              if (n > 0) cookie.owned[b.id] = n;
+            });
+          }
+        }
+      }
+    } catch (e) { /* corrupt or unavailable — start fresh */ }
+    buildCookieShop();
+    updateCookieHud();
+  }
+
+  function saveCookieState() {
+    try { localStorage.setItem(cookieStorageKey(), JSON.stringify(cookie)); } catch (e) { /* ignore */ }
+  }
+
+  function cookieCps() {
+    return COOKIE_BUILDINGS.reduce(function (sum, b) {
+      return sum + (cookie.owned[b.id] || 0) * b.cps;
+    }, 0);
+  }
+
+  function buildingCost(b) {
+    return Math.ceil(b.base * Math.pow(1.15, cookie.owned[b.id] || 0));
+  }
+
+  function buildCookieShop() {
+    cookieShopEl.innerHTML = '';
+    COOKIE_BUILDINGS.forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'shop-item';
+      btn.dataset.building = b.id;
+      var left = document.createElement('span');
+      var nm = document.createElement('span');
+      nm.className = 'shop-name';
+      var sub = document.createElement('span');
+      sub.className = 'shop-sub';
+      left.appendChild(nm);
+      left.appendChild(sub);
+      var cost = document.createElement('span');
+      cost.className = 'shop-cost';
+      btn.appendChild(left);
+      btn.appendChild(cost);
+      btn.addEventListener('click', function () {
+        var c = buildingCost(b);
+        if (cookie.cookies >= c) {
+          cookie.cookies -= c;
+          cookie.owned[b.id] = (cookie.owned[b.id] || 0) + 1;
+          cookieDirty = true;
+          updateCookieHud();
+        }
+      });
+      cookieShopEl.appendChild(btn);
+    });
+  }
+
+  function refreshCookieShop() {
+    COOKIE_BUILDINGS.forEach(function (b) {
+      var btn = cookieShopEl.querySelector('[data-building="' + b.id + '"]');
+      if (!btn) return;
+      var owned = cookie.owned[b.id] || 0;
+      btn.querySelector('.shop-name').textContent = b.name + (owned ? ' × ' + owned : '');
+      btn.querySelector('.shop-sub').textContent = '+' + b.cps + ' cookies/sec each';
+      var c = buildingCost(b);
+      btn.querySelector('.shop-cost').textContent = fmtScore(c);
+      btn.disabled = cookie.cookies < c;
+    });
+  }
+
+  function updateCookieHud() {
+    cookieCountEl.textContent = fmtScore(Math.floor(cookie.cookies));
+    cookieCpsEl.textContent = String(Math.round(cookieCps() * 10) / 10);
+    cookieTotalEl.textContent = fmtScore(Math.floor(cookie.total));
+    refreshCookieShop();
+  }
+
+  cookieBtn.addEventListener('click', function () {
+    cookie.cookies += 1;
+    cookie.total += 1;
+    cookieDirty = true;
+    updateCookieHud();
+  });
+
+  function startCookieLoop() {
+    if (cookieTimer) return;
+    cookieTimer = setInterval(function () {
+      var cps = cookieCps();
+      if (cps > 0) {
+        cookie.cookies += cps;
+        cookie.total += cps;
+        cookieDirty = true;
+      }
+      if (cookieDirty) {
+        cookieDirty = false;
+        saveCookieState();
+        if (currentView === 'games' && activeGame === 'cookie') updateCookieHud();
+      }
+      if (++cookieSubmitCounter >= 20) {
+        cookieSubmitCounter = 0;
+        submitScore('cookie', cookie.total);
+      }
+    }, 1000);
+  }
+
+  function stopCookieLoop() {
+    if (cookieTimer) { clearInterval(cookieTimer); cookieTimer = null; }
+    saveCookieState();
+  }
 
   // ---------------------------------------------------------------------
   // Essay interactivity: scroll-reveal, discreet entry mark, section index
@@ -866,20 +1664,25 @@
   // ---------------------------------------------------------------------
 
   // ---------------------------------------------------------------------
-  // Entry to the gate is now keyboard-only: hold Q+W+O+P together while on
-  // the essay page. There's no visible button hinting this exists. F5 is a
-  // quick-escape back to the essay page from anywhere past it (gate, setup,
-  // or chat) — it's intercepted (default refresh suppressed) only when
-  // there's actually somewhere to escape from; on the essay page itself F5
-  // behaves like a normal refresh.
+  // Hidden keyboard combos. Q+W+O+P (held together on the essay) opens the
+  // gate; G+P+T (from chat/games) opens the assistant; G+M+E (from
+  // chat/assistant) opens the arcade. Tab is the panic key: from anywhere
+  // past the essay it snaps straight back, even mid-typing.
   // ---------------------------------------------------------------------
 
-  var ENTRY_COMBO = ['q', 'w', 'o', 'p'];
+  var COMBOS = [
+    { keys: ['q', 'w', 'o', 'p'], from: ['essay'], fired: false, go: function () { setGateError(''); showView('gate'); } },
+    { keys: ['g', 'p', 't'], from: ['chat', 'games'], fired: false, go: function () { showView('gpt'); } },
+    { keys: ['g', 'm', 'e'], from: ['chat', 'gpt'], fired: false, go: function () { showView('games'); } },
+  ];
+  var COMBO_KEYS = Object.create(null);
+  COMBOS.forEach(function (c) {
+    c.keys.forEach(function (k) { COMBO_KEYS[k] = true; });
+  });
   var heldKeys = Object.create(null);
-  var entryComboFired = false;
 
-  function entryComboHeld() {
-    return ENTRY_COMBO.every(function (k) { return heldKeys[k]; });
+  function comboHeld(c) {
+    return c.keys.every(function (k) { return heldKeys[k]; });
   }
 
   function isTypingTarget(el) {
@@ -889,7 +1692,7 @@
   }
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'F5') {
+    if (e.key === 'Tab') {
       if (currentView !== 'essay') {
         e.preventDefault();
         setGateError('');
@@ -899,28 +1702,29 @@
     }
 
     var k = e.key ? e.key.toLowerCase() : '';
-    if (ENTRY_COMBO.indexOf(k) === -1) return;
+    if (!COMBO_KEYS[k]) return;
     if (isTypingTarget(e.target)) return; // don't hijack typing into the password/username/message fields
 
     heldKeys[k] = true;
-    if (!entryComboFired && currentView === 'essay' && entryComboHeld()) {
-      entryComboFired = true;
-      setGateError('');
-      showView('gate');
-    }
+    COMBOS.forEach(function (c) {
+      if (!c.fired && c.from.indexOf(currentView) !== -1 && comboHeld(c)) {
+        c.fired = true;
+        c.go();
+      }
+    });
   });
 
   document.addEventListener('keyup', function (e) {
     var k = e.key ? e.key.toLowerCase() : '';
-    if (ENTRY_COMBO.indexOf(k) !== -1) delete heldKeys[k];
-    if (!entryComboHeld()) entryComboFired = false;
+    if (COMBO_KEYS[k]) delete heldKeys[k];
+    COMBOS.forEach(function (c) { if (!comboHeld(c)) c.fired = false; });
   });
 
   // Held keys can't be tracked across a focus/tab switch — reset so a
   // stale key doesn't silently count toward the next attempt.
   window.addEventListener('blur', function () {
     heldKeys = Object.create(null);
-    entryComboFired = false;
+    COMBOS.forEach(function (c) { c.fired = false; });
   });
 
   var essaySections = document.querySelectorAll('.essay section');
@@ -1059,9 +1863,9 @@
   document.querySelectorAll('[data-scenario]').forEach(function (button) {
     button.addEventListener('click', function () {
       var responses = {
-        conformity: 'Speaking up can introduce a minority viewpoint and make disagreement socially visible.',
-        observation: 'Asking what others think can surface hidden disagreement without immediately taking a side.',
-        compliance: 'Staying silent may preserve harmony, but it can also reinforce the appearance of unanimous agreement.'
+        conformity: 'Speaking up injects a minority view into the room. Disagreement suddenly becomes visible — and cheaper for the next person to voice.',
+        observation: 'Asking what others think can surface hidden disagreement without you having to plant a flag first.',
+        compliance: 'Staying silent keeps the peace, but it also feeds the illusion that everyone agrees.'
       };
       scenarioResult.textContent = responses[button.dataset.scenario];
     });
@@ -1083,17 +1887,17 @@
   document.querySelectorAll('[data-answer]').forEach(function (button) {
     button.addEventListener('click', function () {
       biasResult.textContent = button.dataset.answer === 'no'
-        ? 'Correct. 20% off $100 is $80; another 20% off is $64. Sequential percentages apply to the new price.'
-        : 'Not quite. The second 20% applies to $80, not the original $100.';
+        ? 'Correct — 20% off $100 is $80, and the second 20% comes off the $80. Final price: $64. Sequential discounts compound; they don\'t add.'
+        : 'Not quite. The second 20% applies to $80, not the original $100 — so $64, not $60.';
     });
   });
 
   var timelineCopy = document.getElementById('timeline-copy');
   var timelineText = {
-    '1': 'A group begins with contact: people notice one another, assess safety and relevance, and form initial impressions.',
-    '2': 'People begin to align around shared interests, roles, expectations, or influential members.',
-    '3': 'Repeated patterns become norms. What was once negotiated can become assumed.',
-    '4': 'The group can become part of how members describe themselves, changing the meaning of belonging.'
+    '1': 'It starts with contact: people notice each other, size up safety and relevance, and form first impressions that are annoyingly durable.',
+    '2': 'People start aligning around shared interests, roles, expectations, or whoever has the most gravity in the room.',
+    '3': 'Repeated patterns harden into norms. What was once negotiated quietly becomes assumed.',
+    '4': 'Eventually the group becomes part of how its members describe themselves — and belonging starts to mean something different.'
   };
   document.querySelectorAll('.timeline-step').forEach(function (step) {
     step.addEventListener('click', function () {
@@ -1109,8 +1913,8 @@
       document.querySelectorAll('[data-quiz]').forEach(function (b) { b.classList.remove('picked'); });
       button.classList.add('picked');
       feedback.textContent = button.dataset.quiz === 'right'
-        ? 'Correct. Confirmation bias describes the tendency to seek, interpret, or remember information in ways that support an existing belief.'
-        : 'Try again. The key idea is selective processing around an existing belief.';
+        ? 'Correct. Confirmation bias is the tendency to seek, read, and remember information in ways that flatter what you already believe.'
+        : 'Not quite — the key idea is selective processing around a belief you already hold.';
     });
   });
 

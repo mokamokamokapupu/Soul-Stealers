@@ -33,6 +33,7 @@
  */
 
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -61,6 +62,13 @@ const MAX_MESSAGE_LEN = 4000;
 const MAX_MESSAGES_KEPT = 300;
 const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
+const GAME_IDS = ['snake', 'tetris', 'cookie'];
+const MAX_GAME_SCORE = 1e15;
+const USERNAME_STALE_MS = 90 * 1000;
+const MAX_GPT_BODY_BYTES = 256 * 1024;
+const GPT_API_URL = process.env.GPT_API_URL || 'https://text.pollinations.ai/openai';
+const GPT_API_KEY = process.env.GPT_API_KEY || '';
+const GPT_MODEL = process.env.GPT_MODEL || 'openai';
 
 // ---------------------------------------------------------------------------
 // Room definitions — each one is a fully independent chatroom with its own
@@ -191,6 +199,43 @@ function messagesPathFor(roomId) {
   return path.join(DATA_DIR, 'messages-' + roomId + '.json');
 }
 
+function scoresPathFor(roomId) {
+  return path.join(DATA_DIR, 'scores-' + roomId + '.json');
+}
+
+function loadScores(roomId) {
+  let stored = {};
+  try {
+    stored = JSON.parse(fs.readFileSync(scoresPathFor(roomId), 'utf8'));
+  } catch (e) {
+    stored = {};
+  }
+  const scores = {};
+  for (const game of GAME_IDS) {
+    scores[game] = {};
+    const entries = stored && typeof stored === 'object' ? stored[game] : null;
+    if (!entries || typeof entries !== 'object') continue;
+    for (const key of Object.keys(entries)) {
+      const rec = entries[key];
+      if (rec && typeof rec.username === 'string' && USERNAME_RE.test(rec.username) &&
+          typeof rec.score === 'number' && isFinite(rec.score) && rec.score >= 0) {
+        scores[game][key] = { username: rec.username, score: Math.floor(rec.score), ts: rec.ts || 0 };
+      }
+    }
+  }
+  return scores;
+}
+
+function topScores(roomState) {
+  const out = {};
+  for (const game of GAME_IDS) {
+    out[game] = Object.values(roomState.scores[game])
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+  }
+  return out;
+}
+
 // One-time migration of pre-multi-room data (a flat data/messages.json, and
 // avatars/chat-images stored directly under data/avatars, data/chat-images)
 // into the "overwatch" room's namespace, so existing chat history and
@@ -259,6 +304,8 @@ for (const room of ROOMS) {
     messages,
     byId,
     dirty: false,
+    scores: loadScores(room.id),
+    scoresDirty: false,
     avatarsDir,
     chatImagesDir,
     avatarExtByUser,
@@ -312,6 +359,10 @@ setInterval(() => {
       r.dirty = false;
       fs.writeFile(messagesPathFor(roomId), JSON.stringify(r.messages), () => {});
     }
+    if (r.scoresDirty) {
+      r.scoresDirty = false;
+      fs.writeFile(scoresPathFor(roomId), JSON.stringify(r.scores), () => {});
+    }
   }
 }, 2000).unref();
 
@@ -319,6 +370,7 @@ function flushSaveSync() {
   for (const roomId of Object.keys(rooms)) {
     try {
       fs.writeFileSync(messagesPathFor(roomId), JSON.stringify(rooms[roomId].messages));
+      fs.writeFileSync(scoresPathFor(roomId), JSON.stringify(rooms[roomId].scores));
     } catch (e) { /* best effort on shutdown */ }
   }
 }
@@ -334,6 +386,7 @@ function newSession(ip) {
     username: null,
     csrfToken: crypto.randomBytes(16).toString('hex'),
     expires: Date.now() + SESSION_TTL_MS,
+    lastSeen: Date.now(),
     ip,
   };
   sessions.set(sid, session);
@@ -451,13 +504,14 @@ function setSessionCookie(res, sid, req) {
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes) {
+  const limit = maxBytes || MAX_BODY_BYTES;
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         reject({ status: 413, message: 'Payload too large' });
         req.destroy();
         return;
@@ -586,6 +640,54 @@ function requireCsrf(req, session) {
   return crypto.timingSafeEqual(a, b);
 }
 
+function callGptUpstream(messages) {
+  return new Promise((resolve, reject) => {
+    let target;
+    try { target = new URL(GPT_API_URL); } catch (e) { return reject(new Error('Bad GPT_API_URL')); }
+    const payload = JSON.stringify({ model: GPT_MODEL, messages });
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) };
+    if (GPT_API_KEY) headers.Authorization = 'Bearer ' + GPT_API_KEY;
+    const lib = target.protocol === 'http:' ? http : https;
+    const upstream = lib.request(target, { method: 'POST', headers, timeout: 60000 }, (resp) => {
+      const chunks = [];
+      let size = 0;
+      resp.on('data', (c) => {
+        size += c.length;
+        if (size > 1024 * 1024) {
+          reject(new Error('Upstream response too large'));
+          upstream.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
+      resp.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          return reject(new Error('Upstream status ' + resp.statusCode));
+        }
+        let reply = null;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message) {
+            reply = parsed.choices[0].message.content;
+          } else if (typeof parsed === 'string') {
+            reply = parsed;
+          }
+        } catch (e) {
+          reply = raw;
+        }
+        if (typeof reply !== 'string' || reply.trim().length === 0) {
+          return reject(new Error('Empty upstream reply'));
+        }
+        resolve(reply);
+      });
+    });
+    upstream.on('timeout', () => upstream.destroy(new Error('Upstream timeout')));
+    upstream.on('error', reject);
+    upstream.end(payload);
+  });
+}
+
 function sanitizeText(str, maxLen) {
   if (typeof str !== 'string') return null;
   const stripped = str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
@@ -655,6 +757,7 @@ async function handleApi(req, res, pathname) {
     session = created.session;
     setSessionCookie(res, sid, req);
   }
+  session.lastSeen = Date.now();
 
   // GET /api/session — bootstrap info for the frontend (no secrets)
   if (pathname === '/api/session' && req.method === 'GET') {
@@ -705,10 +808,29 @@ async function handleApi(req, res, pathname) {
     }
     const roomState = rooms[session.room];
     const key = username.toLowerCase();
-    const owner = roomState.usernameOwners.get(key);
-    if (RESERVED_USERNAMES.has(key) || (owner && owner !== sid)) {
+    if (RESERVED_USERNAMES.has(key)) {
       return sendJson(res, 409, { error: 'That name is taken. Try another.' });
     }
+    // A claim is only honored while its owning session is alive AND has been
+    // seen recently. Without the staleness check, closing or wiping a tab
+    // (which discards the sid cookie) left the old session holding the name
+    // for up to 24h, locking the user out of their own username.
+    const owner = roomState.usernameOwners.get(key);
+    if (owner && owner !== sid) {
+      const ownerSession = sessions.get(owner);
+      const ownerAlive = ownerSession &&
+        ownerSession.expires > Date.now() &&
+        Date.now() - (ownerSession.lastSeen || 0) < USERNAME_STALE_MS;
+      if (ownerAlive) {
+        return sendJson(res, 409, { error: 'That name is taken. Try another.' });
+      }
+      if (ownerSession) {
+        ownerSession.stage = 'password_ok';
+        ownerSession.username = null;
+      }
+      roomState.usernameOwners.delete(key);
+    }
+    releaseUsername(sid, session);
     roomState.usernameOwners.set(key, sid);
     session.username = username;
     session.stage = 'active';
@@ -917,6 +1039,61 @@ async function handleApi(req, res, pathname) {
       return;
     }
     return sendSvg(res, letterAvatarSvg(username));
+  }
+
+  // GET /api/games/scores — leaderboard for this session's room
+  if (pathname === '/api/games/scores' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    return sendJson(res, 200, { scores: topScores(rooms[session.room]) });
+  }
+
+  // POST /api/games/score — record a personal best for one game
+  if (pathname === '/api/games/score' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const game = body.game;
+    const score = Number(body.score);
+    if (!GAME_IDS.includes(game) || !isFinite(score) || score < 0 || score > MAX_GAME_SCORE) {
+      return sendJson(res, 400, { error: 'Invalid score.' });
+    }
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const clean = Math.floor(score);
+    const current = roomState.scores[game][key];
+    if (!current || clean > current.score) {
+      roomState.scores[game][key] = { username: session.username, score: clean, ts: Date.now() };
+      roomState.scoresDirty = true;
+    }
+    return sendJson(res, 200, { ok: true, scores: topScores(roomState) });
+  }
+
+  // POST /api/gpt — relay a conversation to the configured AI backend.
+  // The server adds the operator's API key (if any) so it never reaches
+  // the browser.
+  if (pathname === '/api/gpt' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    let body;
+    try { body = await readJsonBody(req, MAX_GPT_BODY_BYTES); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const rawMessages = Array.isArray(body.messages) ? body.messages.slice(-20) : [];
+    const messages = [];
+    for (const m of rawMessages) {
+      if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+      const content = sanitizeText(m.content, 8000);
+      if (!content) continue;
+      messages.push({ role: m.role, content });
+    }
+    if (messages.length === 0 || messages[messages.length - 1].role !== 'user') {
+      return sendJson(res, 400, { error: 'Nothing to send.' });
+    }
+    try {
+      const reply = await callGptUpstream(messages);
+      return sendJson(res, 200, { reply: reply.slice(0, 20000) });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'The AI backend is unreachable right now.' });
+    }
   }
 
   return sendJson(res, 404, { error: 'Not found' });

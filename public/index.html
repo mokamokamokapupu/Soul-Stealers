@@ -13,7 +13,7 @@
 <div class="atmosphere" aria-hidden="true"></div>
 <div class="progress-rail" id="progress-rail" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
 
-<!-- ===================== VIEW: essay (public facade) ===================== -->
+<!-- view: essay -->
 <div class="view active" id="view-essay">
 
   <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar-nav">
@@ -29,19 +29,19 @@
       </svg>
       <div class="sidebar-titles">
         <span class="sidebar-title">Soul Studies</span>
-        <span class="sidebar-subtitle">Dept. of Psychological Inquiry</span>
+        <span class="sidebar-subtitle">notes on minds &amp; people</span>
       </div>
     </div>
 
     <nav class="sidebar-groups" id="index-nav" aria-label="Research sections">
       <div class="sidebar-group">
-        <span class="sidebar-group-label">Overview</span>
+        <span class="sidebar-group-label">Start here</span>
         <a class="sidebar-link" data-target="hero" href="#hero">Introduction</a>
       </div>
 
       <div class="sidebar-group">
-        <span class="sidebar-group-label">Field lab · interactive</span>
-        <a class="sidebar-link" data-target="research-studio" href="#research-studio">Research studio</a>
+        <span class="sidebar-group-label">The field lab</span>
+        <a class="sidebar-link" data-target="research-studio" href="#research-studio">Seven rabbit holes</a>
         <a class="sidebar-sublink" data-target="research-studio" data-panel="psychology" href="#research-studio">Psychology</a>
         <a class="sidebar-sublink" data-target="research-studio" data-panel="influence" href="#research-studio">Social influence</a>
         <a class="sidebar-sublink" data-target="research-studio" data-panel="persuasion" href="#research-studio">Persuasion</a>
@@ -52,25 +52,25 @@
       </div>
 
       <div class="sidebar-group">
-        <span class="sidebar-group-label">Exercises</span>
-        <a class="sidebar-link" data-target="lab-notes" href="#lab-notes">Case file</a>
-        <a class="sidebar-link" data-target="quiz-deck" href="#quiz-deck">Test your intuition</a>
-        <a class="sidebar-link" data-target="field-notes" href="#field-notes">Field notes</a>
+        <span class="sidebar-group-label">Try it yourself</span>
+        <a class="sidebar-link" data-target="lab-notes" href="#lab-notes">A case I keep replaying</a>
+        <a class="sidebar-link" data-target="quiz-deck" href="#quiz-deck">Check your intuition</a>
+        <a class="sidebar-link" data-target="field-notes" href="#field-notes">Open questions</a>
       </div>
 
       <div class="sidebar-group">
-        <span class="sidebar-group-label">Traditions</span>
+        <span class="sidebar-group-label">The long essay</span>
         <a class="sidebar-link" data-accent="greek" data-target="sec-greek" href="#sec-greek">Greek philosophy</a>
         <a class="sidebar-link" data-accent="dualism" data-target="sec-dualism" href="#sec-dualism">Dualism</a>
         <a class="sidebar-link" data-accent="abrahamic" data-target="sec-abrahamic" href="#sec-abrahamic">Abrahamic traditions</a>
         <a class="sidebar-link" data-accent="dharmic" data-target="sec-dharmic" href="#sec-dharmic">Dharmic traditions</a>
         <a class="sidebar-link" data-accent="secular" data-target="sec-secular" href="#sec-secular">After the soul</a>
-        <a class="sidebar-link" data-target="sec-closing" href="#sec-closing">Closing thoughts</a>
+        <a class="sidebar-link" data-target="sec-closing" href="#sec-closing">Where I've landed</a>
       </div>
     </nav>
 
     <div class="sidebar-footer">
-      <span class="sidebar-hint">an independent research essay</span>
+      <span class="sidebar-hint">researched, written &amp; coded by one chronically curious junior</span>
     </div>
   </aside>
 
@@ -79,10 +79,11 @@
       <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
       <circle cx="12" cy="19.5" r="1.6"/>
     </svg>
-    <p class="eyebrow">Soul Studies · an inquiry</p>
+    <p class="eyebrow">soul studies · a passion project</p>
     <h1>What do we mean, when we say <em>soul</em>?</h1>
-    <p class="dek">The word survives in a hundred languages and a thousand arguments,
-      long after most of us stopped agreeing on what — if anything — it names.</p>
+    <p class="dek">I've spent the better part of a year collecting definitions, and every
+      tradition hands me a different one. This site is my attempt to lay them
+      side by side and see what actually survives the comparison.</p>
     <div class="scroll-cue" aria-hidden="true">
       <span>read on</span>
       <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
@@ -92,9 +93,12 @@
   <main class="essay">
 
     <section class="research-intro" id="research-studio">
-      <div class="section-kicker"><span>FIELD LAB</span><span>07 DOMAINS · INTERACTIVE</span></div>
-      <h2>A field guide to <em>how people become people</em>.</h2>
-      <p class="intro-copy">Move beyond the word “soul” and into the machinery around it: attention, identity, influence, belief, conflict, cooperation, and the stories groups tell about themselves.</p>
+      <div class="section-kicker"><span>THE FIELD LAB</span><span>seven rabbit holes, all interactive</span></div>
+      <h2>Everything I keep noticing about <em>how people work</em>.</h2>
+      <p class="intro-copy">The word "soul" gets all the attention, but the machinery around it turned out
+        to be just as strange: attention, identity, influence, belief, and the stories groups
+        tell about themselves. These are the seven topics I cannot stop reading about, each
+        with something small to click on.</p>
 
       <div class="research-tabs" role="tablist" aria-label="Research domains">
         <button class="research-tab is-active" role="tab" aria-selected="true" aria-controls="panel-psychology" data-panel="psychology">Psychology</button>
@@ -108,41 +112,52 @@
 
       <div class="research-panels">
         <article class="research-panel is-active" id="panel-psychology" data-panel-view="psychology" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">01</span><h3>Psychology</h3><span class="panel-tag">INDIVIDUAL</span></div>
-          <p>Explore how perception, memory, motivation, emotion, and identity interact. Psychology is less a catalog of traits than a study of processes unfolding over time.</p>
+          <div class="panel-head"><span class="panel-number">01</span><h3>Psychology</h3><span class="panel-tag">THE INDIVIDUAL</span></div>
+          <p>This is where I started, mostly because it was the one domain I could test on
+            myself. Perception, memory, motivation, identity — none of them behave like the
+            fixed traits I assumed they were. They're processes, running constantly,
+            whether or not you ever audit them.</p>
           <div class="micro-grid">
-            <button class="info-card expandable"><span>Attention</span><small>What gets noticed?</small><b>+</b><div>Attention is selective. What enters awareness depends on goals, expectations, salience, and competing demands.</div></button>
-            <button class="info-card expandable"><span>Memory</span><small>Not a recording</small><b>+</b><div>Remembering reconstructs an event from stored traces, context, cues, and what we currently believe.</div></button>
-            <button class="info-card expandable"><span>Identity</span><small>A moving target</small><b>+</b><div>Identity can be experienced as personal continuity while still shifting with roles, relationships, and social feedback.</div></button>
+            <button class="info-card expandable"><span>Attention</span><small>What gets noticed?</small><b>+</b><div>Attention is brutally selective. What reaches awareness depends on your goals, your expectations, and whatever happens to be loudest in the room.</div></button>
+            <button class="info-card expandable"><span>Memory</span><small>Not a recording</small><b>+</b><div>Remembering isn't playback. The brain reconstructs each event from fragments, context, and — inconveniently — whatever you currently believe about it.</div></button>
+            <button class="info-card expandable"><span>Identity</span><small>A moving target</small><b>+</b><div>You feel continuous, yet the self on display shifts with roles, relationships, and social feedback. Somehow both of those are true at once.</div></button>
           </div>
         </article>
 
         <article class="research-panel" id="panel-influence" data-panel-view="influence" role="tabpanel">
           <div class="panel-head"><span class="panel-number">02</span><h3>Social influence</h3><span class="panel-tag">GROUPS</span></div>
-          <p>People constantly calibrate behavior against other people. Norms can guide cooperation, suppress dissent, or make a strange behavior feel ordinary.</p>
+          <p>People calibrate against each other constantly, and mostly without noticing.
+            Norms can hold a group together, quietly suppress dissent, or make a genuinely
+            strange behavior feel ordinary — occasionally all three in the same afternoon.</p>
           <div class="scenario-card">
             <span class="scenario-label">SCENARIO 01</span><h4>The silent room</h4>
-            <p>You enter a meeting where everyone is quiet after a controversial proposal. No one says they oppose it.</p>
+            <p>You walk into a meeting right after a controversial proposal. Everyone is quiet. Nobody has said they oppose it.</p>
             <div class="choice-row"><button data-scenario="conformity">Speak up</button><button data-scenario="observation">Ask what others think</button><button data-scenario="compliance">Stay silent</button></div>
-            <p class="scenario-result" id="scenario-result">Choose a response to see the social mechanism it can activate.</p>
+            <p class="scenario-result" id="scenario-result">Pick a response and I'll tell you which mechanism it tends to trigger.</p>
           </div>
         </article>
 
         <article class="research-panel" id="panel-persuasion" data-panel-view="persuasion" role="tabpanel">
           <div class="panel-head"><span class="panel-number">03</span><h3>Persuasion</h3><span class="panel-tag">MESSAGES</span></div>
-          <p>Persuasion changes what people consider, believe, or do. The same argument can land differently depending on source credibility, framing, timing, identity, and perceived choice.</p>
+          <p>The same argument can land completely differently depending on who delivers it,
+            how it's framed, and when it arrives. That isn't exactly a flaw in human
+            reasoning — but it is an exploit, and advertisers found it long before
+            psychologists named it.</p>
           <div class="persuasion-lab">
-            <div><span class="lab-label">FRAME A</span><button class="frame-choice" data-frame="loss">“Don’t lose what you already have.”</button></div>
-            <div><span class="lab-label">FRAME B</span><button class="frame-choice" data-frame="gain">“Gain more control over what comes next.”</button></div>
-            <div class="lab-readout"><strong id="frame-readout">Framing lab</strong><span id="frame-detail">Tap either message to compare how a gain or loss frame can change the emphasis without changing the underlying offer.</span></div>
+            <div><span class="lab-label">FRAME A</span><button class="frame-choice" data-frame="loss">"Don't lose what you already have."</button></div>
+            <div><span class="lab-label">FRAME B</span><button class="frame-choice" data-frame="gain">"Gain more control over what comes next."</button></div>
+            <div class="lab-readout"><strong id="frame-readout">Framing lab</strong><span id="frame-detail">Tap either message. Same offer underneath — watch what the wording does to the emphasis.</span></div>
           </div>
         </article>
 
         <article class="research-panel" id="panel-biases" data-panel-view="biases" role="tabpanel">
           <div class="panel-head"><span class="panel-number">04</span><h3>Cognitive biases</h3><span class="panel-tag">DECISIONS</span></div>
-          <p>Biases are recurring shortcuts and distortions in judgment. They are not simply “bad thinking”; many emerge because a fast decision is useful under uncertainty.</p>
+          <p>Biases get dismissed as "bad thinking," which I think misses the point. Most of
+            them persist because a fast, mostly-right answer beats a slow, perfect one under
+            uncertainty. The trouble starts when the shortcut fires in a situation it was
+            never built for.</p>
           <div class="bias-meter">
-            <div class="bias-question"><span>QUICK TEST</span><h4>A product costs $100. It is discounted by 20%, then another 20%. Is the final price $60?</h4></div>
+            <div class="bias-question"><span>QUICK TEST</span><h4>A product costs $100. It gets discounted 20%, then another 20%. Is the final price $60?</h4></div>
             <div class="bias-options"><button data-answer="yes">Yes</button><button data-answer="no">No</button></div>
             <p class="quiz-result" id="bias-result"></p>
           </div>
@@ -150,17 +165,22 @@
 
         <article class="research-panel" id="panel-coercion" data-panel-view="coercion" role="tabpanel">
           <div class="panel-head"><span class="panel-number">05</span><h3>Manipulation &amp; coercion</h3><span class="panel-tag">BOUNDARIES</span></div>
-          <p>Influence becomes ethically concerning when meaningful choice is undermined. Coercion involves pressure or threats; manipulation can exploit vulnerabilities, obscure intentions, or engineer a choice without transparent consent.</p>
+          <p>Influence crosses a line when it stops respecting your ability to choose.
+            Coercion is the obvious version — pressure, threats, penalties for refusing.
+            Manipulation is the subtler one: hiding context, leaning on a vulnerability,
+            engineering a decision while letting you believe it was entirely yours.</p>
           <div class="warning-grid">
-            <div><strong>Transparent influence</strong><span>Reasons are visible. A person can disagree without punishment.</span></div>
-            <div><strong>Manipulative influence</strong><span>Important context is hidden or distorted to steer a choice.</span></div>
-            <div><strong>Coercive influence</strong><span>Refusal carries an imposed threat, penalty, or loss of basic freedom.</span></div>
+            <div><strong>Transparent influence</strong><span>The reasons are visible, and you can disagree without being punished for it.</span></div>
+            <div><strong>Manipulative influence</strong><span>Something important is hidden or distorted, specifically to steer your choice.</span></div>
+            <div><strong>Coercive influence</strong><span>Refusal carries a threat — a penalty, a loss, a door that closes on you.</span></div>
           </div>
         </article>
 
         <article class="research-panel" id="panel-behavior" data-panel-view="behavior" role="tabpanel">
           <div class="panel-head"><span class="panel-number">06</span><h3>Human behavior</h3><span class="panel-tag">SYSTEMS</span></div>
-          <p>Behavior is shaped by the interaction between person, environment, incentives, learning, habit, and circumstance. A useful question is often not “what kind of person does this?” but “what conditions make this behavior likely?”</p>
+          <p>The question "what kind of person does that?" turns out to be much weaker than
+            "what conditions make that likely?" Behavior sits at the intersection of person,
+            situation, incentive, and habit — nudge any one of them and the others move too.</p>
           <div class="behavior-map">
             <div class="behavior-node">PERSON</div><span>↔</span><div class="behavior-node">SITUATION</div><span>↔</span><div class="behavior-node">INCENTIVE</div><span>↔</span><div class="behavior-node">HABIT</div>
           </div>
@@ -168,20 +188,22 @@
 
         <article class="research-panel" id="panel-dynamics" data-panel-view="dynamics" role="tabpanel">
           <div class="panel-head"><span class="panel-number">07</span><h3>Social dynamics</h3><span class="panel-tag">NETWORKS</span></div>
-          <p>Groups develop status systems, coalitions, shared stories, informal rules, and patterns of inclusion. Small interactions can accumulate into durable structures.</p>
-          <div class="timeline" aria-label="Illustrative group dynamics timeline">
+          <p>Groups grow status ladders, coalitions, in-jokes, unwritten rules, and origin
+            stories — usually without anyone deciding to build any of it. Tiny interactions
+            compound into structures that outlast the people who started them.</p>
+          <div class="timeline" aria-label="How a group takes shape">
             <button class="timeline-step is-active" data-step="1"><b>01</b><span>Encounter</span></button>
             <button class="timeline-step" data-step="2"><b>02</b><span>Alignment</span></button>
             <button class="timeline-step" data-step="3"><b>03</b><span>Norms</span></button>
             <button class="timeline-step" data-step="4"><b>04</b><span>Identity</span></button>
           </div>
-          <p class="timeline-copy" id="timeline-copy">A group begins with contact: people notice one another, assess safety and relevance, and form initial impressions.</p>
+          <p class="timeline-copy" id="timeline-copy">It starts with contact: people notice each other, size up safety and relevance, and form first impressions that are annoyingly durable.</p>
         </article>
       </div>
     </section>
 
     <section class="explore-strip">
-      <div><span class="section-kicker">INTERACTIVE INDEX</span><h3>Three ways to investigate a human behavior.</h3></div>
+      <div><span class="section-kicker">THE HANDS-ON PART</span><h3>Three ways to poke at a behavior.</h3></div>
       <button class="explore-chip" data-jump="lab-notes">Read a case</button>
       <button class="explore-chip" data-jump="quiz-deck">Test a hypothesis</button>
       <button class="explore-chip" data-jump="field-notes">Trace an idea</button>
@@ -191,7 +213,14 @@
       <p class="eyebrow small">Case file · 01</p>
       <h2>The power of the room</h2>
       <div class="case-layout">
-        <div><p>Imagine three people privately disagree with a group decision. When the discussion starts, each person sees the others remaining quiet. The silence becomes evidence: “Maybe I’m the only one who sees a problem.”</p><p>Change one variable — let one person voice a minority view — and the social information available to everyone changes.</p></div>
+        <div><p>Picture three people who each privately disagree with a group decision. The
+          discussion opens, and each of them watches the other two stay quiet. The silence
+          becomes evidence: "maybe I'm the only one who sees a problem." I have watched this
+          exact thing happen in a student council meeting, which is partly why I'm writing
+          any of this.</p><p>Change one variable — let a single person say the quiet part out
+          loud — and the social information available to everyone in the room updates at
+          once. That asymmetry, where one voice can reprice the whole conversation, still
+          gets me.</p></div>
         <div class="fact-stack"><span>VARIABLE <b>visibility</b></span><span>MECHANISM <b>social proof</b></span><span>QUESTION <b>who speaks first?</b></span></div>
       </div>
     </section>
@@ -213,12 +242,12 @@
 
     <section class="field-notes" id="field-notes">
       <p class="eyebrow small">Field notes · 03</p>
-      <h2>Questions worth carrying</h2>
+      <h2>Questions I keep in my notes app</h2>
       <div class="question-grid">
-        <details open><summary>What changes when nobody is watching?</summary><p>Private behavior can reveal which motives depend on social evaluation and which are internally maintained.</p></details>
-        <details><summary>When does a norm become invisible?</summary><p>Repeated behavior can stop feeling like a choice and start feeling like “just how things are.”</p></details>
-        <details><summary>Can a belief be useful and inaccurate?</summary><p>Yes. A simplified model can guide action effectively while still failing to describe the world completely.</p></details>
-        <details><summary>Where does agency sit?</summary><p>Agency can be studied as a relationship between choice, constraints, knowledge, habits, and consequences rather than as an all-or-nothing property.</p></details>
+        <details open><summary>What changes when nobody is watching?</summary><p>Private behavior is a decent litmus test for which of your motives depend on an audience and which ones you'd maintain alone in a room.</p></details>
+        <details><summary>When does a norm become invisible?</summary><p>Repeat a behavior long enough and it stops registering as a choice at all. It just becomes "how things are," which is exactly when it's worth re-examining.</p></details>
+        <details><summary>Can a belief be useful and inaccurate?</summary><p>Apparently yes. A simplified model can guide action perfectly well while failing to describe the world — my entire mental map of my own city works like this.</p></details>
+        <details><summary>Where does agency actually sit?</summary><p>I've stopped treating it as all-or-nothing. It reads more like a relationship between choices, constraints, knowledge, and habit — which is less satisfying but probably more honest.</p></details>
       </div>
     </section>
 
@@ -230,12 +259,11 @@
 
     <section>
       <p>Say the word out loud and it means something different depending on who's
-        listening. To one person it's a theological claim: an immortal, immaterial
-        thing that outlives the body. To another it's just a figure of speech —
-        what we mean when we say a song "has soul," or a house feels empty after
-        someone leaves it. Between those two poles sits most of human history's
-        attempt to answer a single, stubborn question: what is it, in a person,
-        that makes them <em>them</em>?</p>
+        listening. To my grandmother it's a theological claim: an immortal, immaterial
+        thing that outlives the body. To my playlist it's a genre. Between those two
+        poles sits most of recorded philosophy, circling one stubborn question that
+        refuses to die of old age: what is it, in a person, that makes them
+        <em>them</em>?</p>
     </section>
 
     <hr class="rule">
@@ -243,29 +271,28 @@
     <section id="sec-greek" data-accent="greek">
       <p class="eyebrow small">Greek philosophy</p>
       <h2>Psyche — the thing that animates</h2>
-      <p>The Greek <em>psyché</em> didn't originally mean "soul" in the ghostly
-        sense — it meant breath, the animating principle that separates a living
-        body from a corpse. Plato pushed it further, arguing the soul was
-        immortal, divided into reason, spirit, and appetite, and trapped
-        temporarily in flesh. Aristotle disagreed sharply: for him the soul
-        wasn't a separate substance riding around in a body, but the body's
-        <em>form</em> — the organizing pattern that makes a living thing alive at
-        all, no more separable from it than the shape of a fist is separable
-        from the hand that makes it.</p>
+      <p>The Greek <em>psyché</em> didn't start out ghostly at all — it meant breath,
+        the animating difference between a living body and a corpse. Plato took it
+        much further: the soul was immortal, split into reason, spirit, and appetite,
+        and only temporarily stuck in flesh. Aristotle's response reads to me like
+        the first great "well, actually" in Western philosophy — the soul isn't a
+        separate substance riding around in a body, it's the body's <em>form</em>,
+        the organizing pattern that makes a living thing alive. No more separable
+        from it than the shape of a fist is separable from the hand making it.</p>
     </section>
 
     <section id="sec-dualism" data-accent="dualism">
       <p class="eyebrow small">Dualism</p>
       <h2>Descartes and the ghost in the machine</h2>
-      <p>Centuries later, Descartes reopened the split with his famous divide
-        between <em>res cogitans</em> and <em>res extensa</em> — the thinking
-        thing and the extended thing, mind and matter as two fundamentally
-        different kinds of stuff. The soul, on this view, is the seat of
-        thought and identity, temporarily interfacing with a mechanical body
-        through (he guessed, wrongly) the pineal gland. Critics have spent four
-        hundred years asking the obvious follow-up question he never quite
-        answered: if mind and matter are made of different stuff entirely, how
-        does one push the other around?</p>
+      <p>Centuries later, Descartes reopened the split with his divide between
+        <em>res cogitans</em> and <em>res extensa</em> — the thinking thing and the
+        extended thing, mind and matter as two fundamentally different kinds of
+        stuff. The soul becomes the seat of thought and identity, interfacing with a
+        mechanical body through (he guessed, wrongly) the pineal gland. Critics have
+        now spent four hundred years asking the follow-up he never satisfyingly
+        answered, and honestly it was the first question I had too: if mind and
+        matter are made of entirely different stuff, how does one push the other
+        around?</p>
     </section>
 
     <hr class="rule">
@@ -273,29 +300,29 @@
     <section id="sec-abrahamic" data-accent="abrahamic">
       <p class="eyebrow small">Abrahamic traditions</p>
       <h2>A soul that is judged</h2>
-      <p>In Jewish, Christian, and Islamic thought, the soul tends to carry
-        moral weight — it's the part of a person accountable before God, the
-        thing that persists to face judgment after the body fails. The details
-        diverge: whether the soul is created at conception or breathed in
-        later, whether it sleeps until resurrection or proceeds immediately to
-        an afterlife, whether it's naturally immortal or immortal only by
-        divine gift. But the throughline is consistent — the soul is where
-        moral responsibility lives.</p>
+      <p>In Jewish, Christian, and Islamic thought, the soul carries moral weight —
+        it's the part of a person accountable before God, the thing that persists to
+        face judgment after the body fails. The details diverge more than I expected
+        going in: whether the soul is created at conception or breathed in later,
+        whether it sleeps until resurrection or proceeds directly to an afterlife,
+        whether it's immortal by nature or only by divine gift. But the throughline
+        holds steady across all three — the soul is where moral responsibility
+        lives.</p>
     </section>
 
     <section id="sec-dharmic" data-accent="dharmic">
       <p class="eyebrow small">Dharmic traditions</p>
       <h2>Atman, and the tradition that denies it</h2>
-      <p>Hindu philosophy generally holds that beneath the changing self there
-        is an <em>atman</em> — an unchanging essence ultimately identical with
-        the ground of reality itself, Brahman. Buddhism, born from the same
-        soil, took the opposite position: <em>anatta</em>, non-self. What we
-        call a soul, in Buddhist analysis, is just a fast-moving bundle of
-        sensations, perceptions, and mental formations, mistaken for something
-        solid because it's persistent, the way a river looks like one thing
-        from a distance. Two traditions, sharing a vocabulary of liberation,
-        arrive at opposite answers about whether there's anyone home to be
-        liberated.</p>
+      <p>Hindu philosophy generally holds that beneath the changing self sits an
+        <em>atman</em> — an unchanging essence that is ultimately identical with the
+        ground of reality itself, Brahman. Buddhism, growing out of the same soil,
+        planted its flag on the exact opposite claim: <em>anatta</em>, non-self. What
+        we call a soul, in the Buddhist analysis, is a fast-moving bundle of
+        sensations, perceptions, and mental formations, mistaken for something solid
+        only because it's persistent — the way a river looks like a single object
+        from a distance. Two traditions sharing a vocabulary of liberation, arriving
+        at opposite answers about whether anyone is home to be liberated. This is
+        still my favorite disagreement in the whole project.</p>
     </section>
 
     <hr class="rule">
@@ -303,35 +330,31 @@
     <section id="sec-secular" data-accent="secular">
       <p class="eyebrow small">After the soul</p>
       <h2>What secular thought kept, and what it dropped</h2>
-      <p>Modern psychology mostly retired the word, replacing it with "self,"
-        "mind," "identity," "consciousness" — terms it hoped could do the same
-        work without the metaphysical debt. Whether that swap succeeded is
-        still argued. Neuroscience can show you which regions light up when
-        someone recalls a memory or feels regret, but it hasn't dissolved the
-        older question so much as relocated it: is a person still fully
-        described by that map, or is something left over that the map can't
-        reach? People who'd never call themselves religious still reach for
-        "soul" when nothing else fits — soul food, soul music, an old friend
-        described as an "old soul." The word outlived the doctrine.</p>
+      <p>Modern psychology mostly retired the word, swapping in "self," "mind,"
+        "identity," "consciousness" — terms it hoped could do the same work without
+        the metaphysical debt. Whether the swap actually succeeded is still argued.
+        Neuroscience can show you which regions light up when someone recalls a
+        memory or feels regret, but that hasn't dissolved the older question so much
+        as relocated it: is a person fully described by that map, or does something
+        escape it? What convinces me the question isn't finished: people who would
+        never call themselves religious still reach for "soul" when nothing else
+        fits — soul food, soul music, an old friend described as an old soul. The
+        word outlived the doctrine.</p>
     </section>
 
     <section class="closing" id="sec-closing">
-      <p>Maybe that's the honest place to leave it: not a settled fact, but a
-        question every tradition has taken seriously enough to keep asking,
-        each landing somewhere different, none of them able to fully let it go.
-        What survives across all of them is the intuition that a person is not
-        only their measurements — and that the remainder, whatever it is, is
-        worth a name.</p>
+      <p>So here's where I've landed, at least this semester: not on a settled fact,
+        but on a question every tradition took seriously enough to keep asking, each
+        landing somewhere different, none able to fully let it go. What survives
+        across all of them is the intuition that a person is not merely their
+        measurements — and that the remainder, whatever it turns out to be, deserves
+        a name.</p>
     </section>
 
   </main>
-
-  <!-- No visible entry point into the gate anymore — reaching it is a
-       keyboard shortcut (Q+W+O+P held together) handled in app.js, with
-       F5 as a quick escape back out from anywhere past this page. -->
 </div>
 
-<!-- ===================== VIEW: gate (password) ===================== -->
+<!-- view: gate -->
 <div class="view" id="view-gate">
   <div class="minimal-gate">
     <form id="gate-form" autocomplete="off">
@@ -341,22 +364,13 @@
   </div>
 </div>
 
-<!-- ===================== VIEW: setup (choose a name) ===================== -->
+<!-- view: setup -->
 <div class="view" id="view-setup">
-  <div class="shell">
-    <div class="card" id="setup-card">
-      <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
-        <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
-        <circle cx="12" cy="19.5" r="1.6"/>
-      </svg>
-      <p class="eyebrow">Soul Studies</p>
+  <div class="minimal-gate">
+    <div class="minimal-setup" id="setup-card">
       <p class="lede">enter a username, make sure it is not your real name or affiliated with your real name</p>
-
       <form id="setup-form" autocomplete="off">
-        <div class="field">
-          <label for="username">Name</label>
-          <input type="text" id="username" name="username" maxlength="20" required>
-        </div>
+        <input type="text" id="username" name="username" maxlength="20" required aria-label="Username">
         <p class="error-msg" id="setup-error" role="alert"></p>
         <button type="submit" id="setup-submit">Continue</button>
       </form>
@@ -364,7 +378,7 @@
   </div>
 </div>
 
-<!-- ===================== VIEW: chat (Soul Stealers Chat) ===================== -->
+<!-- view: chat -->
 <div class="view" id="view-chat">
   <div class="chat-shell">
     <div class="chat-topbar">
@@ -373,10 +387,12 @@
           <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
           <circle cx="12" cy="19.5" r="1.6"/>
         </svg>
-        <h1>Soul Stealers Chat</h1>
         <span class="room-tag" id="room-tag"></span>
       </div>
       <div class="chat-identity">
+        <button type="button" class="icon-btn" id="chat-settings-btn" title="Appearance settings" aria-haspopup="true" aria-expanded="false" aria-label="Appearance settings">
+          <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.2v2.2M12 18.6v2.2M20.8 12h-2.2M5.4 12H3.2M18.2 5.8l-1.6 1.6M7.4 16.6l-1.6 1.6M18.2 18.2l-1.6-1.6M7.4 7.4L5.8 5.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
         <label class="avatar-picker" title="Change your profile picture">
           <img class="avatar" id="my-avatar" alt="Your profile picture">
           <span class="avatar-hint" aria-hidden="true">+</span>
@@ -385,6 +401,24 @@
         <span class="who">you are <strong id="who-name">—</strong></span>
         &nbsp;·&nbsp;
         <button class="logout-link" id="logout-btn" type="button">leave</button>
+      </div>
+    </div>
+
+    <div class="chat-settings" id="chat-settings" hidden>
+      <div class="settings-row">
+        <span class="settings-label">size</span>
+        <input type="range" id="ui-scale" min="0.8" max="1.3" step="0.05" value="1" aria-label="Interface scale">
+        <span class="settings-value" id="ui-scale-value">100%</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">colors</span>
+        <div class="skin-row" id="skin-row">
+          <button type="button" class="skin-swatch" data-skin="" title="Ember" aria-label="Ember theme"></button>
+          <button type="button" class="skin-swatch" data-skin="abyss" title="Abyss" aria-label="Abyss theme"></button>
+          <button type="button" class="skin-swatch" data-skin="plum" title="Plum" aria-label="Plum theme"></button>
+          <button type="button" class="skin-swatch" data-skin="crimson" title="Crimson" aria-label="Crimson theme"></button>
+          <button type="button" class="skin-swatch" data-skin="paper" title="Paper" aria-label="Paper theme"></button>
+        </div>
       </div>
     </div>
 
@@ -439,6 +473,111 @@
       <input type="text" id="msg-input" maxlength="500" placeholder="Write something…" required>
       <button type="submit" id="send-btn">Send</button>
     </form>
+  </div>
+</div>
+
+<!-- view: gpt -->
+<div class="view" id="view-gpt">
+  <div class="chat-shell panel-shell">
+    <div class="chat-topbar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
+          <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
+          <circle cx="12" cy="19.5" r="1.6"/>
+        </svg>
+        <span class="panel-title">assistant</span>
+      </div>
+      <div class="chat-identity">
+        <button class="logout-link" id="gpt-clear" type="button">clear</button>
+        &nbsp;·&nbsp;
+        <button class="logout-link" id="gpt-back" type="button">back to chat</button>
+      </div>
+    </div>
+
+    <div class="messages-wrap">
+      <div class="messages gpt-messages" id="gpt-messages">
+        <p class="empty-state">Ask anything. This conversation lives only in this tab and is never stored.</p>
+      </div>
+    </div>
+
+    <p class="chat-status" id="gpt-status"></p>
+    <p class="gpt-fallback" id="gpt-fallback" hidden>Backend unreachable — <a href="https://chatgpt.com" target="_blank" rel="noopener noreferrer">open ChatGPT in a new tab instead</a> (no account needed).</p>
+
+    <form class="composer" id="gpt-form" autocomplete="off">
+      <input type="text" id="gpt-input" maxlength="4000" placeholder="Ask something…" required>
+      <button type="submit" id="gpt-send">Send</button>
+    </form>
+  </div>
+</div>
+
+<!-- view: games -->
+<div class="view" id="view-games">
+  <div class="games-shell">
+    <div class="chat-topbar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
+          <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
+          <circle cx="12" cy="19.5" r="1.6"/>
+        </svg>
+        <span class="panel-title">arcade</span>
+      </div>
+      <div class="chat-identity">
+        <span class="who">playing as <strong id="games-who">—</strong></span>
+        &nbsp;·&nbsp;
+        <button class="logout-link" id="games-back" type="button">back to chat</button>
+      </div>
+    </div>
+
+    <div class="games-layout">
+      <div class="games-main">
+        <div class="game-tabs">
+          <button type="button" class="game-tab is-active" data-game="snake">Snake</button>
+          <button type="button" class="game-tab" data-game="tetris">Tetris</button>
+          <button type="button" class="game-tab" data-game="cookie">Cookie Clicker</button>
+        </div>
+
+        <div class="game-stage" id="stage-snake">
+          <div class="game-hud"><span>score <b id="snake-score">0</b></span><span>best <b id="snake-best">0</b></span></div>
+          <div class="canvas-wrap">
+            <canvas id="snake-canvas" width="380" height="380"></canvas>
+            <div class="game-overlay" id="snake-overlay">
+              <p id="snake-msg">arrows or WASD · eat, grow, don't die</p>
+              <button type="button" id="snake-start">play</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="game-stage" id="stage-tetris" hidden>
+          <div class="game-hud"><span>score <b id="tetris-score">0</b></span><span>lines <b id="tetris-lines">0</b></span><span>level <b id="tetris-level">1</b></span></div>
+          <div class="canvas-wrap tetris-wrap">
+            <canvas id="tetris-canvas" width="240" height="480"></canvas>
+            <div class="tetris-side">
+              <span class="hud-label">next</span>
+              <canvas id="tetris-next" width="96" height="96"></canvas>
+            </div>
+            <div class="game-overlay" id="tetris-overlay">
+              <p id="tetris-msg">← → move · ↑ rotate · ↓ soft drop · space hard drop</p>
+              <button type="button" id="tetris-start">play</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="game-stage" id="stage-cookie" hidden>
+          <div class="game-hud"><span>cookies <b id="cookie-count">0</b></span><span>per second <b id="cookie-cps">0</b></span><span>all-time <b id="cookie-total">0</b></span></div>
+          <div class="cookie-zone">
+            <button type="button" class="cookie-btn" id="cookie-btn" aria-label="Bake a cookie">🍪</button>
+            <div class="cookie-shop" id="cookie-shop"></div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="leaderboard" aria-label="Top scores">
+        <h3>top scores</h3>
+        <div class="lb-group"><span class="lb-title">snake</span><ol id="lb-snake"></ol></div>
+        <div class="lb-group"><span class="lb-title">tetris</span><ol id="lb-tetris"></ol></div>
+        <div class="lb-group"><span class="lb-title">cookies baked</span><ol id="lb-cookie"></ol></div>
+      </aside>
+    </div>
   </div>
 </div>
 
