@@ -1185,50 +1185,27 @@ input:focus{
 .skin-row .skin-swatch[data-skin="crimson"]{ background: linear-gradient(135deg, #150b0b 50%, #c97a6f 50%); }
 .skin-row .skin-swatch[data-skin="paper"]{ background: linear-gradient(135deg, #ece5d8 50%, #4a6d52 50%); }
 
-body:is([data-view="chat"],[data-view="gpt"],[data-view="games"])[data-chat-skin="abyss"]{
+body:is([data-view="chat"],[data-view="games"])[data-chat-skin="abyss"]{
   --ink: #0a0e18; --ink-raised: #131a2a; --ink-raised-2: #182136;
   --parchment: #dde5f2; --parchment-dim: #9fadc4; --brass: #5b7fa6;
   --verdigris: #6f93c9; --verdigris-bright: #9db8e3; --danger: #c96f6f;
 }
-body:is([data-view="chat"],[data-view="gpt"],[data-view="games"])[data-chat-skin="plum"]{
+body:is([data-view="chat"],[data-view="games"])[data-chat-skin="plum"]{
   --ink: #120b18; --ink-raised: #1d1428; --ink-raised-2: #241a33;
   --parchment: #ece2f2; --parchment-dim: #b3a4c4; --brass: #8a6da6;
   --verdigris: #9b7fd6; --verdigris-bright: #bda4ea; --danger: #c96f8a;
 }
-body:is([data-view="chat"],[data-view="gpt"],[data-view="games"])[data-chat-skin="crimson"]{
+body:is([data-view="chat"],[data-view="games"])[data-chat-skin="crimson"]{
   --ink: #150b0b; --ink-raised: #231314; --ink-raised-2: #2c181a;
   --parchment: #f0e3dd; --parchment-dim: #c2a9a1; --brass: #a6705b;
   --verdigris: #c97a6f; --verdigris-bright: #e3a89d; --danger: #e08585;
 }
-body:is([data-view="chat"],[data-view="gpt"],[data-view="games"])[data-chat-skin="paper"]{
+body:is([data-view="chat"],[data-view="games"])[data-chat-skin="paper"]{
   --ink: #ece5d8; --ink-raised: #f5f0e6; --ink-raised-2: #faf6ee;
   --parchment: #26221a; --parchment-dim: #6d6555; --brass: #8a6f4d;
   --verdigris: #4a6d52; --verdigris-bright: #3c5c44; --danger: #a63d2a;
 }
-body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="gpt"],[data-view="games"]) .atmosphere{ opacity: 0.35; }
-
-/* ---------------------- Assistant view ---------------------- */
-
-.gpt-msg{
-  max-width: 80%;
-  padding: 0.65rem 0.9rem;
-  border-radius: 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--ink-raised);
-  border: 1px solid rgba(139,115,85,0.2);
-}
-.gpt-msg.user{ align-self: flex-end; border-color: rgba(111,143,118,0.4); }
-.gpt-msg.pending{ color: var(--parchment-dim); font-style: italic; }
-.gpt-fallback{
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--danger);
-  margin: 0.4rem 0 0;
-  flex-shrink: 0;
-}
-.gpt-fallback[hidden]{ display: none; }
-.gpt-fallback a{ color: var(--verdigris-bright); }
+body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosphere{ opacity: 0.35; }
 
 /* ---------------------------- Arcade ---------------------------- */
 

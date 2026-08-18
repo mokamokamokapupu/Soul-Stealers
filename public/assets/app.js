@@ -7,7 +7,7 @@
   // file only mirrors what the server says (see server.js).
   // ---------------------------------------------------------------------
 
-  var VIEWS = ['essay', 'gate', 'setup', 'chat', 'gpt', 'games'];
+  var VIEWS = ['essay', 'gate', 'setup', 'chat', 'games'];
   var currentView = 'essay';
 
   function showView(name) {
@@ -29,7 +29,7 @@
     }
     if (wasGames && name !== 'games') leaveGames();
     if (name === 'games') enterGames();
-    setKeepalive(name === 'gpt' || name === 'games');
+    setKeepalive(name === 'games');
 
     if (name === 'gate') {
       gateInput.value = '';
@@ -39,9 +39,6 @@
       setupInput.value = '';
       setSetupError('');
       setupInput.focus();
-    } else if (name === 'gpt') {
-      var gi = document.getElementById('gpt-input');
-      if (gi) gi.focus();
     }
   }
 
@@ -830,7 +827,6 @@
     if (res) {
       try { applySessionData(await res.json()); } catch (e) { /* ignore */ }
     }
-    resetGpt();
     lastSubmitted = { snake: 0, tetris: 0, mines: 0, cookie: 0 };
     showView('essay');
   });
@@ -859,7 +855,7 @@
   var skinButtons = Array.prototype.slice.call(document.querySelectorAll('.skin-swatch'));
 
   function applyUiScale() {
-    var scaled = currentView === 'chat' || currentView === 'gpt' || currentView === 'games';
+    var scaled = currentView === 'chat' || currentView === 'games';
     document.documentElement.style.fontSize = (scaled && uiScale !== 1) ? (uiScale * 100) + '%' : '';
   }
 
@@ -898,89 +894,6 @@
     });
   });
   applySkin();
-
-  // ---------------------------------------------------------------------
-  // Assistant view (G+P+T)
-  // ---------------------------------------------------------------------
-
-  var gptMessagesEl = document.getElementById('gpt-messages');
-  var gptForm = document.getElementById('gpt-form');
-  var gptInput = document.getElementById('gpt-input');
-  var gptSend = document.getElementById('gpt-send');
-  var gptFallback = document.getElementById('gpt-fallback');
-  var gptBack = document.getElementById('gpt-back');
-  var gptClear = document.getElementById('gpt-clear');
-  var GPT_EMPTY_HTML = '<p class="empty-state">Ask anything. This conversation lives only in this tab and is never stored.</p>';
-  var gptHistory = [];
-  var gptBusy = false;
-
-  function addGptBubble(role, text, pending) {
-    var empty = gptMessagesEl.querySelector('.empty-state');
-    if (empty) empty.remove();
-    var el = document.createElement('div');
-    el.className = 'gpt-msg ' + role + (pending ? ' pending' : '');
-    el.textContent = text;
-    gptMessagesEl.appendChild(el);
-    gptMessagesEl.scrollTop = gptMessagesEl.scrollHeight;
-    return el;
-  }
-
-  function resetGpt() {
-    gptHistory = [];
-    gptMessagesEl.innerHTML = GPT_EMPTY_HTML;
-    gptFallback.hidden = true;
-  }
-
-  gptClear.addEventListener('click', resetGpt);
-  gptBack.addEventListener('click', function () { showView('chat'); });
-
-  gptForm.addEventListener('submit', async function (e) {
-    e.preventDefault();
-    if (gptBusy) return;
-    var text = gptInput.value.trim();
-    if (!text) return;
-    gptInput.value = '';
-    gptFallback.hidden = true;
-    gptHistory.push({ role: 'user', content: text });
-    addGptBubble('user', text);
-    var pendingEl = addGptBubble('assistant', '…', true);
-    gptBusy = true;
-    gptSend.disabled = true;
-    try {
-      var res = await fetch('/api/gpt', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({
-          messages: gptHistory.slice(-12).map(function (m) {
-            return { role: m.role, content: m.content.slice(0, 6000) };
-          }),
-        }),
-      });
-      if (res.status === 403) { showView('gate'); return; }
-      var data = await res.json();
-      if (res.ok && data.reply) {
-        pendingEl.classList.remove('pending');
-        pendingEl.textContent = data.reply;
-        gptHistory.push({ role: 'assistant', content: data.reply });
-      } else {
-        pendingEl.remove();
-        gptHistory.pop();
-        gptInput.value = text;
-        gptFallback.hidden = false;
-      }
-    } catch (err) {
-      pendingEl.remove();
-      gptHistory.pop();
-      gptInput.value = text;
-      gptFallback.hidden = false;
-    } finally {
-      gptBusy = false;
-      gptSend.disabled = false;
-      gptInput.focus();
-      gptMessagesEl.scrollTop = gptMessagesEl.scrollHeight;
-    }
-  });
 
   // ---------------------------------------------------------------------
   // Arcade shared: tabs, leaderboard, score submission
@@ -2368,15 +2281,13 @@
 
   // ---------------------------------------------------------------------
   // Hidden keyboard combos. Q+W+O+P (held together on the essay) opens the
-  // gate; G+P+T (from chat/games) opens the assistant; G+A+M+E (from
-  // chat/assistant) opens the arcade. Tab is the panic key: from anywhere
-  // past the essay it snaps straight back, even mid-typing.
+  // gate; G+A+M+E (from chat) opens the arcade. Tab is the panic key: from
+  // anywhere past the essay it snaps straight back, even mid-typing.
   // ---------------------------------------------------------------------
 
   var COMBOS = [
     { keys: ['q', 'w', 'o', 'p'], from: ['essay'], fired: false, go: function () { showView('gate'); } },
-    { keys: ['g', 'p', 't'], from: ['chat', 'games'], fired: false, go: function () { showView('gpt'); } },
-    { keys: ['g', 'a', 'm', 'e'], from: ['chat', 'gpt'], fired: false, go: function () { showView('games'); } },
+    { keys: ['g', 'a', 'm', 'e'], from: ['chat'], fired: false, go: function () { showView('games'); } },
   ];
   var COMBO_KEYS = Object.create(null);
   COMBOS.forEach(function (c) {

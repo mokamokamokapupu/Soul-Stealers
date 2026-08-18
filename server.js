@@ -33,7 +33,6 @@
  */
 
 const http = require('http');
-const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -69,10 +68,6 @@ const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
 const GAME_IDS = ['snake', 'tetris', 'mines', 'cookie'];
 const MAX_GAME_SCORE = 1e15;
 const USERNAME_STALE_MS = 90 * 1000;
-const MAX_GPT_BODY_BYTES = 256 * 1024;
-const GPT_API_URL = process.env.GPT_API_URL || 'https://text.pollinations.ai/openai';
-const GPT_API_KEY = process.env.GPT_API_KEY || '';
-const GPT_MODEL = process.env.GPT_MODEL || 'openai';
 
 // ---------------------------------------------------------------------------
 // Room definitions — each one is a fully independent chatroom with its own
@@ -508,14 +503,13 @@ function setSessionCookie(res, sid, req) {
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
-function readJsonBody(req, maxBytes) {
-  const limit = maxBytes || MAX_BODY_BYTES;
+function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > limit) {
+      if (size > MAX_BODY_BYTES) {
         reject({ status: 413, message: 'Payload too large' });
         req.destroy();
         return;
@@ -666,54 +660,6 @@ function requireCsrf(req, session) {
   const b = Buffer.from(session.csrfToken);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
-}
-
-function callGptUpstream(messages) {
-  return new Promise((resolve, reject) => {
-    let target;
-    try { target = new URL(GPT_API_URL); } catch (e) { return reject(new Error('Bad GPT_API_URL')); }
-    const payload = JSON.stringify({ model: GPT_MODEL, messages });
-    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) };
-    if (GPT_API_KEY) headers.Authorization = 'Bearer ' + GPT_API_KEY;
-    const lib = target.protocol === 'http:' ? http : https;
-    const upstream = lib.request(target, { method: 'POST', headers, timeout: 12000 }, (resp) => {
-      const chunks = [];
-      let size = 0;
-      resp.on('data', (c) => {
-        size += c.length;
-        if (size > 1024 * 1024) {
-          reject(new Error('Upstream response too large'));
-          upstream.destroy();
-          return;
-        }
-        chunks.push(c);
-      });
-      resp.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        if (resp.statusCode < 200 || resp.statusCode >= 300) {
-          return reject(new Error('Upstream status ' + resp.statusCode));
-        }
-        let reply = null;
-        try {
-          const parsed = JSON.parse(raw);
-          if (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message) {
-            reply = parsed.choices[0].message.content;
-          } else if (typeof parsed === 'string') {
-            reply = parsed;
-          }
-        } catch (e) {
-          reply = raw;
-        }
-        if (typeof reply !== 'string' || reply.trim().length === 0) {
-          return reject(new Error('Empty upstream reply'));
-        }
-        resolve(reply);
-      });
-    });
-    upstream.on('timeout', () => upstream.destroy(new Error('Upstream timeout')));
-    upstream.on('error', reject);
-    upstream.end(payload);
-  });
 }
 
 function sanitizeText(str, maxLen) {
@@ -1095,33 +1041,6 @@ async function handleApi(req, res, pathname) {
       roomState.scoresDirty = true;
     }
     return sendJson(res, 200, { ok: true, scores: topScores(roomState) });
-  }
-
-  // POST /api/gpt — relay a conversation to the configured AI backend.
-  // The server adds the operator's API key (if any) so it never reaches
-  // the browser.
-  if (pathname === '/api/gpt' && req.method === 'POST') {
-    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
-    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
-    let body;
-    try { body = await readJsonBody(req, MAX_GPT_BODY_BYTES); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
-    const rawMessages = Array.isArray(body.messages) ? body.messages.slice(-20) : [];
-    const messages = [];
-    for (const m of rawMessages) {
-      if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
-      const content = sanitizeText(m.content, 8000);
-      if (!content) continue;
-      messages.push({ role: m.role, content });
-    }
-    if (messages.length === 0 || messages[messages.length - 1].role !== 'user') {
-      return sendJson(res, 400, { error: 'Nothing to send.' });
-    }
-    try {
-      const reply = await callGptUpstream(messages);
-      return sendJson(res, 200, { reply: reply.slice(0, 20000) });
-    } catch (e) {
-      return sendJson(res, 502, { error: 'The AI backend is unreachable right now.' });
-    }
   }
 
   return sendJson(res, 404, { error: 'Not found' });
