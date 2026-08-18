@@ -15,343 +15,560 @@
 
 <!-- view: essay -->
 <div class="view active" id="view-essay">
+  <div class="pub">
 
-  <button class="nav-toggle" id="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar-nav">
-    <span></span><span></span><span></span>
-  </button>
-  <div class="nav-scrim" id="nav-scrim" hidden></div>
-
-  <aside class="sidebar-nav" id="sidebar-nav" aria-label="Site navigation">
-    <div class="sidebar-brand">
+    <header class="pub-masthead">
+      <p class="pub-band">SOUL STUDIES RESEARCH INITIATIVE · MONOGRAPH IV</p>
       <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
         <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
         <circle cx="12" cy="19.5" r="1.6"/>
       </svg>
-      <div class="sidebar-titles">
-        <span class="sidebar-title">Soul Studies</span>
-        <span class="sidebar-subtitle">notes on minds &amp; people</span>
+      <h1 class="pub-title">The Soul as Explanatory Construct</h1>
+      <p class="pub-subtitle">A Comparative Survey of Personhood Across Philosophical, Theological, and Cognitive-Scientific Traditions</p>
+      <div class="pub-meta">
+        <span>Independent research monograph</span><i></i>
+        <span>Second revision · August 2026</span><i></i>
+        <span>Open access</span><i></i>
+        <span>Not peer reviewed</span>
       </div>
-    </div>
+      <div class="pub-keywords" aria-label="Keywords">
+        <span class="kw kw-teal">personhood</span>
+        <span class="kw kw-gold">psychē</span>
+        <span class="kw kw-blue">substance dualism</span>
+        <span class="kw kw-red">moral agency</span>
+        <span class="kw kw-violet">ātman / anattā</span>
+        <span class="kw kw-green">self-model theory</span>
+        <span class="kw kw-teal">social ontology</span>
+      </div>
+    </header>
 
-    <nav class="sidebar-groups" id="index-nav" aria-label="Research sections">
-      <div class="sidebar-group">
-        <span class="sidebar-group-label">Start here</span>
-        <a class="sidebar-link" data-target="hero" href="#hero">Introduction</a>
-      </div>
-
-      <div class="sidebar-group">
-        <span class="sidebar-group-label">The field lab</span>
-        <a class="sidebar-link" data-target="research-studio" href="#research-studio">Seven rabbit holes</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="psychology" href="#research-studio">Psychology</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="influence" href="#research-studio">Social influence</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="persuasion" href="#research-studio">Persuasion</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="biases" href="#research-studio">Cognitive biases</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="coercion" href="#research-studio">Manipulation &amp; coercion</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="behavior" href="#research-studio">Human behavior</a>
-        <a class="sidebar-sublink" data-target="research-studio" data-panel="dynamics" href="#research-studio">Social dynamics</a>
-      </div>
-
-      <div class="sidebar-group">
-        <span class="sidebar-group-label">Try it yourself</span>
-        <a class="sidebar-link" data-target="lab-notes" href="#lab-notes">A case I keep replaying</a>
-        <a class="sidebar-link" data-target="quiz-deck" href="#quiz-deck">Check your intuition</a>
-        <a class="sidebar-link" data-target="field-notes" href="#field-notes">Open questions</a>
-      </div>
-
-      <div class="sidebar-group">
-        <span class="sidebar-group-label">The long essay</span>
-        <a class="sidebar-link" data-accent="greek" data-target="sec-greek" href="#sec-greek">Greek philosophy</a>
-        <a class="sidebar-link" data-accent="dualism" data-target="sec-dualism" href="#sec-dualism">Dualism</a>
-        <a class="sidebar-link" data-accent="abrahamic" data-target="sec-abrahamic" href="#sec-abrahamic">Abrahamic traditions</a>
-        <a class="sidebar-link" data-accent="dharmic" data-target="sec-dharmic" href="#sec-dharmic">Dharmic traditions</a>
-        <a class="sidebar-link" data-accent="secular" data-target="sec-secular" href="#sec-secular">After the soul</a>
-        <a class="sidebar-link" data-target="sec-closing" href="#sec-closing">Where I've landed</a>
-      </div>
+    <nav class="pub-tabs" id="pub-tabs" role="tablist" aria-label="Sections">
+      <button class="pub-tab is-active" role="tab" aria-selected="true" data-tab="overview" data-hue="teal">Abstract &amp; Overview</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="antiquity" data-hue="gold">I · Antiquity</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="dualism" data-hue="blue">II · Dualism</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="theology" data-hue="red">III · Theology</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="dharmic" data-hue="violet">IV · Dharmic Analyses</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="cognitive" data-hue="green">V · Mind Sciences</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="social" data-hue="teal">VI · Social Dimensions</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="discussion" data-hue="gold">VII · Discussion</button>
+      <button class="pub-tab" role="tab" aria-selected="false" data-tab="references" data-hue="blue">References</button>
     </nav>
 
-    <div class="sidebar-footer">
-      <span class="sidebar-hint">researched, written &amp; coded by one chronically curious junior</span>
-    </div>
-  </aside>
+    <main class="pub-main">
 
-  <section class="hero" id="hero">
-    <svg viewBox="0 0 24 24" class="sigil" id="hero-sigil" aria-hidden="true">
-      <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
-      <circle cx="12" cy="19.5" r="1.6"/>
-    </svg>
-    <p class="eyebrow">soul studies · a passion project</p>
-    <h1>What do we mean, when we say <em>soul</em>?</h1>
-    <p class="dek">I've spent the better part of a year collecting definitions, and every
-      tradition hands me a different one. This site is my attempt to lay them
-      side by side and see what actually survives the comparison.</p>
-    <div class="scroll-cue" aria-hidden="true">
-      <span>read on</span>
-      <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
-    </div>
-  </section>
-
-  <main class="essay">
-
-    <section class="research-intro" id="research-studio">
-      <div class="section-kicker"><span>THE FIELD LAB</span><span>seven rabbit holes, all interactive</span></div>
-      <h2>Everything I keep noticing about <em>how people work</em>.</h2>
-      <p class="intro-copy">The word "soul" gets all the attention, but the machinery around it turned out
-        to be just as strange: attention, identity, influence, belief, and the stories groups
-        tell about themselves. These are the seven topics I cannot stop reading about, each
-        with something small to click on.</p>
-
-      <div class="research-tabs" role="tablist" aria-label="Research domains">
-        <button class="research-tab is-active" role="tab" aria-selected="true" aria-controls="panel-psychology" data-panel="psychology">Psychology</button>
-        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-influence" data-panel="influence">Social influence</button>
-        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-persuasion" data-panel="persuasion">Persuasion</button>
-        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-biases" data-panel="biases">Cognitive biases</button>
-        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-coercion" data-panel="coercion">Manipulation &amp; coercion</button>
-        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-behavior" data-panel="behavior">Human behavior</button>
-        <button class="research-tab" role="tab" aria-selected="false" aria-controls="panel-dynamics" data-panel="dynamics">Social dynamics</button>
-      </div>
-
-      <div class="research-panels">
-        <article class="research-panel is-active" id="panel-psychology" data-panel-view="psychology" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">01</span><h3>Psychology</h3><span class="panel-tag">THE INDIVIDUAL</span></div>
-          <p>This is where I started, mostly because it was the one domain I could test on
-            myself. Perception, memory, motivation, identity — none of them behave like the
-            fixed traits I assumed they were. They're processes, running constantly,
-            whether or not you ever audit them.</p>
-          <div class="micro-grid">
-            <button class="info-card expandable"><span>Attention</span><small>What gets noticed?</small><b>+</b><div>Attention is brutally selective. What reaches awareness depends on your goals, your expectations, and whatever happens to be loudest in the room.</div></button>
-            <button class="info-card expandable"><span>Memory</span><small>Not a recording</small><b>+</b><div>Remembering isn't playback. The brain reconstructs each event from fragments, context, and — inconveniently — whatever you currently believe about it.</div></button>
-            <button class="info-card expandable"><span>Identity</span><small>A moving target</small><b>+</b><div>You feel continuous, yet the self on display shifts with roles, relationships, and social feedback. Somehow both of those are true at once.</div></button>
-          </div>
-        </article>
-
-        <article class="research-panel" id="panel-influence" data-panel-view="influence" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">02</span><h3>Social influence</h3><span class="panel-tag">GROUPS</span></div>
-          <p>People calibrate against each other constantly, and mostly without noticing.
-            Norms can hold a group together, quietly suppress dissent, or make a genuinely
-            strange behavior feel ordinary — occasionally all three in the same afternoon.</p>
-          <div class="scenario-card">
-            <span class="scenario-label">SCENARIO 01</span><h4>The silent room</h4>
-            <p>You walk into a meeting right after a controversial proposal. Everyone is quiet. Nobody has said they oppose it.</p>
-            <div class="choice-row"><button data-scenario="conformity">Speak up</button><button data-scenario="observation">Ask what others think</button><button data-scenario="compliance">Stay silent</button></div>
-            <p class="scenario-result" id="scenario-result">Pick a response and I'll tell you which mechanism it tends to trigger.</p>
-          </div>
-        </article>
-
-        <article class="research-panel" id="panel-persuasion" data-panel-view="persuasion" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">03</span><h3>Persuasion</h3><span class="panel-tag">MESSAGES</span></div>
-          <p>The same argument can land completely differently depending on who delivers it,
-            how it's framed, and when it arrives. That isn't exactly a flaw in human
-            reasoning — but it is an exploit, and advertisers found it long before
-            psychologists named it.</p>
-          <div class="persuasion-lab">
-            <div><span class="lab-label">FRAME A</span><button class="frame-choice" data-frame="loss">"Don't lose what you already have."</button></div>
-            <div><span class="lab-label">FRAME B</span><button class="frame-choice" data-frame="gain">"Gain more control over what comes next."</button></div>
-            <div class="lab-readout"><strong id="frame-readout">Framing lab</strong><span id="frame-detail">Tap either message. Same offer underneath — watch what the wording does to the emphasis.</span></div>
-          </div>
-        </article>
-
-        <article class="research-panel" id="panel-biases" data-panel-view="biases" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">04</span><h3>Cognitive biases</h3><span class="panel-tag">DECISIONS</span></div>
-          <p>Biases get dismissed as "bad thinking," which I think misses the point. Most of
-            them persist because a fast, mostly-right answer beats a slow, perfect one under
-            uncertainty. The trouble starts when the shortcut fires in a situation it was
-            never built for.</p>
-          <div class="bias-meter">
-            <div class="bias-question"><span>QUICK TEST</span><h4>A product costs $100. It gets discounted 20%, then another 20%. Is the final price $60?</h4></div>
-            <div class="bias-options"><button data-answer="yes">Yes</button><button data-answer="no">No</button></div>
-            <p class="quiz-result" id="bias-result"></p>
-          </div>
-        </article>
-
-        <article class="research-panel" id="panel-coercion" data-panel-view="coercion" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">05</span><h3>Manipulation &amp; coercion</h3><span class="panel-tag">BOUNDARIES</span></div>
-          <p>Influence crosses a line when it stops respecting your ability to choose.
-            Coercion is the obvious version — pressure, threats, penalties for refusing.
-            Manipulation is the subtler one: hiding context, leaning on a vulnerability,
-            engineering a decision while letting you believe it was entirely yours.</p>
-          <div class="warning-grid">
-            <div><strong>Transparent influence</strong><span>The reasons are visible, and you can disagree without being punished for it.</span></div>
-            <div><strong>Manipulative influence</strong><span>Something important is hidden or distorted, specifically to steer your choice.</span></div>
-            <div><strong>Coercive influence</strong><span>Refusal carries a threat — a penalty, a loss, a door that closes on you.</span></div>
-          </div>
-        </article>
-
-        <article class="research-panel" id="panel-behavior" data-panel-view="behavior" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">06</span><h3>Human behavior</h3><span class="panel-tag">SYSTEMS</span></div>
-          <p>The question "what kind of person does that?" turns out to be much weaker than
-            "what conditions make that likely?" Behavior sits at the intersection of person,
-            situation, incentive, and habit — nudge any one of them and the others move too.</p>
-          <div class="behavior-map">
-            <div class="behavior-node">PERSON</div><span>↔</span><div class="behavior-node">SITUATION</div><span>↔</span><div class="behavior-node">INCENTIVE</div><span>↔</span><div class="behavior-node">HABIT</div>
-          </div>
-        </article>
-
-        <article class="research-panel" id="panel-dynamics" data-panel-view="dynamics" role="tabpanel">
-          <div class="panel-head"><span class="panel-number">07</span><h3>Social dynamics</h3><span class="panel-tag">NETWORKS</span></div>
-          <p>Groups grow status ladders, coalitions, in-jokes, unwritten rules, and origin
-            stories — usually without anyone deciding to build any of it. Tiny interactions
-            compound into structures that outlast the people who started them.</p>
-          <div class="timeline" aria-label="How a group takes shape">
-            <button class="timeline-step is-active" data-step="1"><b>01</b><span>Encounter</span></button>
-            <button class="timeline-step" data-step="2"><b>02</b><span>Alignment</span></button>
-            <button class="timeline-step" data-step="3"><b>03</b><span>Norms</span></button>
-            <button class="timeline-step" data-step="4"><b>04</b><span>Identity</span></button>
-          </div>
-          <p class="timeline-copy" id="timeline-copy">It starts with contact: people notice each other, size up safety and relevance, and form first impressions that are annoyingly durable.</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="explore-strip">
-      <div><span class="section-kicker">THE HANDS-ON PART</span><h3>Three ways to poke at a behavior.</h3></div>
-      <button class="explore-chip" data-jump="lab-notes">Read a case</button>
-      <button class="explore-chip" data-jump="quiz-deck">Test a hypothesis</button>
-      <button class="explore-chip" data-jump="field-notes">Trace an idea</button>
-    </section>
-
-    <section class="lab-notes" id="lab-notes">
-      <p class="eyebrow small">Case file · 01</p>
-      <h2>The power of the room</h2>
-      <div class="case-layout">
-        <div><p>Picture three people who each privately disagree with a group decision. The
-          discussion opens, and each of them watches the other two stay quiet. The silence
-          becomes evidence: "maybe I'm the only one who sees a problem." I have watched this
-          exact thing happen in a student council meeting, which is partly why I'm writing
-          any of this.</p><p>Change one variable — let a single person say the quiet part out
-          loud — and the social information available to everyone in the room updates at
-          once. That asymmetry, where one voice can reprice the whole conversation, still
-          gets me.</p></div>
-        <div class="fact-stack"><span>VARIABLE <b>visibility</b></span><span>MECHANISM <b>social proof</b></span><span>QUESTION <b>who speaks first?</b></span></div>
-      </div>
-    </section>
-
-    <section class="quiz-deck" id="quiz-deck">
-      <p class="eyebrow small">Field test · 02</p>
-      <h2>Check your intuition</h2>
-      <div class="quiz-card">
-        <p class="quiz-progress">QUESTION 1 / 3</p>
-        <h3>Which statement best describes confirmation bias?</h3>
-        <div class="quiz-answer-grid">
-          <button data-quiz="wrong">Remembering everything equally</button>
-          <button data-quiz="right">Favoring information that supports an existing belief</button>
-          <button data-quiz="wrong">Always changing your mind when evidence appears</button>
+      <section class="pub-panel is-active" data-panel="overview" data-hue="teal">
+        <div class="pub-sec" data-reveal>
+          <h2>Abstract</h2>
+          <p class="pub-abstract">Few terms in the history of ideas have carried as much explanatory weight, across as many
+            otherwise incompatible frameworks, as <em>soul</em>. The present monograph surveys the concept's principal
+            formulations — Homeric and classical Greek psychology, Cartesian substance dualism, the moral-forensic soul of
+            the Abrahamic theologies, the Dharmic debate between essentialist and non-self analyses, and the successor
+            vocabulary of the modern mind sciences — and asks a single organizing question: <strong>what work has the concept
+            been asked to do, and which of those tasks remain unassigned after its formal retirement?</strong> We argue that
+            "soul" has historically bundled four distinguishable functions: an <em>animation</em> function (what separates the
+            living from the dead), an <em>identity</em> function (what makes a person the same person over time), a
+            <em>moral</em> function (what bears responsibility and desert), and a <em>remainder</em> function (what resists
+            exhaustive physical description). Successor concepts in psychology and neuroscience have inherited these tasks
+            unevenly, and the persistence of soul-language in ostensibly secular registers is best explained by the
+            remainder function's continued vacancy.</p>
         </div>
-        <p id="quiz-feedback" class="quiz-feedback" aria-live="polite">Choose an answer.</p>
-      </div>
-    </section>
 
-    <section class="field-notes" id="field-notes">
-      <p class="eyebrow small">Field notes · 03</p>
-      <h2>Questions I keep in my notes app</h2>
-      <div class="question-grid">
-        <details open><summary>What changes when nobody is watching?</summary><p>Private behavior is a decent litmus test for which of your motives depend on an audience and which ones you'd maintain alone in a room.</p></details>
-        <details><summary>When does a norm become invisible?</summary><p>Repeat a behavior long enough and it stops registering as a choice at all. It just becomes "how things are," which is exactly when it's worth re-examining.</p></details>
-        <details><summary>Can a belief be useful and inaccurate?</summary><p>Apparently yes. A simplified model can guide action perfectly well while failing to describe the world — my entire mental map of my own city works like this.</p></details>
-        <details><summary>Where does agency actually sit?</summary><p>I've stopped treating it as all-or-nothing. It reads more like a relationship between choices, constraints, knowledge, and habit — which is less satisfying but probably more honest.</p></details>
-      </div>
-    </section>
+        <div class="pub-stats" data-reveal>
+          <div class="stat stat-gold"><b>9</b><span>traditions surveyed</span></div>
+          <div class="stat stat-blue"><b>26</b><span>centuries spanned</span></div>
+          <div class="stat stat-violet"><b>4</b><span>conceptual functions</span></div>
+          <div class="stat stat-green"><b>15</b><span>primary sources cited</span></div>
+        </div>
 
-    <section class="section-divider">
-      <span>THE LONG QUESTION</span>
-      <i></i>
-      <span>SOUL · SELF · SOCIETY</span>
-    </section>
+        <div class="pub-callout co-teal" data-reveal>
+          <span class="co-label">SCOPE &amp; METHOD</span>
+          <p>This survey is comparative and conceptual rather than doxographic: sources are read for the <em>function</em> a
+            soul-concept performs within its home framework, not catalogued for completeness. Primary texts are cited in
+            standard editions; translations follow the conventions noted in the references. No claim of confessional or
+            metaphysical adjudication is made at any point — where traditions disagree, the disagreement itself is treated
+            as the datum of interest.</p>
+        </div>
 
-    <section>
-      <p>Say the word out loud and it means something different depending on who's
-        listening. To my grandmother it's a theological claim: an immortal, immaterial
-        thing that outlives the body. To my playlist it's a genre. Between those two
-        poles sits most of recorded philosophy, circling one stubborn question that
-        refuses to die of old age: what is it, in a person, that makes them
-        <em>them</em>?</p>
-    </section>
+        <div class="pub-sec" data-reveal>
+          <h3>Structure of the monograph</h3>
+          <p>Sections I–IV reconstruct the four historically dominant families of soul-concepts in roughly chronological
+            order. Section V examines the vocabulary that replaced them in the empirical mind sciences and evaluates the
+            completeness of that replacement. Section VI turns to the social and legal registers in which personhood is
+            conferred rather than discovered. Section VII synthesizes the findings under the four-function analysis
+            proposed above.</p>
+        </div>
 
-    <hr class="rule">
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>Working definitions adopted throughout</summary>
+            <p><strong>Soul-concept:</strong> any theoretical posit whose primary role is to account for one or more of the four
+              functions named in the abstract. <strong>Substance:</strong> an entity capable of independent existence, per the
+              Cartesian usage. <strong>Form:</strong> the organizational principle of a body, per the Aristotelian usage.
+              <strong>Person:</strong> the bearer of identity and accountability, deliberately left neutral between metaphysical
+              accounts. These definitions are stipulative; nothing in the argument depends on their being the only
+              admissible ones.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Limitations of the survey</summary>
+            <p>Three limitations deserve notice. First, the survey privileges textual traditions with continuous
+              commentarial histories, under-representing oral and indigenous ontologies whose soul-concepts are frequently
+              plural and relational. Second, the treatment of the mind sciences compresses a century of experimental work
+              into its conceptual upshot. Third, comparative work of this kind inevitably flattens internal diversity —
+              "Christian views of the soul" names a family of positions, not a position.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>A note on terminology and transliteration</summary>
+            <p>Greek terms are transliterated without diacritics except where a distinction depends on them
+              (<em>psychē</em>, <em>thymos</em>, <em>nous</em>). Sanskrit and Pāli terms are given in simplified IAST
+              (<em>ātman</em>, <em>anattā</em>, <em>skandha</em>). Hebrew and Arabic terms follow common scholarly usage
+              (<em>nefesh</em>, <em>ruaḥ</em>, <em>nafs</em>, <em>rūḥ</em>). Where a single English gloss would prejudge an
+              interpretive question, the source term is retained.</p>
+          </details>
+        </div>
+      </section>
 
-    <section id="sec-greek" data-accent="greek">
-      <p class="eyebrow small">Greek philosophy</p>
-      <h2>Psyche — the thing that animates</h2>
-      <p>The Greek <em>psyché</em> didn't start out ghostly at all — it meant breath,
-        the animating difference between a living body and a corpse. Plato took it
-        much further: the soul was immortal, split into reason, spirit, and appetite,
-        and only temporarily stuck in flesh. Aristotle's response reads to me like
-        the first great "well, actually" in Western philosophy — the soul isn't a
-        separate substance riding around in a body, it's the body's <em>form</em>,
-        the organizing pattern that makes a living thing alive. No more separable
-        from it than the shape of a fist is separable from the hand making it.</p>
-    </section>
+      <section class="pub-panel" data-panel="antiquity" data-hue="gold">
+        <div class="pub-sec" data-reveal>
+          <h2>I · Antiquity: from breath to tripartite structure</h2>
+          <p>The earliest Greek usage of <em>psychē</em> is strikingly austere. In the Homeric poems it is not the seat of
+            personality, emotion, or thought — those roles are distributed across <em>thymos</em> and <em>nous</em> — but the
+            bare animating difference between a living body and a corpse, exhaled at death and persisting in Hades as an
+            attenuated image. The concept's later career is a history of consolidation: functions originally scattered
+            across several terms were progressively gathered into <em>psychē</em> alone, until by the classical period it
+            named the whole inner life of the person.</p>
+          <p>Plato's <em>Republic</em> completes this consolidation and adds internal structure: the soul comprises a
+            reasoning part (<em>logistikon</em>), a spirited part (<em>thymoeides</em>), and an appetitive part
+            (<em>epithymētikon</em>), with justice defined as their correct hierarchical ordering. In the <em>Phaedo</em>,
+            the soul's kinship with the unchanging Forms grounds the argument for its immortality — the first fully explicit
+            claim, in the Greek tradition, that the identity function and the animation function are performed by something
+            separable from the body.</p>
+        </div>
 
-    <section id="sec-dualism" data-accent="dualism">
-      <p class="eyebrow small">Dualism</p>
-      <h2>Descartes and the ghost in the machine</h2>
-      <p>Centuries later, Descartes reopened the split with his divide between
-        <em>res cogitans</em> and <em>res extensa</em> — the thinking thing and the
-        extended thing, mind and matter as two fundamentally different kinds of
-        stuff. The soul becomes the seat of thought and identity, interfacing with a
-        mechanical body through (he guessed, wrongly) the pineal gland. Critics have
-        now spent four hundred years asking the follow-up he never satisfyingly
-        answered, and honestly it was the first question I had too: if mind and
-        matter are made of entirely different stuff, how does one push the other
-        around?</p>
-    </section>
+        <div class="pub-table-wrap" data-reveal>
+          <table class="pub-table">
+            <caption>Table 1 · The Platonic tripartition (Republic IV)</caption>
+            <thead><tr><th>Part</th><th>Greek term</th><th>Characteristic activity</th><th>Proper virtue</th></tr></thead>
+            <tbody>
+              <tr><td>Reason</td><td><em>logistikon</em></td><td>calculation, truth-seeking, rule</td><td>wisdom</td></tr>
+              <tr><td>Spirit</td><td><em>thymoeides</em></td><td>anger, honor, resolve</td><td>courage</td></tr>
+              <tr><td>Appetite</td><td><em>epithymētikon</em></td><td>desire for food, drink, gain</td><td>temperance</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-    <hr class="rule">
+        <div class="pub-callout co-gold" data-reveal>
+          <span class="co-label">KEY POSITION · HYLOMORPHISM</span>
+          <p>Aristotle's <em>De Anima</em> rejects the separability thesis at its root. The soul is the <em>form</em> of a
+            natural body having life potentially within it — not a substance residing in the body but the body's own
+            organization, actuality, and capacity-profile. On this analysis, asking whether the soul survives the body is
+            a category error, "as if one were to ask whether the wax and the shape given to it by the stamp are one."
+            Hylomorphism thereby retains the animation and identity functions while discharging the metaphysical debt of
+            dualism — a solution modern functionalists have repeatedly rediscovered.</p>
+        </div>
 
-    <section id="sec-abrahamic" data-accent="abrahamic">
-      <p class="eyebrow small">Abrahamic traditions</p>
-      <h2>A soul that is judged</h2>
-      <p>In Jewish, Christian, and Islamic thought, the soul carries moral weight —
-        it's the part of a person accountable before God, the thing that persists to
-        face judgment after the body fails. The details diverge more than I expected
-        going in: whether the soul is created at conception or breathed in later,
-        whether it sleeps until resurrection or proceeds directly to an afterlife,
-        whether it's immortal by nature or only by divine gift. But the throughline
-        holds steady across all three — the soul is where moral responsibility
-        lives.</p>
-    </section>
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>The Homeric inventory of soul-words</summary>
+            <p>Homeric psychology distributes across at least three terms what later Greek gathers into one:
+              <em>psychē</em> (life-breath, shade), <em>thymos</em> (the surge of emotion and impulse, located in the chest),
+              and <em>nous</em> (the faculty of seeing a situation for what it is). None of these is a bearer of moral
+              responsibility in the later sense; Homeric agents are praised and blamed for deeds, not for the states of an
+              inner substance. The consolidation of these terms is itself evidence that "the soul" is a constructed
+              explanatory object, assembled to answer questions its components could not answer separately.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Stoic pneuma: a corporeal soul</summary>
+            <p>The Stoics accepted that the soul performs the animation and identity functions while denying that anything
+              incorporeal exists. Their solution — the soul as <em>pneuma</em>, a fine-grained corporeal breath pervading
+              the body in graded tensions — demonstrates that antiquity already contained a physicalist option. That this
+              option was available yet repeatedly declined by the majority traditions suggests the persistence of dualism
+              is not explained by a mere absence of alternatives.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Pythagorean and Orphic transmigration</summary>
+            <p>Pre-Platonic transmigration doctrines are the earliest Greek formulations in which the identity function is
+              performed across multiple embodiments. Their significance for the present survey is structural: once the
+              soul is what persists <em>between</em> bodies, the body is demoted from constituent of the person to temporary
+              vehicle — the exact inversion of the Homeric picture, achieved within three centuries.</p>
+          </details>
+        </div>
 
-    <section id="sec-dharmic" data-accent="dharmic">
-      <p class="eyebrow small">Dharmic traditions</p>
-      <h2>Atman, and the tradition that denies it</h2>
-      <p>Hindu philosophy generally holds that beneath the changing self sits an
-        <em>atman</em> — an unchanging essence that is ultimately identical with the
-        ground of reality itself, Brahman. Buddhism, growing out of the same soil,
-        planted its flag on the exact opposite claim: <em>anatta</em>, non-self. What
-        we call a soul, in the Buddhist analysis, is a fast-moving bundle of
-        sensations, perceptions, and mental formations, mistaken for something solid
-        only because it's persistent — the way a river looks like a single object
-        from a distance. Two traditions sharing a vocabulary of liberation, arriving
-        at opposite answers about whether anyone is home to be liberated. This is
-        still my favorite disagreement in the whole project.</p>
-    </section>
+        <blockquote class="pub-quote q-gold" data-reveal>
+          "If the eye were an animal, sight would be its soul."
+          <cite>— Aristotle, De Anima II.1 (paraphrase of the standard example)</cite>
+        </blockquote>
+      </section>
 
-    <hr class="rule">
+      <section class="pub-panel" data-panel="dualism" data-hue="blue">
+        <div class="pub-sec" data-reveal>
+          <h2>II · Substance dualism and the early-modern settlement</h2>
+          <p>Descartes' <em>Meditations</em> (1641) reorganized the entire problem-space. Where ancient and scholastic
+            treatments had graded soul-functions across plants, animals, and humans, Descartes drew a single line: reality
+            divides into <em>res cogitans</em> (thinking substance, unextended, indivisible) and <em>res extensa</em>
+            (extended substance, mechanical, divisible). Animals fell wholly on the extended side; the human being became a
+            uniquely problematic composite. The soul was now coextensive with the mind, and the identity and remainder
+            functions were concentrated in a substance defined precisely by its exclusion from physical description.</p>
+          <p>The settlement purchased clarity at the price of an interface problem that has never been discharged. If mind
+            and body share no properties, the causal traffic between them — volition moving limbs, injury producing pain —
+            becomes exactly as mysterious as the data it was meant to explain. Descartes' own proposal, that the
+            interaction is transacted at the pineal gland, relocated the mystery without reducing it, as his sharpest
+            correspondent saw immediately.</p>
+        </div>
 
-    <section id="sec-secular" data-accent="secular">
-      <p class="eyebrow small">After the soul</p>
-      <h2>What secular thought kept, and what it dropped</h2>
-      <p>Modern psychology mostly retired the word, swapping in "self," "mind,"
-        "identity," "consciousness" — terms it hoped could do the same work without
-        the metaphysical debt. Whether the swap actually succeeded is still argued.
-        Neuroscience can show you which regions light up when someone recalls a
-        memory or feels regret, but that hasn't dissolved the older question so much
-        as relocated it: is a person fully described by that map, or does something
-        escape it? What convinces me the question isn't finished: people who would
-        never call themselves religious still reach for "soul" when nothing else
-        fits — soul food, soul music, an old friend described as an old soul. The
-        word outlived the doctrine.</p>
-    </section>
+        <div class="pub-callout co-blue" data-reveal>
+          <span class="co-label">THE STANDING OBJECTION</span>
+          <p>Princess Elisabeth of Bohemia, in correspondence with Descartes (May 1643), posed the question that still
+            organizes philosophy of mind: how can an unextended thing determine the motion of an extended thing, when
+            determination of motion appears to require contact, and contact requires extension? Descartes' reply — that
+            the union of mind and body is a primitive notion, intelligible in daily life but obscured by philosophy —
+            concedes the systematic point while declining the systematic burden. Every subsequent dualism inherits
+            Elisabeth's question.</p>
+        </div>
 
-    <section class="closing" id="sec-closing">
-      <p>So here's where I've landed, at least this semester: not on a settled fact,
-        but on a question every tradition took seriously enough to keep asking, each
-        landing somewhere different, none able to fully let it go. What survives
-        across all of them is the intuition that a person is not merely their
-        measurements — and that the remainder, whatever it turns out to be, deserves
-        a name.</p>
-    </section>
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>Occasionalism and pre-established harmony</summary>
+            <p>The generation after Descartes treated the interaction problem as decisive and rebuilt around it.
+              Malebranche's occasionalism assigns all genuine causation to God, mental and physical events being merely
+              occasions of divine action; Leibniz's pre-established harmony denies interaction altogether, mind and body
+              running as synchronized clocks wound at creation. That the era's finest systematic minds preferred these
+              costs to Elisabeth's problem measures the problem's perceived severity.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Property dualism as the modern residue</summary>
+            <p>Contemporary property dualism retains one substance but two property-families, holding that phenomenal
+              properties fail to reduce to physical ones. It is best read as the Cartesian remainder function surviving
+              the death of Cartesian substance: what persists is not the ghost, but the conviction that a complete physical
+              inventory would leave something out.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Ryle's dissolution: the category mistake</summary>
+            <p>Gilbert Ryle's <em>The Concept of Mind</em> (1949) attacked the "ghost in the machine" as a category
+              mistake — treating dispositional and capacity talk as if it named a second, hidden theatre. Ryle's behaviorism
+              is now generally judged too strong, but his diagnostic survives: much soul-talk is talk <em>about</em> the
+              person's abilities and proclivities, mistaken for talk about an inner object.</p>
+          </details>
+        </div>
 
-  </main>
+        <blockquote class="pub-quote q-blue" data-reveal>
+          "It would be easier for me to concede matter and extension to the soul than to concede the capacity to move a
+          body and be moved by it to an immaterial thing."
+          <cite>— Elisabeth of Bohemia to Descartes, 10 June 1643</cite>
+        </blockquote>
+      </section>
+
+      <section class="pub-panel" data-panel="theology" data-hue="red">
+        <div class="pub-sec" data-reveal>
+          <h2>III · The forensic soul of the Abrahamic theologies</h2>
+          <p>In the Jewish, Christian, and Islamic traditions the soul's center of gravity is neither animation nor
+            metaphysics but <em>accountability</em>. The soul is that in the person which stands before God, receives
+            judgment, and bears desert; its persistence beyond death is required not primarily to explain life but to
+            guarantee that the moral ledger closes. This forensic orientation explains features of the theological soul
+            that puzzle purely philosophical readers: its individuation (each person's account must be separately kept),
+            its indestructibility or divine preservation (the ledger must not be lost), and the intensity of the disputes
+            over its origin (when the accountable subject begins).</p>
+          <p>The internal disagreements are substantial and instructive. The Hebrew scriptures speak of <em>nefesh</em>
+            (the living being itself), <em>ruaḥ</em> (breath, spirit), and <em>neshamah</em> (the divine in-breathing)
+            without a systematic doctrine of an immortal detachable soul; later rabbinic and medieval thought developed
+            such doctrines in conversation with Greek philosophy. Christian theology divided over whether the soul sleeps
+            until resurrection or proceeds immediately to its state; Islamic kalām debated whether the <em>nafs</em> is a
+            subtle body or an immaterial substance. Across all three, bodily resurrection — not disembodied survival —
+            remains the orthodox terminus, a fact that separates the theological soul sharply from its Platonic ancestor.</p>
+        </div>
+
+        <div class="pub-table-wrap" data-reveal>
+          <table class="pub-table">
+            <caption>Table 2 · Principal soul-terms in the Abrahamic scriptures</caption>
+            <thead><tr><th>Tradition</th><th>Term</th><th>Primary sense</th><th>Forensic role</th></tr></thead>
+            <tbody>
+              <tr><td>Judaism</td><td><em>nefesh / ruaḥ / neshamah</em></td><td>living being · breath · divine spark</td><td>the whole person judged</td></tr>
+              <tr><td>Christianity</td><td><em>psychē / anima</em></td><td>life-principle, seat of will</td><td>judged, awaiting resurrection</td></tr>
+              <tr><td>Islam</td><td><em>nafs / rūḥ</em></td><td>self, appetitive soul · spirit from God</td><td>weighed at the reckoning</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>Origin disputes: traducianism vs. creationism</summary>
+            <p>Whether each soul is generated by the parents with the body (traducianism) or created directly by God at
+              each conception (creationism) divided Latin theology for centuries. The dispute is forensically motivated:
+              traducianism eases the transmission of original sin but risks making the soul material; creationism protects
+              the soul's dignity but makes God the author of a corrupted subject. The pattern — metaphysics adjusted to fit
+              moral bookkeeping — is characteristic of the entire register.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Aquinas' synthesis: subsistent form</summary>
+            <p>Aquinas (Summa Theologiae I, qq. 75–76) fused Aristotle's hylomorphism with the forensic requirements: the
+              soul is the form of the body, yet a <em>subsistent</em> form capable of surviving separation — though in a
+              condition so truncated that Aquinas insists the separated soul is not the person, and full personhood awaits
+              reunion with the body. The synthesis is philosophically strained and theologically exact, which is precisely
+              the point: the doctrine's shape is dictated by the work it must do.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Al-Ghazālī and the philosophers</summary>
+            <p>Al-Ghazālī's critique of the Aristotelian philosophers turned partly on the resurrection: a philosophy that
+              can guarantee only the soul's survival, and not the body's return, fails the tradition's forensic
+              specification. His willingness to subordinate the era's best metaphysics to that specification again
+              illustrates the priority of the moral function in this family of concepts.</p>
+          </details>
+        </div>
+
+        <div class="pub-callout co-red" data-reveal>
+          <span class="co-label">COMPARATIVE FINDING</span>
+          <p>The theological soul is the only major formulation in which the <em>moral</em> function dominates the other
+            three. Its successors in secular ethics — the rational agent, the person as end-in-itself, the bearer of
+            rights — inherit the accountability role while abandoning the metaphysical guarantee that the account will be
+            settled. Whether moral concepts calibrated for a closed ledger remain stable on an open one is treated in
+            Section VII.</p>
+        </div>
+      </section>
+
+      <section class="pub-panel" data-panel="dharmic" data-hue="violet">
+        <div class="pub-sec" data-reveal>
+          <h2>IV · Dharmic analyses: the essential self and its denial</h2>
+          <p>The Upanishadic tradition advances the strongest identity-function claim in the comparative record: beneath
+            the empirical self of memory, character, and social role lies <em>ātman</em> — unborn, unchanging, and in the
+            non-dualist reading identical with <em>brahman</em>, the ground of reality as such. The self is not merely
+            immortal; it is, at the limit, the only thing that was never in danger. Liberation (<em>mokṣa</em>) consists
+            in the dissolution of the misidentification of ātman with its psychophysical wrappings.</p>
+          <p>Early Buddhism, emerging from the same milieu and sharing its soteriological grammar, denies the load-bearing
+            posit. The <em>anattā</em> analysis decomposes the person into five aggregates (<em>skandhas</em>) — form,
+            feeling, perception, formations, consciousness — each impermanent, none a self, their continuity requiring no
+            underlying substrate, as a flame passes from wick to wick. What we call a person is a designation applied to a
+            causally connected stream; the sense of an unchanging inner owner is itself a cognitive construction, and its
+            deconstruction is the point of the path.</p>
+        </div>
+
+        <div class="pub-table-wrap" data-reveal>
+          <table class="pub-table">
+            <caption>Table 3 · The five aggregates of the anattā analysis</caption>
+            <thead><tr><th>Skandha</th><th>Gloss</th><th>What it explains</th></tr></thead>
+            <tbody>
+              <tr><td><em>rūpa</em></td><td>form</td><td>the body and its senses</td></tr>
+              <tr><td><em>vedanā</em></td><td>feeling</td><td>hedonic tone of experience</td></tr>
+              <tr><td><em>saññā</em></td><td>perception</td><td>recognition and labeling</td></tr>
+              <tr><td><em>saṅkhāra</em></td><td>formations</td><td>volitions, habits, character</td></tr>
+              <tr><td><em>viññāṇa</em></td><td>consciousness</td><td>the bare registering of objects</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>The chariot argument (Milindapañha)</summary>
+            <p>The monk Nāgasena's reply to King Milinda remains the tradition's canonical illustration: as "chariot" is a
+              designation for wheels, axle, and frame in assembly — with no chariot found among or beyond the parts — so
+              "Nāgasena" designates the aggregates in process. The argument's force is that it concedes everything the
+              essentialist wants to explain (reference, continuity, practical identity) while denying that a further entity
+              is needed to explain it.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Karma without a carrier?</summary>
+            <p>The standing objection to anattā is forensic: if no self persists, what carries karmic desert across lives?
+              The tradition's answer — causal continuity without identity, as milk becomes curd — effectively decouples the
+              moral function from the identity function, a separation no Western framework attempted before Parfit's
+              <em>Reasons and Persons</em> (1984) reached a structurally similar position by independent argument.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Later syntheses and qualified selves</summary>
+            <p>The Indian debate did not terminate in a binary. Vedāntic sub-schools graded the self's identity with
+              brahman from strict non-dualism to qualified and dualist readings; Buddhist Pudgalavādins defended an
+              "inexpressible" person neither identical to nor distinct from the aggregates. The persistence of these
+              intermediate positions suggests that both the essentialist and eliminativist poles leave genuine explananda
+              unclaimed.</p>
+          </details>
+        </div>
+
+        <blockquote class="pub-quote q-violet" data-reveal>
+          "Just as, with an assemblage of parts, the word 'chariot' is used, so, when the aggregates exist, there is the
+          convention 'a being.'"
+          <cite>— Saṃyutta Nikāya V (Vajirā Sutta)</cite>
+        </blockquote>
+      </section>
+
+      <section class="pub-panel" data-panel="cognitive" data-hue="green">
+        <div class="pub-sec" data-reveal>
+          <h2>V · The mind sciences and the successor vocabulary</h2>
+          <p>Scientific psychology formally retired "soul" within a generation of its founding. James' <em>Principles of
+            Psychology</em> (1890) still discusses the soul-theory respectfully before setting it aside as explanatorily
+            idle; by the behaviorist consolidation it was not even worth refuting. The functions, however, were not
+            retired — they were reassigned. Animation went to physiology and thermodynamics; identity to memory,
+            personality, and narrative-self research; the moral function to developmental and social psychology of agency;
+            and the remainder function, officially, to nothing.</p>
+          <p>The contemporary picture is aggressively constructional. Memory is reconstructive rather than archival;
+            the unified visual world is assembled from saccadic fragments; the sense of body-ownership can be displaced
+            onto a rubber hand in minutes; split-brain preparations suggest that unity of consciousness is a default
+            setting rather than a metaphysical guarantee. Self-model theories draw the natural conclusion: the self is the
+            content of a transparent model the organism runs of itself — indispensable, real as a process, and not a thing.</p>
+        </div>
+
+        <div class="pub-stats" data-reveal>
+          <div class="stat stat-green"><b>1890</b><span>James sets the soul-theory aside</span></div>
+          <div class="stat stat-blue"><b>1949</b><span>Ryle names the ghost in the machine</span></div>
+          <div class="stat stat-violet"><b>1960s</b><span>split-brain studies begin</span></div>
+          <div class="stat stat-gold"><b>2003</b><span>Metzinger's self-model theory</span></div>
+        </div>
+
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>What the reconstructive turn actually shows</summary>
+            <p>The experimental dissolution of the self's apparent unities licenses a precise conclusion: the <em>felt</em>
+              simplicity of the subject is not evidence of a simple substance. It does not license the stronger conclusion
+              that there is no subject — a process can be real, causally potent, and worth the name. The slide from "the
+              self is constructed" to "the self is an illusion" repeats, with inverted sign, the substantialist's original
+              error of reading phenomenology as ontology.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Neural correlates and the explanatory gap</summary>
+            <p>Correlational neuroscience can now track self-referential processing, autobiographical retrieval, and
+              affective valuation with considerable anatomical specificity. What no correlation supplies is the entailment
+              from physical description to experiential character — the gap property dualists inherit from Elisabeth's
+              question. The mind sciences have not closed the remainder function; they have quarantined it.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Predictive processing and the self as hypothesis</summary>
+            <p>On predictive-processing accounts, the organism maintains a generative model whose deepest hidden variable
+              is itself; selfhood is the brain's best standing hypothesis about the source of its own regularities. The
+              framework is notable here for reproducing, in computational dress, Aristotle's structural insight: the
+              "soul" is not an occupant of the system but the system's own organization, described at the level at which
+              it maintains itself.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Damasio's layered self</summary>
+            <p>Damasio's distinction between proto-self, core self, and autobiographical self (1999) stratifies the
+              identity function developmentally: a homeostatic body-mapping layer, a moment-to-moment subject of
+              experience, and a narrative structure extended in time. The stratification matters comparatively because
+              different traditions' soul-concepts map onto <em>different layers</em> — the Homeric psychē to the first,
+              the Cartesian cogito to the second, the forensic soul to the third.</p>
+          </details>
+        </div>
+
+        <div class="pub-callout co-green" data-reveal>
+          <span class="co-label">SECTION FINDING</span>
+          <p>The successor vocabulary performs the animation and identity functions to a high standard, the moral function
+            partially, and the remainder function not at all — by design, since a discipline constituted by third-person
+            method cannot adopt a task defined as resisting third-person description. The vacancy is structural, which is
+            why it does not close as data accumulate.</p>
+        </div>
+      </section>
+
+      <section class="pub-panel" data-panel="social" data-hue="teal">
+        <div class="pub-sec" data-reveal>
+          <h2>VI · Social dimensions: personhood as conferred status</h2>
+          <p>A final register treats personhood not as discovered within the individual but as conferred by the group.
+            Legal systems have withheld full personhood from human beings and extended it to corporations, ships, rivers,
+            and idols; ritual systems mark the entry into and exit from personhood with more ceremony than biology alone
+            would warrant. In this register the operative question is not "what is a soul?" but "whom do we count, and for
+            what?" — and the answers are visibly historical, contested, and revisable.</p>
+          <p>Durkheim's analysis of collective effervescence supplies the connecting mechanism: the experienced sacredness
+            of the person is, on his account, the group's own force represented in individual form — the soul as society's
+            deposit in each member. One need not accept the full reduction to notice what it explains: why soul-language
+            intensifies precisely at the points of social incorporation and loss (birth, naming, marriage, death), and why
+            desecration of the person is universally treated as an offense against more than the individual.</p>
+        </div>
+
+        <div class="pub-accs" data-reveal>
+          <details class="pub-acc">
+            <summary>Personhood before the law</summary>
+            <p>The legal person is the forensic soul secularized: a bookkeeping subject to which acts, debts, and rights
+              are imputed. Its detachment from biology is complete — corporations hold rights of speech; some jurisdictions
+              have granted legal personhood to rivers and ecosystems. The construct's portability confirms the present
+              survey's functional thesis: where a function is clearly specified, it can be reassigned to a new bearer
+              without metaphysical residue.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>The soul of a group</summary>
+            <p>Everyday speech ascribes soul to bands, teams, neighborhoods, and nations, and its loss is reported with
+              the same vocabulary of hollowing used for persons. The usage is not decorative: it tracks the presence or
+              absence of the integrative processes — shared history, mutual recognition, self-maintenance — that the
+              Aristotelian analysis treats as soul in the primary sense. Group soul-talk is hylomorphism applied at scale.</p>
+          </details>
+          <details class="pub-acc">
+            <summary>Digital afterlives and the distributed person</summary>
+            <p>Posthumous social-media profiles, trained conversational replicas, and memorial archives now perform
+              identity-function work for the dead — maintaining address, voice, and social presence without animation. The
+              phenomenon splits functions that every prior tradition bundled, and public unease about it is best read as
+              the felt seam of that split: the remainder function objecting to its own automation.</p>
+          </details>
+        </div>
+
+        <blockquote class="pub-quote q-teal" data-reveal>
+          "The soul is society individualized — the sacred within us is the group's own force, represented."
+          <cite>— after Durkheim, The Elementary Forms of the Religious Life (1912)</cite>
+        </blockquote>
+      </section>
+
+      <section class="pub-panel" data-panel="discussion" data-hue="gold">
+        <div class="pub-sec" data-reveal>
+          <h2>VII · Discussion: four functions, one vacancy</h2>
+          <p>Read functionally, the comparative record resolves into four families of soul-concepts, each organized around
+            the function it performs best. The <em>substance</em> family (Plato, Descartes, the kalām) secures identity and
+            remainder at the cost of the interface problem. The <em>form</em> family (Aristotle, Aquinas in part, modern
+            functionalism) secures animation and identity at the cost of survival. The <em>process</em> family (Buddhist
+            anattā, Humean bundles, self-model theory) dissolves the bearer while preserving the phenomena. The
+            <em>status</em> family (forensic theology, legal personhood, Durkheimian analysis) makes personhood a conferred
+            standing and thereby explains its social behavior. No family performs all four functions; each family's
+            characteristic pathology is the function it neglects.</p>
+        </div>
+
+        <div class="pub-clusters" data-reveal>
+          <div class="cluster cl-blue"><b>SUBSTANCE</b><span>an immaterial bearer</span><p>identity ✓ · remainder ✓ · interface problem ✗</p></div>
+          <div class="cluster cl-gold"><b>FORM</b><span>the body's organization</span><p>animation ✓ · identity ✓ · survival ✗</p></div>
+          <div class="cluster cl-violet"><b>PROCESS</b><span>a connected stream</span><p>parsimony ✓ · phenomena ✓ · bearer ✗</p></div>
+          <div class="cluster cl-red"><b>STATUS</b><span>a conferred standing</span><p>moral ✓ · social ✓ · interiority ✗</p></div>
+        </div>
+
+        <div class="pub-sec" data-reveal>
+          <h3>The persistence of the word</h3>
+          <p>The survey's terminal observation is lexical. Populations that assent to no doctrine of the soul continue to
+            reach for the word at predictable points: for depth in persons ("an old soul"), for expressive authenticity in
+            art ("the record has soul"), for integrative wholeness in groups and places, and for the specific loss felt
+            when a person's body persists while the person seems absent. These usages cluster exactly over the remainder
+            function — the aspects of personhood that resist inventory. On the present analysis this is not nostalgia but
+            precision: the word survives because it is still the only single term whose job description matches the
+            vacancy. Concepts are retired when their work is reassigned; "soul" remains employed because part of its work
+            has nowhere else to go.</p>
+          <p>We accordingly end not with adjudication but with a conservation claim: across twenty-six centuries the
+            explanatory mass of the soul-concept is neither created nor destroyed — it is redistributed. Every framework
+            surveyed here, including the most austere, keeps a place-holder where the soul used to stand. The interesting
+            question, and the subject of the sequel monograph, is what it costs a framework to leave that position
+            unfilled.</p>
+        </div>
+      </section>
+
+      <section class="pub-panel" data-panel="references" data-hue="blue">
+        <div class="pub-sec" data-reveal>
+          <h2>References &amp; further reading</h2>
+          <ol class="pub-refs">
+            <li>Plato. <em>Phaedo</em>; <em>Republic</em>, Book IV.</li>
+            <li>Aristotle. <em>De Anima</em> (On the Soul), Books I–II.</li>
+            <li><em>Bṛhadāraṇyaka</em> and <em>Chāndogya Upaniṣads</em>.</li>
+            <li><em>Milindapañha</em> (The Questions of King Milinda), Book II.</li>
+            <li><em>Saṃyutta Nikāya</em> V, Vajirā Sutta.</li>
+            <li>Aquinas, Thomas. <em>Summa Theologiae</em> I, qq. 75–76.</li>
+            <li>Al-Ghazālī. <em>The Incoherence of the Philosophers</em>, Discussion 20.</li>
+            <li>Descartes, René. <em>Meditations on First Philosophy</em> (1641).</li>
+            <li>Shapiro, Lisa (ed.). <em>The Correspondence between Princess Elisabeth of Bohemia and René Descartes</em> (2007).</li>
+            <li>James, William. <em>The Principles of Psychology</em> (1890), Ch. X.</li>
+            <li>Durkheim, Émile. <em>The Elementary Forms of the Religious Life</em> (1912).</li>
+            <li>Ryle, Gilbert. <em>The Concept of Mind</em> (1949).</li>
+            <li>Parfit, Derek. <em>Reasons and Persons</em> (1984), Part III.</li>
+            <li>Damasio, Antonio. <em>The Feeling of What Happens</em> (1999).</li>
+            <li>Metzinger, Thomas. <em>Being No One: The Self-Model Theory of Subjectivity</em> (2003).</li>
+          </ol>
+          <p class="pub-refs-note">Editions and translations are those in general scholarly circulation; classical works are
+            cited by conventional divisions rather than page numbers.</p>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="pub-foot">
+      <span>Soul Studies Research Initiative · Monograph IV · Second revision, August 2026</span>
+      <span>Distributed open access · Reproduction permitted with attribution</span>
+    </footer>
+  </div>
 </div>
 
 <!-- view: gate -->
@@ -478,7 +695,7 @@
 
 <!-- view: gpt -->
 <div class="view" id="view-gpt">
-  <div class="chat-shell panel-shell">
+  <div class="chat-shell">
     <div class="chat-topbar">
       <div class="brand">
         <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
@@ -500,7 +717,6 @@
       </div>
     </div>
 
-    <p class="chat-status" id="gpt-status"></p>
     <p class="gpt-fallback" id="gpt-fallback" hidden>Backend unreachable — <a href="https://chatgpt.com" target="_blank" rel="noopener noreferrer">open ChatGPT in a new tab instead</a> (no account needed).</p>
 
     <form class="composer" id="gpt-form" autocomplete="off">
@@ -533,11 +749,30 @@
         <div class="game-tabs">
           <button type="button" class="game-tab is-active" data-game="snake">Snake</button>
           <button type="button" class="game-tab" data-game="tetris">Tetris</button>
+          <button type="button" class="game-tab" data-game="mines">Minesweeper</button>
           <button type="button" class="game-tab" data-game="cookie">Cookie Clicker</button>
         </div>
 
         <div class="game-stage" id="stage-snake">
           <div class="game-hud"><span>score <b id="snake-score">0</b></span><span>best <b id="snake-best">0</b></span></div>
+          <div class="snake-opts">
+            <div class="opt-group">
+              <span class="opt-label">speed</span>
+              <div class="seg" id="snake-speed">
+                <button type="button" data-speed="slow">relaxed</button>
+                <button type="button" data-speed="normal" class="is-active">classic</button>
+                <button type="button" data-speed="fast">blitz</button>
+              </div>
+            </div>
+            <div class="opt-group">
+              <span class="opt-label">apples</span>
+              <div class="seg" id="snake-apples">
+                <button type="button" data-apples="1" class="is-active">1</button>
+                <button type="button" data-apples="3">3</button>
+                <button type="button" data-apples="5">5</button>
+              </div>
+            </div>
+          </div>
           <div class="canvas-wrap">
             <canvas id="snake-canvas" width="380" height="380"></canvas>
             <div class="game-overlay" id="snake-overlay">
@@ -548,18 +783,61 @@
         </div>
 
         <div class="game-stage" id="stage-tetris" hidden>
-          <div class="game-hud"><span>score <b id="tetris-score">0</b></span><span>lines <b id="tetris-lines">0</b></span><span>level <b id="tetris-level">1</b></span></div>
-          <div class="canvas-wrap tetris-wrap">
-            <canvas id="tetris-canvas" width="240" height="480"></canvas>
-            <div class="tetris-side">
-              <span class="hud-label">next</span>
-              <canvas id="tetris-next" width="96" height="96"></canvas>
+          <div class="tetris-arena">
+            <div class="tetris-col">
+              <div class="t-box">
+                <span class="t-label">hold</span>
+                <canvas id="t-hold" width="96" height="72"></canvas>
+              </div>
+              <div class="t-stats">
+                <div><span class="t-label">score</span><b id="tetris-score">0</b></div>
+                <div><span class="t-label">lines</span><b id="tetris-lines">0</b></div>
+                <div><span class="t-label">level</span><b id="tetris-level">1</b></div>
+                <div><span class="t-label">combo</span><b id="tetris-combo">—</b></div>
+                <div><span class="t-label">b2b</span><b id="tetris-b2b">—</b></div>
+              </div>
+              <button type="button" class="t-keys-btn" id="tetris-keys-btn">controls</button>
             </div>
-            <div class="game-overlay" id="tetris-overlay">
-              <p id="tetris-msg">← → move · ↑ rotate · ↓ soft drop · space hard drop</p>
-              <button type="button" id="tetris-start">play</button>
+            <div class="tetris-boardwrap">
+              <canvas id="tetris-canvas" width="240" height="480"></canvas>
+              <div class="t-action" id="tetris-action" aria-live="polite"></div>
+              <div class="game-overlay" id="tetris-overlay">
+                <p id="tetris-msg">move · rotate · hold · hard drop — see controls</p>
+                <button type="button" id="tetris-start">play</button>
+              </div>
+            </div>
+            <div class="tetris-col">
+              <div class="t-box">
+                <span class="t-label">next</span>
+                <canvas id="t-next" width="96" height="330"></canvas>
+              </div>
             </div>
           </div>
+          <div class="t-keypanel" id="tetris-keypanel" hidden>
+            <div class="t-keypanel-head"><span>controls</span><span id="t-keys-user"></span></div>
+            <div class="t-binds" id="t-binds"></div>
+            <div class="t-tuning">
+              <label><span class="t-label">das</span><input type="range" id="t-das" min="67" max="300" step="1"><b id="t-das-val"></b></label>
+              <label><span class="t-label">arr</span><input type="range" id="t-arr" min="0" max="83" step="1"><b id="t-arr-val"></b></label>
+            </div>
+            <p class="t-keys-hint">click a key to rebind · saved to your username</p>
+          </div>
+        </div>
+
+        <div class="game-stage" id="stage-mines" hidden>
+          <div class="game-hud">
+            <span>mines <b id="mines-left">40</b></span>
+            <span>time <b id="mines-time">0</b></span>
+            <span>best <b id="mines-best">—</b></span>
+          </div>
+          <div class="mines-frame">
+            <div class="mines-grid" id="mines-grid" aria-label="Minesweeper board"></div>
+            <div class="mines-banner" id="mines-banner" hidden>
+              <b id="mines-banner-text"></b>
+              <button type="button" id="mines-again">play again</button>
+            </div>
+          </div>
+          <p class="mines-hint">left click reveals · right click flags · click a satisfied number to chord</p>
         </div>
 
         <div class="game-stage" id="stage-cookie" hidden>
@@ -571,11 +849,15 @@
         </div>
       </div>
 
-      <aside class="leaderboard" aria-label="Top scores">
-        <h3>top scores</h3>
-        <div class="lb-group"><span class="lb-title">snake</span><ol id="lb-snake"></ol></div>
-        <div class="lb-group"><span class="lb-title">tetris</span><ol id="lb-tetris"></ol></div>
-        <div class="lb-group"><span class="lb-title">cookies baked</span><ol id="lb-cookie"></ol></div>
+      <aside class="leaderboard" aria-label="Leaderboard">
+        <div class="lb-head">
+          <span class="lb-trophy" aria-hidden="true">🏆</span>
+          <h3 class="lb-title-main">LEADERBOARD</h3>
+          <span class="lb-game" id="lb-game-label">Snake</span>
+        </div>
+        <div class="lb-podium" id="lb-podium"></div>
+        <ol class="lb-rest" id="lb-rest"></ol>
+        <p class="lb-empty-note" id="lb-empty" hidden>No champions yet.<br>Set the first score.</p>
       </aside>
     </div>
   </div>

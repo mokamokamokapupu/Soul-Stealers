@@ -2,21 +2,9 @@
   'use strict';
 
   // ---------------------------------------------------------------------
-  // View routing
-  // ---------------------------------------------------------------------
-  // Four views live in the DOM at all times; only one is ever visible.
-  // Switching views is a pure client-side state change — no window.location,
-  // no <a href> navigation, no reloads. The URL bar always stays on "/".
-  //
-  // IMPORTANT: this file makes zero authorization decisions on its own.
-  // Every view transition below is triggered either by the user (e.g.
-  // clicking the discreet entry mark) or by a successful response from a
-  // server API call. The server independently re-checks the session stage
-  // on every single API request (see server.js) — nothing here "unlocks"
-  // anything. If someone hand-edits the DOM or calls showView('chat')
-  // themselves, the chat view will render, but /api/chat/messages and
-  // /api/chat/send will still return 403 with no data, exactly as if the
-  // gate had never been passed.
+  // View routing — six views live in the DOM; only one is visible. All
+  // authorization decisions happen server-side on every API call; this
+  // file only mirrors what the server says (see server.js).
   // ---------------------------------------------------------------------
 
   var VIEWS = ['essay', 'gate', 'setup', 'chat', 'gpt', 'games'];
@@ -41,17 +29,16 @@
     }
     if (wasGames && name !== 'games') leaveGames();
     if (name === 'games') enterGames();
-    // Chat polling doubles as a keepalive; the assistant and arcade views
-    // have no steady traffic of their own, so ping the session there to
-    // keep the server from treating this username's claim as stale.
     setKeepalive(name === 'gpt' || name === 'games');
 
     if (name === 'gate') {
-      var pw = document.getElementById('password');
-      if (pw) pw.focus();
+      gateInput.value = '';
+      setGateError('');
+      gateInput.focus();
     } else if (name === 'setup') {
-      var un = document.getElementById('username');
-      if (un) un.focus();
+      setupInput.value = '';
+      setSetupError('');
+      setupInput.focus();
     } else if (name === 'gpt') {
       var gi = document.getElementById('gpt-input');
       if (gi) gi.focus();
@@ -71,9 +58,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // Shared session/CSRF state, refreshed from /api/session as needed.
-  // The frontend never decides who is authorized — it only mirrors
-  // whatever the server's session bootstrap says, purely for UI purposes.
+  // Shared session/CSRF state
   // ---------------------------------------------------------------------
 
   var csrfToken = null;
@@ -94,26 +79,10 @@
   }
 
   // ---------------------------------------------------------------------
-  // Chat content encryption
-  // -----------------------
-  // The server stores and relays chat text as an opaque blob — it never
-  // sees plaintext. The key is an AES-GCM key derived (PBKDF2) from the
-  // *site password itself*, which is the one secret every room member is
-  // guaranteed to already know. The salt below is public/fixed (all the
-  // secrecy comes from the password), which is what makes this workable
-  // for a single shared room rather than a 1:1 conversation.
-  //
-  // Honest limits, worth knowing:
-  //  - Anyone who knows the site password can decrypt every message —
-  //    same trust boundary the room already has today, just extended to
-  //    message content instead of only "who's allowed to see the room".
-  //  - Images are NOT covered by this (still gated server-side by session,
-  //    same as avatars, but not encrypted) — see SECURITY.md.
-  //  - The key lives in this tab's sessionStorage so a page refresh keeps
-  //    working without re-typing the password. Opening the room in a new
-  //    tab (or after closing the old one) needs the password once to
-  //    re-derive the same key locally — nothing is sent to the server for
-  //    this, it's just how the local decrypt key gets rebuilt.
+  // Chat content encryption. The server stores and relays chat text as an
+  // opaque blob — it never sees plaintext. The AES-GCM key is derived
+  // (PBKDF2) from the site password, which every room member already
+  // knows; the fixed salt is fine because all secrecy is in the password.
   // ---------------------------------------------------------------------
 
   var ROOM_KEY_STORAGE = 'ss_room_key_v1';
@@ -151,7 +120,7 @@
     try {
       var raw = await crypto.subtle.exportKey('raw', roomKey);
       sessionStorage.setItem(ROOM_KEY_STORAGE, bytesToBase64(new Uint8Array(raw)));
-    } catch (e) { /* sessionStorage unavailable (private mode etc.) — key just won't survive a refresh */ }
+    } catch (e) { /* private mode — key won't survive a refresh */ }
   }
 
   async function loadCachedRoomKey() {
@@ -178,8 +147,6 @@
     return bytesToBase64(combined);
   }
 
-  // Returns the decrypted string, or null if it can't be decrypted (wrong/
-  // missing key, or a message that predates encryption being turned on).
   async function decryptText(b64) {
     if (!roomKey || typeof b64 !== 'string') return null;
     try {
@@ -195,11 +162,9 @@
   }
 
   // ---------------------------------------------------------------------
-  // Initial routing on load / refresh — this is the ONLY place that maps
-  // the current stage + entry path to a starting view. The path a user
-  // landed on (e.g. a bookmark to /chat) is treated as a *hint*, never a
-  // grant: it's clamped down to whatever the server says the session is
-  // actually allowed to see. The URL is then normalized back to "/".
+  // Initial routing — the landed-on path is a hint, never a grant: it is
+  // clamped to whatever stage the server reports, then the URL is
+  // normalized back to "/".
   // ---------------------------------------------------------------------
 
   var PATH_HINT = { '/': 'essay', '/portal': 'gate', '/setup': 'setup', '/chat': 'chat' };
@@ -222,10 +187,6 @@
     var maxIdx = VIEWS.indexOf(maxAllowed);
     var startView = VIEWS[Math.min(hintedIdx, maxIdx)];
 
-    // Refresh from any path always normalizes the visible URL back to "/",
-    // per the SPA requirement — the browser bar never shows /portal, /setup,
-    // or /chat even though those paths still serve this same shell so old
-    // links/bookmarks keep working.
     if (window.location.pathname !== '/') {
       window.history.replaceState(null, '', '/');
     }
@@ -243,24 +204,18 @@
     ready();
   }
 
-  // ---------------------------------------------------------------------
-  // Page fade-in (was site.js)
-  // ---------------------------------------------------------------------
-
   function ready() {
     document.body.classList.add('is-ready');
   }
 
   // ---------------------------------------------------------------------
-  // Gate view (was portal.js)
+  // Gate view
   // ---------------------------------------------------------------------
 
   var gateForm = document.getElementById('gate-form');
   var gateInput = document.getElementById('password');
   var gateError = document.getElementById('gate-error');
-  var gateSubmit = null;
   var gateCard = document.querySelector('.minimal-gate');
-  var gateBack = null;
 
   function setGateError(msg) { gateError.textContent = msg || ''; }
 
@@ -278,11 +233,10 @@
       var data = await res.json();
       if (res.ok) {
         applySessionData(data);
-        // Derive the room encryption key from the password while it's still
-        // in memory — it's never sent anywhere for this purpose, and the
-        // server never receives it after this point.
+        // Derive the room encryption key while the password is in memory —
+        // it is never sent anywhere for this purpose.
         if (cryptoAvailable) {
-          try { await setRoomKey(gateInput.value); } catch (e) { /* chat will fall back to an unlock prompt */ }
+          try { await setRoomKey(gateInput.value); } catch (e2) { /* unlock prompt will cover it */ }
         }
         gateCard.classList.add('is-leaving');
         setTimeout(function () {
@@ -307,7 +261,7 @@
   });
 
   // ---------------------------------------------------------------------
-  // Setup view (was setup.js)
+  // Setup view
   // ---------------------------------------------------------------------
 
   var setupForm = document.getElementById('setup-form');
@@ -357,7 +311,7 @@
   });
 
   // ---------------------------------------------------------------------
-  // Chat view (was chat.js)
+  // Chat view
   // ---------------------------------------------------------------------
 
   var messagesEl = document.getElementById('messages');
@@ -388,10 +342,10 @@
 
   var since = 0;
   var pollTimer = null;
-  var pollInFlight = false; // guards against overlapping poll() calls racing on `since`
-  var renderedIds = Object.create(null); // message id -> true, once its DOM node exists — the actual fix for double-rendered messages
+  var pollInFlight = false;
+  var renderedIds = Object.create(null);
   var lastAuthor = null; // who sent the most recently rendered message, for grouping
-  var replyingTo = null; // { id, username, preview } or null
+  var replyingTo = null;
 
   var NEAR_BOTTOM_PX = 80;
 
@@ -425,8 +379,6 @@
     return str.slice(0, n - 1) + '…';
   }
 
-  // ---- reply state -------------------------------------------------
-
   function setReplyPreviewVisible(visible) {
     replyPreviewEl.hidden = !visible;
     replyPreviewEl.classList.toggle('is-open', visible);
@@ -446,8 +398,6 @@
   }
 
   replyPreviewCancelBtn.addEventListener('click', cancelReply);
-
-  // ---- emoji picker --------------------------------------------------
 
   var EMOJI_SET = ['😀','😄','😁','😂','🤣','😊','🙂','😉','😍','🥰','😘','😎','🤔','🙄','😴',
     '😭','😢','😅','😳','😱','🥺','😡','🤯','🤗','🤩','😇','🙃','😬','😏','🫠',
@@ -501,8 +451,6 @@
     if (e.key === 'Escape' && !emojiPopover.hidden) setEmojiPopoverOpen(false);
   });
 
-  // ---- unlock (room key) overlay -------------------------------------
-
   function setUnlockVisible(visible) {
     unlockOverlay.hidden = !visible;
     if (visible) setTimeout(function () { unlockInput.focus(); }, 50);
@@ -515,11 +463,8 @@
     unlockInput.disabled = true;
     try {
       var candidateKey = await deriveRoomKey(candidate);
-      // Verify by trying to decrypt something already on screen/in hand.
-      // With nothing to check against yet (empty room), we accept it —
-      // there's no way to verify offline, and worst case a mistyped
-      // password just means your own first message won't decrypt for
-      // others either, which you'd immediately notice.
+      // Verify against a message already on screen when one exists; with an
+      // empty room there is nothing to check against, so accept.
       var probe = messagesEl.querySelector('.msg[data-cipher]');
       var ok = true;
       if (probe) {
@@ -540,11 +485,10 @@
       try {
         var raw = await crypto.subtle.exportKey('raw', roomKey);
         sessionStorage.setItem(ROOM_KEY_STORAGE, bytesToBase64(new Uint8Array(raw)));
-      } catch (err) { /* ignore — key still works for this tab session */ }
+      } catch (err) { /* key still works for this tab */ }
       unlockInput.value = '';
       unlockInput.disabled = false;
       setUnlockVisible(false);
-      // Re-render anything currently on screen with the freshly unlocked key.
       messagesEl.innerHTML = '';
       renderedIds = Object.create(null);
       lastAuthor = null;
@@ -556,8 +500,6 @@
       unlockInput.disabled = false;
     }
   });
-
-  // ---- rendering -------------------------------------------------------
 
   async function buildReplyQuoteEl(replyTo) {
     var quote = document.createElement('button');
@@ -621,7 +563,7 @@
       meta.className = 'meta';
       var nameSpan = document.createElement('span');
       nameSpan.className = 'name';
-      nameSpan.textContent = m.username; // textContent — never innerHTML — no HTML injection possible
+      nameSpan.textContent = m.username; // textContent — never innerHTML
       meta.appendChild(nameSpan);
       meta.appendChild(document.createTextNode(' · ' + fmtTime(m.ts)));
       body.appendChild(meta);
@@ -631,7 +573,7 @@
       body.appendChild(await buildReplyQuoteEl(m.replyTo));
     }
 
-    var previewForReply; // plain text used if *this* message later gets replied to
+    var previewForReply;
 
     if (m.type === 'image') {
       var figure = document.createElement('button');
@@ -653,9 +595,9 @@
       if (cryptoAvailable) {
         var decrypted = await decryptText(m.text);
         plain = decrypted === null ? null : decrypted;
-        wrap.setAttribute('data-cipher', m.text); // lets the unlock flow probe against a real message
+        wrap.setAttribute('data-cipher', m.text);
       }
-      text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain; // safe: textContent, never innerHTML
+      text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
       if (plain === null) text.classList.add('is-locked');
       body.appendChild(text);
       previewForReply = plain === null ? '🔒 message' : plain;
@@ -677,8 +619,6 @@
     lastAuthor = m.username;
     since = Math.max(since, m.ts);
 
-    // Let the browser paint the base state before triggering the enter
-    // transition, then drop the marker class once it's done.
     requestAnimationFrame(function () {
       requestAnimationFrame(function () { wrap.classList.add('msg-enter-active'); });
     });
@@ -712,20 +652,18 @@
   }
 
   async function poll() {
-    if (pollInFlight) return; // avoid overlapping fetches racing on `since`
+    if (pollInFlight) return;
     pollInFlight = true;
     try {
       var res = await fetch('/api/chat/messages?since=' + since, { credentials: 'same-origin' });
       if (res.status === 403) {
-        // Session lapsed server-side — the frontend just reflects that by
-        // dropping back to the gate; it never itself decided access was OK.
         stopChatPolling();
         showView('gate');
         return;
       }
       var data = await res.json();
       await renderMessages(data.messages || []);
-    } catch (e) { /* transient network hiccup — next poll will retry */ }
+    } catch (e) { /* transient — next poll retries */ }
     finally { pollInFlight = false; }
   }
 
@@ -772,19 +710,15 @@
       if (res.status === 403) { showView('gate'); return; }
       var data = await res.json();
       if (res.ok && data.message) {
-        // Render straight from the send response instead of triggering
-        // another poll() — this was the actual source of doubled messages:
-        // the periodic poll and a post-send poll could both read the same
-        // stale `since` and both append the same message. Rendering it
-        // directly here means there's nothing to race, and the id-based
-        // dedup in renderOne() covers the interval poll picking it up too.
+        // Render straight from the send response; the id-based dedup in
+        // renderOne covers the interval poll picking it up again.
         await renderMessages([data.message]);
         scrollToBottom(true);
       } else if (!res.ok) {
         setChatStatus(data.error || 'Could not send that message.', true);
         setTimeout(function () { setChatStatus(''); }, 3000);
       }
-    } catch (e) {
+    } catch (err) {
       msgInput.value = text;
     } finally {
       sendBtn.disabled = false;
@@ -828,7 +762,7 @@
         setChatStatus(data.error || 'Could not send that image.', true);
         setTimeout(function () { setChatStatus(''); }, 3000);
       }
-    } catch (e) {
+    } catch (e2) {
       setChatStatus('Something went wrong. Try again.', true);
     } finally {
       imageBtnInput.value = '';
@@ -874,7 +808,7 @@
       } else {
         setAvatarStatus(data.error || 'Could not upload that image.', true);
       }
-    } catch (e) {
+    } catch (e2) {
       setAvatarStatus('Something went wrong. Try again.', true);
     } finally {
       avatarInput.value = '';
@@ -892,21 +826,18 @@
     clearRoomKey();
     cancelReply();
     updateRoomTag();
-    // Re-bootstrap to pick up a fresh session/CSRF token, then land on essay.
     var res = await fetch('/api/session', { credentials: 'same-origin' }).catch(function () { return null; });
     if (res) {
       try { applySessionData(await res.json()); } catch (e) { /* ignore */ }
     }
     resetGpt();
-    lastSubmitted = { snake: 0, tetris: 0, cookie: 0 };
+    lastSubmitted = { snake: 0, tetris: 0, mines: 0, cookie: 0 };
     showView('essay');
   });
 
   // ---------------------------------------------------------------------
-  // Appearance settings: interface scale + color skins, persisted locally.
-  // The scale works by resizing the root font (everything downstream is
-  // rem-based); skins swap the CSS custom properties while in the private
-  // views only, so the public essay always looks untouched.
+  // Appearance settings: interface scale + color skins, persisted locally
+  // and applied only in the private views.
   // ---------------------------------------------------------------------
 
   var SCALE_KEY = 'ss_ui_scale';
@@ -919,7 +850,7 @@
     if (savedScale >= 0.8 && savedScale <= 1.3) uiScale = savedScale;
     var savedSkin = localStorage.getItem(SKIN_KEY);
     if (SKINS.indexOf(savedSkin) > 0) chatSkin = savedSkin;
-  } catch (e) { /* private mode — settings just won't persist */ }
+  } catch (e) { /* private mode */ }
 
   var settingsBtn = document.getElementById('chat-settings-btn');
   var settingsPanel = document.getElementById('chat-settings');
@@ -969,9 +900,7 @@
   applySkin();
 
   // ---------------------------------------------------------------------
-  // Assistant view (G+P+T). History lives only in this tab's memory; the
-  // server relays the conversation to its configured backend and never
-  // stores it.
+  // Assistant view (G+P+T)
   // ---------------------------------------------------------------------
 
   var gptMessagesEl = document.getElementById('gpt-messages');
@@ -1048,21 +977,26 @@
     } finally {
       gptBusy = false;
       gptSend.disabled = false;
+      gptInput.focus();
       gptMessagesEl.scrollTop = gptMessagesEl.scrollHeight;
     }
   });
 
   // ---------------------------------------------------------------------
-  // Arcade (G+M+E): Snake, Tetris, and a cookie clicker, with a per-room
-  // leaderboard keyed to chat usernames. Scores are personal bests; the
-  // server only ever raises them.
+  // Arcade shared: tabs, leaderboard, score submission
   // ---------------------------------------------------------------------
 
   var gamesWho = document.getElementById('games-who');
   var gamesBack = document.getElementById('games-back');
   var gameTabs = Array.prototype.slice.call(document.querySelectorAll('.game-tab'));
+  var lbGameLabel = document.getElementById('lb-game-label');
+  var lbPodium = document.getElementById('lb-podium');
+  var lbRest = document.getElementById('lb-rest');
+  var lbEmpty = document.getElementById('lb-empty');
+  var GAME_LABELS = { snake: 'Snake', tetris: 'Tetris', mines: 'Minesweeper', cookie: 'Cookie Clicker' };
   var activeGame = 'snake';
-  var lastSubmitted = { snake: 0, tetris: 0, cookie: 0 };
+  var lastScores = {};
+  var lastSubmitted = { snake: 0, tetris: 0, mines: 0, cookie: 0 };
 
   gamesBack.addEventListener('click', function () { showView('chat'); });
 
@@ -1073,33 +1007,62 @@
     return String(Math.floor(n));
   }
 
+  function isMe(name) {
+    return myUsername && name && name.toLowerCase() === myUsername.toLowerCase();
+  }
+
   function renderLeaderboard(scores) {
-    ['snake', 'tetris', 'cookie'].forEach(function (game) {
-      var ol = document.getElementById('lb-' + game);
-      if (!ol) return;
-      ol.innerHTML = '';
-      var list = (scores && scores[game]) || [];
-      if (!list.length) {
-        var empty = document.createElement('li');
-        empty.className = 'lb-empty';
-        empty.textContent = 'no scores yet';
-        ol.appendChild(empty);
-        return;
-      }
-      list.forEach(function (row) {
-        var li = document.createElement('li');
-        if (myUsername && row.username && row.username.toLowerCase() === myUsername.toLowerCase()) {
-          li.classList.add('is-me');
-        }
-        var name = document.createElement('span');
-        name.className = 'lb-name';
-        name.textContent = row.username;
-        var val = document.createElement('b');
-        val.textContent = fmtScore(row.score);
-        li.appendChild(name);
-        li.appendChild(val);
-        ol.appendChild(li);
-      });
+    lastScores = scores || {};
+    renderActiveLb();
+  }
+
+  function renderActiveLb() {
+    lbGameLabel.textContent = GAME_LABELS[activeGame] || activeGame;
+    var list = lastScores[activeGame] || [];
+    lbPodium.innerHTML = '';
+    lbRest.innerHTML = '';
+    lbEmpty.hidden = list.length > 0;
+
+    [1, 0, 2].forEach(function (idx) {
+      if (!list[idx]) return;
+      var row = list[idx];
+      var card = document.createElement('div');
+      card.className = 'podium-card rank-' + (idx + 1) + (isMe(row.username) ? ' is-me' : '');
+      var medal = document.createElement('span');
+      medal.className = 'podium-medal';
+      medal.textContent = ['🥇', '🥈', '🥉'][idx];
+      var img = document.createElement('img');
+      img.className = 'podium-avatar';
+      img.alt = '';
+      img.src = avatarUrl(row.username);
+      var name = document.createElement('span');
+      name.className = 'podium-name';
+      name.textContent = row.username;
+      var val = document.createElement('b');
+      val.className = 'podium-score';
+      val.textContent = fmtScore(row.score);
+      card.appendChild(medal);
+      card.appendChild(img);
+      card.appendChild(name);
+      card.appendChild(val);
+      lbPodium.appendChild(card);
+    });
+
+    list.slice(3, 10).forEach(function (row, i) {
+      var li = document.createElement('li');
+      if (isMe(row.username)) li.classList.add('is-me');
+      var rank = document.createElement('span');
+      rank.className = 'lb-rank';
+      rank.textContent = String(i + 4);
+      var name = document.createElement('span');
+      name.className = 'lb-name';
+      name.textContent = row.username;
+      var val = document.createElement('b');
+      val.textContent = fmtScore(row.score);
+      li.appendChild(rank);
+      li.appendChild(name);
+      li.appendChild(val);
+      lbRest.appendChild(li);
     });
   }
 
@@ -1109,7 +1072,7 @@
       if (!res.ok) return;
       var data = await res.json();
       renderLeaderboard(data.scores);
-    } catch (e) { /* leaderboard just stays as-is */ }
+    } catch (e) { /* stays as-is */ }
   }
 
   async function submitScore(game, score) {
@@ -1127,19 +1090,21 @@
         var data = await res.json();
         if (data.scores) renderLeaderboard(data.scores);
       }
-    } catch (e) { /* score will resubmit on the next event */ }
+    } catch (e) { /* resubmits on the next event */ }
   }
 
   function setActiveGame(name) {
     if (activeGame !== name) {
       stopSnake(true);
       stopTetris(true);
+      stopMines();
     }
     activeGame = name;
     gameTabs.forEach(function (t) { t.classList.toggle('is-active', t.dataset.game === name); });
-    document.getElementById('stage-snake').hidden = name !== 'snake';
-    document.getElementById('stage-tetris').hidden = name !== 'tetris';
-    document.getElementById('stage-cookie').hidden = name !== 'cookie';
+    ['snake', 'tetris', 'mines', 'cookie'].forEach(function (g) {
+      document.getElementById('stage-' + g).hidden = g !== name;
+    });
+    renderActiveLb();
   }
 
   gameTabs.forEach(function (tab) {
@@ -1150,17 +1115,22 @@
     gamesWho.textContent = myUsername || '—';
     loadCookieState();
     startCookieLoop();
+    loadTetrisCfg();
+    if (!minesBuilt) newMines();
     fetchLeaderboard();
   }
 
   function leaveGames() {
     stopSnake(true);
     stopTetris(true);
+    stopMines();
     submitScore('cookie', cookie.total);
     stopCookieLoop();
   }
 
-  // ---- snake ---------------------------------------------------------
+  // ---------------------------------------------------------------------
+  // Snake — speed and apple count are adjustable, Google-style
+  // ---------------------------------------------------------------------
 
   var snakeCanvas = document.getElementById('snake-canvas');
   var snakeCtx = snakeCanvas.getContext('2d');
@@ -1172,9 +1142,52 @@
   var SNAKE_CELLS = 19;
   var SNAKE_PX = 20;
   var SNAKE_HINT = 'arrows or WASD · eat, grow, don\'t die';
+  var SNAKE_SPEEDS = { slow: 170, normal: 125, fast: 85 };
+  var SNAKE_OPTS_KEY = 'ss_snake_opts';
+  var snakeOpts = { speed: 'normal', apples: 1 };
+  try {
+    var savedSnake = JSON.parse(localStorage.getItem(SNAKE_OPTS_KEY) || '{}');
+    if (SNAKE_SPEEDS[savedSnake.speed]) snakeOpts.speed = savedSnake.speed;
+    if ([1, 3, 5].indexOf(savedSnake.apples) !== -1) snakeOpts.apples = savedSnake.apples;
+  } catch (e) { /* defaults */ }
   var snake = null;
   var snakeTimer = null;
   var snakeBest = 0;
+
+  function saveSnakeOpts() {
+    try { localStorage.setItem(SNAKE_OPTS_KEY, JSON.stringify(snakeOpts)); } catch (e) { /* ignore */ }
+  }
+
+  function refreshSnakeOptButtons() {
+    document.querySelectorAll('#snake-speed button').forEach(function (b) {
+      b.classList.toggle('is-active', b.dataset.speed === snakeOpts.speed);
+    });
+    document.querySelectorAll('#snake-apples button').forEach(function (b) {
+      b.classList.toggle('is-active', Number(b.dataset.apples) === snakeOpts.apples);
+    });
+  }
+
+  document.querySelectorAll('#snake-speed button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      snakeOpts.speed = b.dataset.speed;
+      saveSnakeOpts();
+      refreshSnakeOptButtons();
+      if (snake) snake.delay = SNAKE_SPEEDS[snakeOpts.speed];
+    });
+  });
+  document.querySelectorAll('#snake-apples button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      snakeOpts.apples = Number(b.dataset.apples);
+      saveSnakeOpts();
+      refreshSnakeOptButtons();
+      if (snake) {
+        while (snake.foods.length < snakeOpts.apples) snake.foods.push(snakeSpawnFood(snake));
+        snake.foods.length = Math.min(snake.foods.length, snakeOpts.apples);
+        drawSnake();
+      }
+    });
+  });
+  refreshSnakeOptButtons();
 
   function snakeSpawnFood(s) {
     while (true) {
@@ -1182,7 +1195,8 @@
         x: Math.floor(Math.random() * SNAKE_CELLS),
         y: Math.floor(Math.random() * SNAKE_CELLS),
       };
-      var clash = s.body.some(function (b) { return b.x === p.x && b.y === p.y; });
+      var clash = s.body.some(function (b) { return b.x === p.x && b.y === p.y; }) ||
+        s.foods.some(function (f) { return f.x === p.x && f.y === p.y; });
       if (!clash) return p;
     }
   }
@@ -1198,9 +1212,11 @@
     var accent = themeColor('--verdigris', '#6f8f76');
     var bright = themeColor('--verdigris-bright', '#93b89a');
     snakeCtx.fillStyle = themeColor('--danger', '#a65b4b');
-    snakeCtx.beginPath();
-    snakeCtx.arc(snake.food.x * SNAKE_PX + 10, snake.food.y * SNAKE_PX + 10, 7, 0, Math.PI * 2);
-    snakeCtx.fill();
+    snake.foods.forEach(function (f) {
+      snakeCtx.beginPath();
+      snakeCtx.arc(f.x * SNAKE_PX + 10, f.y * SNAKE_PX + 10, 7, 0, Math.PI * 2);
+      snakeCtx.fill();
+    });
     snake.body.forEach(function (b, i) {
       snakeCtx.fillStyle = i === 0 ? bright : accent;
       snakeCtx.fillRect(b.x * SNAKE_PX + 1, b.y * SNAKE_PX + 1, SNAKE_PX - 2, SNAKE_PX - 2);
@@ -1213,9 +1229,10 @@
       dir: { x: 1, y: 0 },
       nextDir: { x: 1, y: 0 },
       score: 0,
-      delay: 130,
+      foods: [],
+      delay: SNAKE_SPEEDS[snakeOpts.speed],
     };
-    snake.food = snakeSpawnFood(snake);
+    for (var i = 0; i < snakeOpts.apples; i++) snake.foods.push(snakeSpawnFood(snake));
     snakeScoreEl.textContent = '0';
     snakeOverlay.hidden = true;
     drawSnake();
@@ -1231,10 +1248,14 @@
     var hitSelf = snake.body.some(function (b) { return b.x === head.x && b.y === head.y; });
     if (hitWall || hitSelf) { endSnake(); return; }
     snake.body.unshift(head);
-    if (head.x === snake.food.x && head.y === snake.food.y) {
+    var ate = -1;
+    for (var i = 0; i < snake.foods.length; i++) {
+      if (snake.foods[i].x === head.x && snake.foods[i].y === head.y) { ate = i; break; }
+    }
+    if (ate !== -1) {
       snake.score += 10;
       snakeScoreEl.textContent = String(snake.score);
-      snake.food = snakeSpawnFood(snake);
+      snake.foods[ate] = snakeSpawnFood(snake);
       if (snake.delay > 65) snake.delay -= 2;
     } else {
       snake.body.pop();
@@ -1269,226 +1290,6 @@
 
   snakeStartBtn.addEventListener('click', startSnake);
 
-  // ---- tetris --------------------------------------------------------
-
-  var tetrisCanvas = document.getElementById('tetris-canvas');
-  var tetrisCtx = tetrisCanvas.getContext('2d');
-  var tetrisNextCanvas = document.getElementById('tetris-next');
-  var tetrisNextCtx = tetrisNextCanvas.getContext('2d');
-  var tetrisOverlay = document.getElementById('tetris-overlay');
-  var tetrisMsg = document.getElementById('tetris-msg');
-  var tetrisStartBtn = document.getElementById('tetris-start');
-  var tetrisScoreEl = document.getElementById('tetris-score');
-  var tetrisLinesEl = document.getElementById('tetris-lines');
-  var tetrisLevelEl = document.getElementById('tetris-level');
-  var TETRIS_HINT = '← → move · ↑ rotate · ↓ soft drop · space hard drop';
-  var TETRIS_COLS = 10;
-  var TETRIS_ROWS = 20;
-  var TETRIS_PX = 24;
-  var TETROMINOES = {
-    I: { color: '#6fc0c9', size: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },
-    J: { color: '#6f93c9', size: 3, cells: [[0, 0], [0, 1], [1, 1], [2, 1]] },
-    L: { color: '#c9a15a', size: 3, cells: [[2, 0], [0, 1], [1, 1], [2, 1]] },
-    O: { color: '#c9c26f', size: 2, cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
-    S: { color: '#6fc9a1', size: 3, cells: [[1, 0], [2, 0], [0, 1], [1, 1]] },
-    T: { color: '#9b7fd6', size: 3, cells: [[1, 0], [0, 1], [1, 1], [2, 1]] },
-    Z: { color: '#c97a6f', size: 3, cells: [[0, 0], [1, 0], [1, 1], [2, 1]] },
-  };
-  var TETRIS_LINE_SCORES = [0, 100, 300, 500, 800];
-  var tetris = null;
-  var tetrisTimer = null;
-
-  function shuffle(arr) {
-    for (var i = arr.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
-      var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
-    }
-    return arr;
-  }
-
-  function tetrisNewPiece() {
-    if (!tetris.bag.length) tetris.bag = shuffle(['I', 'J', 'L', 'O', 'S', 'T', 'Z']);
-    var type = tetris.bag.pop();
-    return {
-      type: type,
-      cells: TETROMINOES[type].cells.map(function (c) { return [c[0], c[1]]; }),
-      x: type === 'O' ? 4 : 3,
-      y: -1,
-    };
-  }
-
-  function tetrisCollides(piece, dx, dy, cells) {
-    var cs = cells || piece.cells;
-    for (var i = 0; i < cs.length; i++) {
-      var bx = piece.x + cs[i][0] + dx;
-      var by = piece.y + cs[i][1] + dy;
-      if (bx < 0 || bx >= TETRIS_COLS || by >= TETRIS_ROWS) return true;
-      if (by >= 0 && tetris.grid[by][bx]) return true;
-    }
-    return false;
-  }
-
-  function tryMovePiece(dx, dy) {
-    if (tetrisCollides(tetris.piece, dx, dy)) return false;
-    tetris.piece.x += dx;
-    tetris.piece.y += dy;
-    return true;
-  }
-
-  function tetrisDelay() {
-    return Math.max(90, 700 - (tetris.level - 1) * 60);
-  }
-
-  function updateTetrisHud() {
-    tetrisScoreEl.textContent = String(tetris.score);
-    tetrisLinesEl.textContent = String(tetris.lines);
-    tetrisLevelEl.textContent = String(tetris.level);
-  }
-
-  function drawTetrisCell(ctx, x, y, color, px) {
-    ctx.fillStyle = color;
-    ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
-  }
-
-  function drawTetris() {
-    tetrisCtx.clearRect(0, 0, tetrisCanvas.width, tetrisCanvas.height);
-    if (!tetris) return;
-    for (var y = 0; y < TETRIS_ROWS; y++) {
-      for (var x = 0; x < TETRIS_COLS; x++) {
-        if (tetris.grid[y][x]) drawTetrisCell(tetrisCtx, x, y, tetris.grid[y][x], TETRIS_PX);
-      }
-    }
-    var p = tetris.piece;
-    var color = TETROMINOES[p.type].color;
-    p.cells.forEach(function (c) {
-      var by = p.y + c[1];
-      if (by >= 0) drawTetrisCell(tetrisCtx, p.x + c[0], by, color, TETRIS_PX);
-    });
-  }
-
-  function drawTetrisNext() {
-    tetrisNextCtx.clearRect(0, 0, tetrisNextCanvas.width, tetrisNextCanvas.height);
-    if (!tetris || !tetris.next) return;
-    var t = TETROMINOES[tetris.next.type];
-    var px = 20;
-    var offset = (tetrisNextCanvas.width - t.size * px) / 2;
-    tetris.next.cells.forEach(function (c) {
-      tetrisNextCtx.fillStyle = t.color;
-      tetrisNextCtx.fillRect(offset + c[0] * px + 1, offset + c[1] * px + 1, px - 2, px - 2);
-    });
-  }
-
-  function startTetris() {
-    var grid = [];
-    for (var y = 0; y < TETRIS_ROWS; y++) grid.push(new Array(TETRIS_COLS).fill(null));
-    tetris = { grid: grid, bag: [], score: 0, lines: 0, level: 1, piece: null, next: null };
-    tetris.piece = tetrisNewPiece();
-    tetris.next = tetrisNewPiece();
-    updateTetrisHud();
-    tetrisOverlay.hidden = true;
-    drawTetris();
-    drawTetrisNext();
-    tetrisTimer = setTimeout(tetrisTick, tetrisDelay());
-  }
-
-  function tetrisTick() {
-    tetrisTimer = null;
-    if (!tetris) return;
-    if (!tryMovePiece(0, 1)) lockPiece();
-    if (!tetris) return;
-    drawTetris();
-    tetrisTimer = setTimeout(tetrisTick, tetrisDelay());
-  }
-
-  function lockPiece() {
-    var p = tetris.piece;
-    var over = false;
-    p.cells.forEach(function (c) {
-      var bx = p.x + c[0];
-      var by = p.y + c[1];
-      if (by < 0) { over = true; return; }
-      tetris.grid[by][bx] = TETROMINOES[p.type].color;
-    });
-    if (over) { endTetris(); return; }
-    var cleared = 0;
-    for (var y = TETRIS_ROWS - 1; y >= 0; y--) {
-      if (tetris.grid[y].every(Boolean)) {
-        tetris.grid.splice(y, 1);
-        tetris.grid.unshift(new Array(TETRIS_COLS).fill(null));
-        cleared++;
-        y++;
-      }
-    }
-    if (cleared) {
-      tetris.lines += cleared;
-      tetris.level = Math.floor(tetris.lines / 10) + 1;
-      tetris.score += TETRIS_LINE_SCORES[cleared] * tetris.level;
-    }
-    tetris.piece = tetris.next;
-    tetris.next = tetrisNewPiece();
-    updateTetrisHud();
-    drawTetrisNext();
-    if (tetrisCollides(tetris.piece, 0, 0)) endTetris();
-  }
-
-  function tetrisMove(dx) {
-    if (tryMovePiece(dx, 0)) drawTetris();
-  }
-
-  function tetrisRotate() {
-    var p = tetris.piece;
-    var size = TETROMINOES[p.type].size;
-    var rotated = p.cells.map(function (c) { return [size - 1 - c[1], c[0]]; });
-    var kicks = [0, -1, 1, -2, 2];
-    for (var i = 0; i < kicks.length; i++) {
-      if (!tetrisCollides(p, kicks[i], 0, rotated)) {
-        p.cells = rotated;
-        p.x += kicks[i];
-        drawTetris();
-        return;
-      }
-    }
-  }
-
-  function tetrisSoftDrop() {
-    if (tryMovePiece(0, 1)) {
-      tetris.score += 1;
-      updateTetrisHud();
-      drawTetris();
-    }
-  }
-
-  function tetrisHardDrop() {
-    var n = 0;
-    while (tryMovePiece(0, 1)) n++;
-    tetris.score += n * 2;
-    updateTetrisHud();
-    lockPiece();
-    if (tetris) drawTetris();
-  }
-
-  function endTetris() {
-    if (tetrisTimer) { clearTimeout(tetrisTimer); tetrisTimer = null; }
-    var finalScore = tetris ? tetris.score : 0;
-    tetris = null;
-    tetrisMsg.textContent = 'game over · score ' + finalScore;
-    tetrisStartBtn.textContent = 'play again';
-    tetrisOverlay.hidden = false;
-    submitScore('tetris', finalScore);
-  }
-
-  function stopTetris(abandon) {
-    if (tetrisTimer) { clearTimeout(tetrisTimer); tetrisTimer = null; }
-    if (!tetris) return;
-    if (abandon && tetris.score > 0) submitScore('tetris', tetris.score);
-    tetris = null;
-    tetrisMsg.textContent = TETRIS_HINT;
-    tetrisStartBtn.textContent = 'play';
-    tetrisOverlay.hidden = false;
-  }
-
-  tetrisStartBtn.addEventListener('click', startTetris);
-
   var SNAKE_DIRS = {
     arrowup: { x: 0, y: -1 }, w: { x: 0, y: -1 },
     arrowdown: { x: 0, y: 1 }, s: { x: 0, y: 1 },
@@ -1496,25 +1297,834 @@
     arrowright: { x: 1, y: 0 }, d: { x: 1, y: 0 },
   };
 
-  document.addEventListener('keydown', function (e) {
-    if (currentView !== 'games') return;
-    var k = e.key ? e.key.toLowerCase() : '';
-    if (activeGame === 'snake' && snake) {
-      var d = SNAKE_DIRS[k];
-      if (d) {
-        e.preventDefault();
-        if (d.x !== -snake.dir.x || d.y !== -snake.dir.y) snake.nextDir = d;
-      }
-    } else if (activeGame === 'tetris' && tetris) {
-      if (k === 'arrowleft') { e.preventDefault(); tetrisMove(-1); }
-      else if (k === 'arrowright') { e.preventDefault(); tetrisMove(1); }
-      else if (k === 'arrowdown') { e.preventDefault(); tetrisSoftDrop(); }
-      else if (k === 'arrowup' || k === 'x') { e.preventDefault(); tetrisRotate(); }
-      else if (k === ' ') { e.preventDefault(); tetrisHardDrop(); }
-    }
+  // ---------------------------------------------------------------------
+  // Tetris — guideline-style: SRS kicks, 7-bag with 5-piece preview, hold,
+  // ghost piece, DAS/ARR handling, lock delay with move resets, T-spins,
+  // back-to-back and combo scoring. Keybinds are per-username.
+  // ---------------------------------------------------------------------
+
+  var tetrisCanvas = document.getElementById('tetris-canvas');
+  var tetrisCtx = tetrisCanvas.getContext('2d');
+  var tHoldCanvas = document.getElementById('t-hold');
+  var tHoldCtx = tHoldCanvas.getContext('2d');
+  var tNextCanvas = document.getElementById('t-next');
+  var tNextCtx = tNextCanvas.getContext('2d');
+  var tetrisOverlay = document.getElementById('tetris-overlay');
+  var tetrisMsg = document.getElementById('tetris-msg');
+  var tetrisStartBtn = document.getElementById('tetris-start');
+  var tetrisScoreEl = document.getElementById('tetris-score');
+  var tetrisLinesEl = document.getElementById('tetris-lines');
+  var tetrisLevelEl = document.getElementById('tetris-level');
+  var tetrisComboEl = document.getElementById('tetris-combo');
+  var tetrisB2bEl = document.getElementById('tetris-b2b');
+  var tetrisActionEl = document.getElementById('tetris-action');
+  var tetrisKeysBtn = document.getElementById('tetris-keys-btn');
+  var tetrisKeypanel = document.getElementById('tetris-keypanel');
+  var tBindsEl = document.getElementById('t-binds');
+  var tKeysUserEl = document.getElementById('t-keys-user');
+  var tDasInput = document.getElementById('t-das');
+  var tDasVal = document.getElementById('t-das-val');
+  var tArrInput = document.getElementById('t-arr');
+  var tArrVal = document.getElementById('t-arr-val');
+
+  var T_COLS = 10;
+  var T_ROWS = 20;
+  var T_PX = 24;
+  var T_LOCK_MS = 500;
+  var T_LOCK_RESETS = 15;
+
+  var T_DEFS = {
+    I: { color: '#41c6d8', size: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },
+    J: { color: '#5b7de0', size: 3, cells: [[0, 0], [0, 1], [1, 1], [2, 1]] },
+    L: { color: '#e09b4a', size: 3, cells: [[2, 0], [0, 1], [1, 1], [2, 1]] },
+    O: { color: '#e8d24b', size: 2, cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
+    S: { color: '#5fd875', size: 3, cells: [[1, 0], [2, 0], [0, 1], [1, 1]] },
+    T: { color: '#b45fd8', size: 3, cells: [[1, 0], [0, 1], [1, 1], [2, 1]] },
+    Z: { color: '#e05b5b', size: 3, cells: [[0, 0], [1, 0], [1, 1], [2, 1]] },
+  };
+
+  function rotateCells(cells, size) {
+    return cells.map(function (c) { return [size - 1 - c[1], c[0]]; });
+  }
+
+  var T_SHAPES = {};
+  Object.keys(T_DEFS).forEach(function (t) {
+    var rots = [T_DEFS[t].cells];
+    for (var i = 1; i < 4; i++) rots.push(rotateCells(rots[i - 1], T_DEFS[t].size));
+    T_SHAPES[t] = rots;
   });
 
-  // ---- cookie clicker --------------------------------------------------
+  // SRS kick tables, already converted to screen coordinates (y grows down).
+  var KICKS_JLSTZ = {
+    '0>1': [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
+    '1>0': [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
+    '1>2': [[0, 0], [1, 0], [1, 1], [0, -2], [1, -2]],
+    '2>1': [[0, 0], [-1, 0], [-1, -1], [0, 2], [-1, 2]],
+    '2>3': [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]],
+    '3>2': [[0, 0], [-1, 0], [-1, 1], [0, -2], [-1, -2]],
+    '3>0': [[0, 0], [-1, 0], [-1, 1], [0, -2], [-1, -2]],
+    '0>3': [[0, 0], [1, 0], [1, -1], [0, 2], [1, 2]],
+  };
+  var KICKS_I = {
+    '0>1': [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
+    '1>0': [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
+    '1>2': [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]],
+    '2>1': [[0, 0], [1, 0], [-2, 0], [1, 2], [-2, -1]],
+    '2>3': [[0, 0], [2, 0], [-1, 0], [2, -1], [-1, 2]],
+    '3>2': [[0, 0], [-2, 0], [1, 0], [-2, 1], [1, -2]],
+    '3>0': [[0, 0], [1, 0], [-2, 0], [1, 2], [-2, -1]],
+    '0>3': [[0, 0], [-1, 0], [2, 0], [-1, -2], [2, 1]],
+  };
+  var KICKS_180 = [[0, 0], [0, -1], [0, 1], [1, 0], [-1, 0]];
+
+  var T_ACTIONS = [
+    ['left', 'move left'],
+    ['right', 'move right'],
+    ['soft', 'soft drop'],
+    ['hard', 'hard drop'],
+    ['cw', 'rotate cw'],
+    ['ccw', 'rotate ccw'],
+    ['r180', 'rotate 180°'],
+    ['hold', 'hold'],
+  ];
+  var T_DEFAULT_BINDS = {
+    left: 'ArrowLeft', right: 'ArrowRight', soft: 'ArrowDown', hard: 'Space',
+    cw: 'ArrowUp', ccw: 'KeyZ', r180: 'KeyA', hold: 'CapsLock',
+  };
+  var tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33 };
+  var bindCapture = null;
+
+  function tetrisCfgKey() {
+    return 'ss_tetris_cfg_' + (myRoom || '') + '_' + (myUsername || '').toLowerCase();
+  }
+
+  function loadTetrisCfg() {
+    tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33 };
+    try {
+      var raw = localStorage.getItem(tetrisCfgKey());
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (p && typeof p === 'object') {
+          if (p.binds && typeof p.binds === 'object') {
+            T_ACTIONS.forEach(function (a) {
+              if (typeof p.binds[a[0]] === 'string') tCfg.binds[a[0]] = p.binds[a[0]];
+            });
+          }
+          if (p.das >= 67 && p.das <= 300) tCfg.das = p.das;
+          if (p.arr >= 0 && p.arr <= 83) tCfg.arr = p.arr;
+        }
+      }
+    } catch (e) { /* defaults */ }
+    tKeysUserEl.textContent = myUsername || '';
+    buildBindRows();
+    refreshTuning();
+  }
+
+  function saveTetrisCfg() {
+    try { localStorage.setItem(tetrisCfgKey(), JSON.stringify(tCfg)); } catch (e) { /* ignore */ }
+  }
+
+  function keyLabel(code) {
+    var map = {
+      ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
+      Space: 'space', CapsLock: 'caps', ShiftLeft: 'l-shift', ShiftRight: 'r-shift',
+      ControlLeft: 'l-ctrl', ControlRight: 'r-ctrl', Enter: 'enter', Backspace: 'bksp',
+    };
+    if (map[code]) return map[code];
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    return code.toLowerCase();
+  }
+
+  function buildBindRows() {
+    tBindsEl.innerHTML = '';
+    T_ACTIONS.forEach(function (a) {
+      var row = document.createElement('div');
+      row.className = 'bind-row';
+      var label = document.createElement('span');
+      label.textContent = a[1];
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bind-btn';
+      btn.dataset.action = a[0];
+      btn.textContent = keyLabel(tCfg.binds[a[0]]);
+      btn.addEventListener('click', function () {
+        if (bindCapture) {
+          var prev = tBindsEl.querySelector('.bind-btn.is-listening');
+          if (prev) {
+            prev.classList.remove('is-listening');
+            prev.textContent = keyLabel(tCfg.binds[prev.dataset.action]);
+          }
+        }
+        bindCapture = a[0];
+        btn.classList.add('is-listening');
+        btn.textContent = 'press a key…';
+      });
+      row.appendChild(label);
+      row.appendChild(btn);
+      tBindsEl.appendChild(row);
+    });
+  }
+
+  function refreshTuning() {
+    tDasInput.value = String(tCfg.das);
+    tArrInput.value = String(tCfg.arr);
+    tDasVal.textContent = tCfg.das + 'ms';
+    tArrVal.textContent = tCfg.arr + 'ms';
+  }
+
+  tDasInput.addEventListener('input', function () {
+    tCfg.das = Number(tDasInput.value);
+    tDasVal.textContent = tCfg.das + 'ms';
+    saveTetrisCfg();
+  });
+  tArrInput.addEventListener('input', function () {
+    tCfg.arr = Number(tArrInput.value);
+    tArrVal.textContent = tCfg.arr + 'ms';
+    saveTetrisCfg();
+  });
+
+  tetrisKeysBtn.addEventListener('click', function () {
+    tetrisKeypanel.hidden = !tetrisKeypanel.hidden;
+    tetrisKeysBtn.classList.toggle('is-active', !tetrisKeypanel.hidden);
+  });
+
+  var tetris = null;
+  var tetrisRaf = null;
+  var tetrisLastTs = 0;
+
+  function tCollide(x, y, rot) {
+    var cells = T_SHAPES[tetris.piece.type][rot];
+    for (var i = 0; i < cells.length; i++) {
+      var bx = x + cells[i][0];
+      var by = y + cells[i][1];
+      if (bx < 0 || bx >= T_COLS || by >= T_ROWS) return true;
+      if (by >= 0 && tetris.grid[by][bx]) return true;
+    }
+    return false;
+  }
+
+  function tResetLock() {
+    if (tetris.lockResets < T_LOCK_RESETS) {
+      tetris.lockAcc = 0;
+      tetris.lockResets++;
+    }
+  }
+
+  function tTryShift(dx) {
+    var p = tetris.piece;
+    if (tCollide(p.x + dx, p.y, p.rot)) return false;
+    p.x += dx;
+    tetris.lastMoveRotation = false;
+    if (tCollide(p.x, p.y + 1, p.rot)) tResetLock();
+    return true;
+  }
+
+  function tRotate(delta) {
+    var p = tetris.piece;
+    if (p.type === 'O') return;
+    var newRot = (p.rot + delta + 4) % 4;
+    var kicks = delta === 2
+      ? KICKS_180
+      : (p.type === 'I' ? KICKS_I : KICKS_JLSTZ)[p.rot + '>' + newRot];
+    for (var i = 0; i < kicks.length; i++) {
+      var kx = kicks[i][0];
+      var ky = kicks[i][1];
+      if (!tCollide(p.x + kx, p.y + ky, newRot)) {
+        p.x += kx;
+        p.y += ky;
+        p.rot = newRot;
+        tetris.lastMoveRotation = true;
+        tetris.lastKickIndex = i;
+        if (tCollide(p.x, p.y + 1, p.rot)) tResetLock();
+        return;
+      }
+    }
+  }
+
+  function tRefillQueue() {
+    while (tetris.queue.length < 6) {
+      if (!tetris.bag.length) {
+        tetris.bag = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
+        for (var i = tetris.bag.length - 1; i > 0; i--) {
+          var j = Math.floor(Math.random() * (i + 1));
+          var tmp = tetris.bag[i]; tetris.bag[i] = tetris.bag[j]; tetris.bag[j] = tmp;
+        }
+      }
+      tetris.queue.push(tetris.bag.pop());
+    }
+  }
+
+  function tSpawn(type) {
+    tetris.piece = { type: type, rot: 0, x: type === 'O' ? 4 : 3, y: -1 };
+    tetris.gravAcc = 0;
+    tetris.lockAcc = 0;
+    tetris.lockResets = 0;
+    tetris.lastMoveRotation = false;
+    if (tCollide(tetris.piece.x, tetris.piece.y, 0)) {
+      endTetris();
+      return false;
+    }
+    return true;
+  }
+
+  function tSpawnFromQueue() {
+    var type = tetris.queue.shift();
+    tRefillQueue();
+    drawTNext();
+    return tSpawn(type);
+  }
+
+  function tHoldPiece() {
+    if (tetris.holdUsed) return;
+    tetris.holdUsed = true;
+    var cur = tetris.piece.type;
+    if (tetris.hold) {
+      var h = tetris.hold;
+      tetris.hold = cur;
+      tSpawn(h);
+    } else {
+      tetris.hold = cur;
+      tSpawnFromQueue();
+    }
+    drawTHold();
+  }
+
+  function tGravityDelay() {
+    var l = tetris.level - 1;
+    return Math.max(Math.pow(0.8 - l * 0.007, l) * 1000, 16);
+  }
+
+  function tGhostY() {
+    var p = tetris.piece;
+    var y = p.y;
+    while (!tCollide(p.x, y + 1, p.rot)) y++;
+    return y;
+  }
+
+  function tHardDrop() {
+    var p = tetris.piece;
+    var dist = tGhostY() - p.y;
+    p.y += dist;
+    tetris.score += dist * 2;
+    if (dist > 0) tetris.lastMoveRotation = false;
+    tLock();
+  }
+
+  function tCornersFilled(x, y) {
+    var out = 0;
+    [[0, 0], [2, 0], [0, 2], [2, 2]].forEach(function (c) {
+      var bx = x + c[0];
+      var by = y + c[1];
+      if (bx < 0 || bx >= T_COLS || by >= T_ROWS || (by >= 0 && tetris.grid[by][bx])) out++;
+    });
+    return out;
+  }
+
+  function tFrontCornersFilled(x, y, rot) {
+    var pairs = [
+      [[0, 0], [2, 0]],
+      [[2, 0], [2, 2]],
+      [[0, 2], [2, 2]],
+      [[0, 0], [0, 2]],
+    ][rot];
+    var out = 0;
+    pairs.forEach(function (c) {
+      var bx = x + c[0];
+      var by = y + c[1];
+      if (bx < 0 || bx >= T_COLS || by >= T_ROWS || (by >= 0 && tetris.grid[by][bx])) out++;
+    });
+    return out;
+  }
+
+  function flashAction(text) {
+    tetrisActionEl.textContent = text;
+    tetrisActionEl.classList.remove('is-flash');
+    void tetrisActionEl.offsetWidth;
+    tetrisActionEl.classList.add('is-flash');
+  }
+
+  function tLock() {
+    var p = tetris.piece;
+    var cells = T_SHAPES[p.type][p.rot];
+
+    var tspin = false;
+    var tspinMini = false;
+    if (p.type === 'T' && tetris.lastMoveRotation && tCornersFilled(p.x, p.y) >= 3) {
+      tspin = true;
+      // Two front corners filled = proper T-spin; otherwise mini, unless
+      // the piece got there via the deep (±1, 2) kick.
+      if (tFrontCornersFilled(p.x, p.y, p.rot) < 2 && tetris.lastKickIndex !== 4) tspinMini = true;
+    }
+
+    var over = false;
+    cells.forEach(function (c) {
+      var bx = p.x + c[0];
+      var by = p.y + c[1];
+      if (by < 0) { over = true; return; }
+      tetris.grid[by][bx] = T_DEFS[p.type].color;
+    });
+    if (over) { endTetris(); return; }
+
+    var cleared = 0;
+    for (var y = T_ROWS - 1; y >= 0; y--) {
+      if (tetris.grid[y].every(Boolean)) {
+        tetris.grid.splice(y, 1);
+        tetris.grid.unshift(new Array(T_COLS).fill(null));
+        cleared++;
+        y++;
+      }
+    }
+
+    var names = ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'];
+    var action = '';
+    var base = 0;
+    if (tspin) {
+      base = (tspinMini ? [100, 200, 400, 400] : [400, 800, 1200, 1600])[cleared] * tetris.level;
+      action = 'T-SPIN' + (tspinMini ? ' MINI' : '') + (cleared ? ' ' + names[cleared] : '');
+    } else if (cleared) {
+      base = [0, 100, 300, 500, 800][cleared] * tetris.level;
+      if (cleared === 4) action = 'QUAD';
+    }
+
+    var b2bEligible = cleared === 4 || (tspin && cleared > 0);
+    if (cleared > 0) {
+      if (b2bEligible && tetris.b2b) {
+        base = Math.floor(base * 1.5);
+        tetris.b2bCount++;
+        action = 'B2B ' + (action || names[cleared]);
+      } else if (!b2bEligible) {
+        tetris.b2b = false;
+        tetris.b2bCount = 0;
+      }
+      if (b2bEligible) tetris.b2b = true;
+      tetris.combo++;
+      if (tetris.combo > 0) {
+        tetris.score += 50 * tetris.combo * tetris.level;
+        if (tetris.combo > 1) action = (action ? action + ' · ' : '') + tetris.combo + ' COMBO';
+      }
+    } else {
+      tetris.combo = -1;
+    }
+    tetris.score += base;
+    tetris.lines += cleared;
+    tetris.level = Math.floor(tetris.lines / 10) + 1;
+    if (action) flashAction(action);
+
+    tetris.holdUsed = false;
+    updateTetrisHud();
+    tSpawnFromQueue();
+  }
+
+  function updateTetrisHud() {
+    tetrisScoreEl.textContent = String(tetris ? tetris.score : 0);
+    tetrisLinesEl.textContent = String(tetris ? tetris.lines : 0);
+    tetrisLevelEl.textContent = String(tetris ? tetris.level : 1);
+    tetrisComboEl.textContent = tetris && tetris.combo > 0 ? '×' + tetris.combo : '—';
+    tetrisB2bEl.textContent = tetris && tetris.b2bCount > 0 ? '×' + tetris.b2bCount : '—';
+  }
+
+  function tStep(dt) {
+    var t = tetris;
+    var p = t.piece;
+
+    if (t.dirHeld) {
+      t.dasAcc += dt;
+      if (t.dasAcc >= tCfg.das) {
+        if (tCfg.arr === 0) {
+          while (tTryShift(t.dirHeld)) { /* instant to wall */ }
+        } else {
+          t.arrAcc += dt;
+          while (t.arrAcc >= tCfg.arr) {
+            t.arrAcc -= tCfg.arr;
+            if (!tTryShift(t.dirHeld)) { t.arrAcc = 0; break; }
+          }
+        }
+      }
+    }
+
+    var delay = tGravityDelay();
+    if (t.softHeld) delay = Math.max(delay / 20, 10);
+    t.gravAcc += dt;
+    while (t.gravAcc >= delay) {
+      t.gravAcc -= delay;
+      if (!tCollide(p.x, p.y + 1, p.rot)) {
+        p.y++;
+        t.lockResets = 0;
+        t.lastMoveRotation = false;
+        if (t.softHeld) { t.score += 1; updateTetrisHud(); }
+      } else {
+        break;
+      }
+    }
+
+    if (tCollide(p.x, p.y + 1, p.rot)) {
+      t.lockAcc += dt;
+      if (t.lockAcc >= T_LOCK_MS) {
+        tLock();
+        return;
+      }
+    } else {
+      t.lockAcc = 0;
+    }
+  }
+
+  function drawTCell(ctx, x, y, px, color, ghost) {
+    if (ghost) {
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = color;
+      ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x * px + 1.5, y * px + 1.5, px - 3, px - 3);
+      return;
+    }
+    ctx.fillStyle = color;
+    ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(x * px + 1, y * px + 1, px - 2, 3);
+  }
+
+  function drawTetris() {
+    var ctx = tetrisCtx;
+    ctx.clearRect(0, 0, tetrisCanvas.width, tetrisCanvas.height);
+    ctx.strokeStyle = 'rgba(233,225,208,0.06)';
+    ctx.lineWidth = 1;
+    for (var gx = 1; gx < T_COLS; gx++) {
+      ctx.beginPath(); ctx.moveTo(gx * T_PX + 0.5, 0); ctx.lineTo(gx * T_PX + 0.5, T_ROWS * T_PX); ctx.stroke();
+    }
+    for (var gy = 1; gy < T_ROWS; gy++) {
+      ctx.beginPath(); ctx.moveTo(0, gy * T_PX + 0.5); ctx.lineTo(T_COLS * T_PX, gy * T_PX + 0.5); ctx.stroke();
+    }
+    if (!tetris) return;
+    for (var y = 0; y < T_ROWS; y++) {
+      for (var x = 0; x < T_COLS; x++) {
+        if (tetris.grid[y][x]) drawTCell(ctx, x, y, T_PX, tetris.grid[y][x]);
+      }
+    }
+    var p = tetris.piece;
+    var cells = T_SHAPES[p.type][p.rot];
+    var color = T_DEFS[p.type].color;
+    var gy2 = tGhostY();
+    if (gy2 > p.y) {
+      cells.forEach(function (c) {
+        var by = gy2 + c[1];
+        if (by >= 0) drawTCell(ctx, p.x + c[0], by, T_PX, color, true);
+      });
+    }
+    cells.forEach(function (c) {
+      var by = p.y + c[1];
+      if (by >= 0) drawTCell(ctx, p.x + c[0], by, T_PX, color);
+    });
+  }
+
+  function drawMini(ctx, type, slotY, slotH, dim) {
+    var cells = T_SHAPES[type][0];
+    var minX = 4, maxX = 0, minY = 4, maxY = 0;
+    cells.forEach(function (c) {
+      minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]);
+      minY = Math.min(minY, c[1]); maxY = Math.max(maxY, c[1]);
+    });
+    var px = 18;
+    var w = (maxX - minX + 1) * px;
+    var h = (maxY - minY + 1) * px;
+    var ox = (ctx.canvas.width - w) / 2;
+    var oy = slotY + (slotH - h) / 2;
+    ctx.globalAlpha = dim ? 0.35 : 1;
+    cells.forEach(function (c) {
+      ctx.fillStyle = T_DEFS[type].color;
+      ctx.fillRect(ox + (c[0] - minX) * px + 1, oy + (c[1] - minY) * px + 1, px - 2, px - 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(ox + (c[0] - minX) * px + 1, oy + (c[1] - minY) * px + 1, px - 2, 2);
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  function drawTHold() {
+    tHoldCtx.clearRect(0, 0, tHoldCanvas.width, tHoldCanvas.height);
+    if (tetris && tetris.hold) drawMini(tHoldCtx, tetris.hold, 0, tHoldCanvas.height, tetris.holdUsed);
+  }
+
+  function drawTNext() {
+    tNextCtx.clearRect(0, 0, tNextCanvas.width, tNextCanvas.height);
+    if (!tetris) return;
+    for (var i = 0; i < 5 && i < tetris.queue.length; i++) {
+      drawMini(tNextCtx, tetris.queue[i], i * 66, 66, false);
+    }
+  }
+
+  function tetrisFrame(ts) {
+    if (!tetris) { tetrisRaf = null; return; }
+    var dt = tetrisLastTs ? Math.min(ts - tetrisLastTs, 100) : 16;
+    tetrisLastTs = ts;
+    tStep(dt);
+    if (tetris) {
+      drawTetris();
+      tetrisRaf = requestAnimationFrame(tetrisFrame);
+    } else {
+      tetrisRaf = null;
+    }
+  }
+
+  function startTetris() {
+    var grid = [];
+    for (var y = 0; y < T_ROWS; y++) grid.push(new Array(T_COLS).fill(null));
+    tetris = {
+      grid: grid, bag: [], queue: [], piece: null, hold: null, holdUsed: false,
+      score: 0, lines: 0, level: 1, combo: -1, b2b: false, b2bCount: 0,
+      gravAcc: 0, lockAcc: 0, lockResets: 0,
+      lastMoveRotation: false, lastKickIndex: 0,
+      dirHeld: 0, leftHeld: false, rightHeld: false, dasAcc: 0, arrAcc: 0, softHeld: false,
+    };
+    tRefillQueue();
+    tSpawnFromQueue();
+    updateTetrisHud();
+    drawTHold();
+    tetrisActionEl.textContent = '';
+    tetrisOverlay.hidden = true;
+    tetrisLastTs = 0;
+    drawTetris();
+    if (!tetrisRaf) tetrisRaf = requestAnimationFrame(tetrisFrame);
+  }
+
+  function endTetris() {
+    var finalScore = tetris ? tetris.score : 0;
+    tetris = null;
+    if (tetrisRaf) { cancelAnimationFrame(tetrisRaf); tetrisRaf = null; }
+    tetrisMsg.textContent = 'top out · score ' + finalScore;
+    tetrisStartBtn.textContent = 'play again';
+    tetrisOverlay.hidden = false;
+    submitScore('tetris', finalScore);
+  }
+
+  function stopTetris(abandon) {
+    if (!tetris) return;
+    if (abandon && tetris.score > 0) submitScore('tetris', tetris.score);
+    tetris = null;
+    if (tetrisRaf) { cancelAnimationFrame(tetrisRaf); tetrisRaf = null; }
+    tetrisMsg.textContent = 'move · rotate · hold · hard drop — see controls';
+    tetrisStartBtn.textContent = 'play';
+    tetrisOverlay.hidden = false;
+  }
+
+  tetrisStartBtn.addEventListener('click', startTetris);
+
+  // ---------------------------------------------------------------------
+  // Minesweeper — 16×16, 40 mines, first click always safe
+  // ---------------------------------------------------------------------
+
+  var minesGrid = document.getElementById('mines-grid');
+  var minesLeftEl = document.getElementById('mines-left');
+  var minesTimeEl = document.getElementById('mines-time');
+  var minesBestEl = document.getElementById('mines-best');
+  var minesBanner = document.getElementById('mines-banner');
+  var minesBannerText = document.getElementById('mines-banner-text');
+  var minesAgainBtn = document.getElementById('mines-again');
+  var MINES_W = 16;
+  var MINES_H = 16;
+  var MINES_N = 40;
+  var mines = null;
+  var minesCells = [];
+  var minesTimer = null;
+  var minesBuilt = false;
+  var minesBestTime = null;
+
+  function minesIndex(x, y) { return y * MINES_W + x; }
+
+  function minesNeighbors(i) {
+    var x = i % MINES_W;
+    var y = Math.floor(i / MINES_W);
+    var out = [];
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        var nx = x + dx;
+        var ny = y + dy;
+        if (nx >= 0 && nx < MINES_W && ny >= 0 && ny < MINES_H) out.push(minesIndex(nx, ny));
+      }
+    }
+    return out;
+  }
+
+  function newMines() {
+    if (minesTimer) { clearInterval(minesTimer); minesTimer = null; }
+    mines = {
+      cells: [],
+      started: false,
+      over: false,
+      time: 0,
+      revealed: 0,
+      flags: 0,
+    };
+    for (var i = 0; i < MINES_W * MINES_H; i++) {
+      mines.cells.push({ mine: false, open: false, flag: false, n: 0 });
+    }
+    minesLeftEl.textContent = String(MINES_N);
+    minesTimeEl.textContent = '0';
+    minesBanner.hidden = true;
+
+    if (!minesBuilt) {
+      minesBuilt = true;
+      minesGrid.innerHTML = '';
+      minesCells = [];
+      for (var j = 0; j < MINES_W * MINES_H; j++) {
+        (function (idx) {
+          var cell = document.createElement('button');
+          cell.type = 'button';
+          cell.className = 'mine-cell';
+          cell.addEventListener('click', function () { minesReveal(idx); });
+          cell.addEventListener('contextmenu', function (e) {
+            e.preventDefault();
+            minesFlag(idx);
+          });
+          minesGrid.appendChild(cell);
+          minesCells.push(cell);
+        })(j);
+      }
+    }
+    minesCells.forEach(function (c) {
+      c.className = 'mine-cell';
+      c.textContent = '';
+      c.removeAttribute('data-n');
+      c.disabled = false;
+    });
+  }
+
+  function minesPlace(safeIdx) {
+    var forbidden = {};
+    forbidden[safeIdx] = true;
+    minesNeighbors(safeIdx).forEach(function (n) { forbidden[n] = true; });
+    var placed = 0;
+    while (placed < MINES_N) {
+      var i = Math.floor(Math.random() * MINES_W * MINES_H);
+      if (forbidden[i] || mines.cells[i].mine) continue;
+      mines.cells[i].mine = true;
+      placed++;
+    }
+    for (var j = 0; j < mines.cells.length; j++) {
+      if (mines.cells[j].mine) continue;
+      mines.cells[j].n = minesNeighbors(j).filter(function (n) { return mines.cells[n].mine; }).length;
+    }
+  }
+
+  function minesStartTimer() {
+    minesTimer = setInterval(function () {
+      if (!mines || mines.over) return;
+      mines.time++;
+      minesTimeEl.textContent = String(mines.time);
+    }, 1000);
+  }
+
+  function minesOpenCell(i) {
+    var c = mines.cells[i];
+    c.open = true;
+    mines.revealed++;
+    var el = minesCells[i];
+    el.classList.add('is-open');
+    if (c.n > 0) {
+      el.textContent = String(c.n);
+      el.setAttribute('data-n', String(c.n));
+    }
+  }
+
+  function minesReveal(i) {
+    if (!mines || mines.over) return;
+    var c = mines.cells[i];
+    if (c.flag) return;
+    if (c.open) { minesChord(i); return; }
+
+    if (!mines.started) {
+      mines.started = true;
+      minesPlace(i);
+      minesStartTimer();
+    }
+
+    if (c.mine) { minesLose(i); return; }
+
+    var stack = [i];
+    var seen = {};
+    while (stack.length) {
+      var cur = stack.pop();
+      if (seen[cur]) continue;
+      seen[cur] = true;
+      var cell = mines.cells[cur];
+      if (cell.open || cell.flag || cell.mine) continue;
+      minesOpenCell(cur);
+      if (cell.n === 0) {
+        minesNeighbors(cur).forEach(function (n) { if (!seen[n]) stack.push(n); });
+      }
+    }
+    minesCheckWin();
+  }
+
+  function minesChord(i) {
+    var c = mines.cells[i];
+    if (!c.open || c.n === 0) return;
+    var ns = minesNeighbors(i);
+    var flagged = ns.filter(function (n) { return mines.cells[n].flag; }).length;
+    if (flagged !== c.n) return;
+    ns.forEach(function (n) {
+      var nc = mines.cells[n];
+      if (nc.open || nc.flag || !mines || mines.over) return;
+      if (nc.mine) { minesLose(n); return; }
+      minesReveal(n);
+    });
+  }
+
+  function minesFlag(i) {
+    if (!mines || mines.over) return;
+    var c = mines.cells[i];
+    if (c.open) return;
+    c.flag = !c.flag;
+    mines.flags += c.flag ? 1 : -1;
+    minesCells[i].classList.toggle('is-flag', c.flag);
+    minesCells[i].textContent = c.flag ? '🚩' : '';
+    minesLeftEl.textContent = String(MINES_N - mines.flags);
+  }
+
+  function minesLose(hitIdx) {
+    mines.over = true;
+    if (minesTimer) { clearInterval(minesTimer); minesTimer = null; }
+    mines.cells.forEach(function (c, i) {
+      if (c.mine) {
+        minesCells[i].classList.add('is-open', 'is-mine');
+        minesCells[i].textContent = '💣';
+      } else if (c.flag) {
+        minesCells[i].classList.add('is-wrong');
+      }
+    });
+    minesCells[hitIdx].classList.add('is-boom');
+    minesBannerText.textContent = '💥 boom — ' + mines.time + 's';
+    minesBanner.hidden = false;
+  }
+
+  function minesCheckWin() {
+    if (!mines || mines.over) return;
+    if (mines.revealed >= MINES_W * MINES_H - MINES_N) {
+      mines.over = true;
+      if (minesTimer) { clearInterval(minesTimer); minesTimer = null; }
+      if (minesBestTime === null || mines.time < minesBestTime) {
+        minesBestTime = mines.time;
+        minesBestEl.textContent = minesBestTime + 's';
+      }
+      minesBannerText.textContent = '✨ cleared in ' + mines.time + 's';
+      minesBanner.hidden = false;
+      submitScore('mines', Math.max(1, 1001 - mines.time));
+    }
+  }
+
+  function stopMines() {
+    if (!mines) return;
+    if (mines.started && !mines.over) newMines();
+    else if (minesTimer) { clearInterval(minesTimer); minesTimer = null; }
+  }
+
+  minesAgainBtn.addEventListener('click', newMines);
+
+  // ---------------------------------------------------------------------
+  // Cookie clicker
+  // ---------------------------------------------------------------------
 
   var cookieBtn = document.getElementById('cookie-btn');
   var cookieShopEl = document.getElementById('cookie-shop');
@@ -1555,7 +2165,7 @@
           }
         }
       }
-    } catch (e) { /* corrupt or unavailable — start fresh */ }
+    } catch (e) { /* start fresh */ }
     buildCookieShop();
     updateCookieHud();
   }
@@ -1659,21 +2269,114 @@
   }
 
   // ---------------------------------------------------------------------
-  // Essay interactivity: scroll-reveal, discreet entry mark, section index
-  // nav with active-section highlighting, and scroll-progress rail.
+  // Arcade keyboard dispatch — snake uses simple directions, tetris uses
+  // the per-user binds (matched on e.code). Keybind capture eats the next
+  // keydown while listening.
   // ---------------------------------------------------------------------
+
+  document.addEventListener('keydown', function (e) {
+    if (currentView !== 'games') return;
+
+    if (bindCapture) {
+      e.preventDefault();
+      var btn = tBindsEl.querySelector('.bind-btn.is-listening');
+      if (e.code !== 'Escape') {
+        tCfg.binds[bindCapture] = e.code;
+        saveTetrisCfg();
+      }
+      if (btn) {
+        btn.classList.remove('is-listening');
+        btn.textContent = keyLabel(tCfg.binds[btn.dataset.action]);
+      }
+      bindCapture = null;
+      return;
+    }
+
+    if (activeGame === 'snake' && snake) {
+      var d = SNAKE_DIRS[e.key ? e.key.toLowerCase() : ''];
+      if (d) {
+        e.preventDefault();
+        if (d.x !== -snake.dir.x || d.y !== -snake.dir.y) snake.nextDir = d;
+      }
+      return;
+    }
+
+    if (activeGame === 'tetris' && tetris) {
+      var b = tCfg.binds;
+      var code = e.code;
+      if (code === b.left) {
+        e.preventDefault();
+        if (!e.repeat) {
+          tetris.leftHeld = true;
+          tetris.dirHeld = -1;
+          tetris.dasAcc = 0;
+          tetris.arrAcc = 0;
+          tTryShift(-1);
+        }
+      } else if (code === b.right) {
+        e.preventDefault();
+        if (!e.repeat) {
+          tetris.rightHeld = true;
+          tetris.dirHeld = 1;
+          tetris.dasAcc = 0;
+          tetris.arrAcc = 0;
+          tTryShift(1);
+        }
+      } else if (code === b.soft) {
+        e.preventDefault();
+        tetris.softHeld = true;
+      } else if (code === b.hard) {
+        e.preventDefault();
+        if (!e.repeat) tHardDrop();
+      } else if (code === b.cw) {
+        e.preventDefault();
+        if (!e.repeat) tRotate(1);
+      } else if (code === b.ccw) {
+        e.preventDefault();
+        if (!e.repeat) tRotate(-1);
+      } else if (code === b.r180) {
+        e.preventDefault();
+        if (!e.repeat) tRotate(2);
+      } else if (code === b.hold) {
+        e.preventDefault();
+        if (!e.repeat) tHoldPiece();
+      }
+    }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    if (!tetris) return;
+    var b = tCfg.binds;
+    if (e.code === b.left) {
+      tetris.leftHeld = false;
+      if (tetris.dirHeld === -1) {
+        tetris.dirHeld = tetris.rightHeld ? 1 : 0;
+        tetris.dasAcc = 0;
+        tetris.arrAcc = 0;
+      }
+    } else if (e.code === b.right) {
+      tetris.rightHeld = false;
+      if (tetris.dirHeld === 1) {
+        tetris.dirHeld = tetris.leftHeld ? -1 : 0;
+        tetris.dasAcc = 0;
+        tetris.arrAcc = 0;
+      }
+    } else if (e.code === b.soft) {
+      tetris.softHeld = false;
+    }
+  });
 
   // ---------------------------------------------------------------------
   // Hidden keyboard combos. Q+W+O+P (held together on the essay) opens the
-  // gate; G+P+T (from chat/games) opens the assistant; G+M+E (from
+  // gate; G+P+T (from chat/games) opens the assistant; G+A+M+E (from
   // chat/assistant) opens the arcade. Tab is the panic key: from anywhere
   // past the essay it snaps straight back, even mid-typing.
   // ---------------------------------------------------------------------
 
   var COMBOS = [
-    { keys: ['q', 'w', 'o', 'p'], from: ['essay'], fired: false, go: function () { setGateError(''); showView('gate'); } },
+    { keys: ['q', 'w', 'o', 'p'], from: ['essay'], fired: false, go: function () { showView('gate'); } },
     { keys: ['g', 'p', 't'], from: ['chat', 'games'], fired: false, go: function () { showView('gpt'); } },
-    { keys: ['g', 'm', 'e'], from: ['chat', 'gpt'], fired: false, go: function () { showView('games'); } },
+    { keys: ['g', 'a', 'm', 'e'], from: ['chat', 'gpt'], fired: false, go: function () { showView('games'); } },
   ];
   var COMBO_KEYS = Object.create(null);
   COMBOS.forEach(function (c) {
@@ -1695,7 +2398,6 @@
     if (e.key === 'Tab') {
       if (currentView !== 'essay') {
         e.preventDefault();
-        setGateError('');
         showView('essay');
       }
       return;
@@ -1703,12 +2405,20 @@
 
     var k = e.key ? e.key.toLowerCase() : '';
     if (!COMBO_KEYS[k]) return;
-    if (isTypingTarget(e.target)) return; // don't hijack typing into the password/username/message fields
+
+    if (isTypingTarget(e.target)) {
+      // A combo key still physically held from before a view switch —
+      // swallow its auto-repeat so it can't type into the newly-focused
+      // input (this is what used to leave a stray letter in the boxes).
+      if (heldKeys[k]) e.preventDefault();
+      return;
+    }
 
     heldKeys[k] = true;
     COMBOS.forEach(function (c) {
       if (!c.fired && c.from.indexOf(currentView) !== -1 && comboHeld(c)) {
         c.fired = true;
+        e.preventDefault();
         c.go();
       }
     });
@@ -1720,15 +2430,44 @@
     COMBOS.forEach(function (c) { if (!comboHeld(c)) c.fired = false; });
   });
 
-  // Held keys can't be tracked across a focus/tab switch — reset so a
-  // stale key doesn't silently count toward the next attempt.
   window.addEventListener('blur', function () {
     heldKeys = Object.create(null);
     COMBOS.forEach(function (c) { c.fired = false; });
   });
 
-  var essaySections = document.querySelectorAll('.essay section');
-  if (essaySections.length && 'IntersectionObserver' in window) {
+  // ---------------------------------------------------------------------
+  // Publication page: section tabs, scroll reveals, progress rail
+  // ---------------------------------------------------------------------
+
+  var pubTabs = Array.prototype.slice.call(document.querySelectorAll('.pub-tab'));
+  var pubPanels = Array.prototype.slice.call(document.querySelectorAll('.pub-panel'));
+  var pubTabsBar = document.getElementById('pub-tabs');
+
+  function activatePubTab(name) {
+    pubTabs.forEach(function (t) {
+      var active = t.dataset.tab === name;
+      t.classList.toggle('is-active', active);
+      t.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    pubPanels.forEach(function (p) {
+      var active = p.dataset.panel === name;
+      p.classList.toggle('is-active', active);
+      if (active) {
+        p.querySelectorAll('[data-reveal]').forEach(function (el) { el.classList.add('in-view'); });
+      }
+    });
+    if (pubTabsBar) {
+      var top = pubTabsBar.getBoundingClientRect().top;
+      if (top < 0) pubTabsBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  pubTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () { activatePubTab(tab.dataset.tab); });
+  });
+
+  var revealEls = document.querySelectorAll('[data-reveal]');
+  if (revealEls.length && 'IntersectionObserver' in window) {
     var revealObserver = new IntersectionObserver(
       function (entries) {
         entries.forEach(function (entry) {
@@ -1738,74 +2477,13 @@
           }
         });
       },
-      { threshold: 0.15, rootMargin: '0px 0px -60px 0px' }
+      { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
     );
-    essaySections.forEach(function (s) { revealObserver.observe(s); });
-  } else if (essaySections.length) {
-    essaySections.forEach(function (s) { s.classList.add('in-view'); });
+    revealEls.forEach(function (el) { revealObserver.observe(el); });
+  } else {
+    revealEls.forEach(function (el) { el.classList.add('in-view'); });
   }
 
-  // Sidebar navigation: click a link to smooth-scroll to its section (a
-  // "sublink" additionally jumps straight to the matching research-studio
-  // tab). Whichever tracked section is currently in view gets its link(s)
-  // highlighted, so the sidebar always shows roughly where you are.
-  var sidebarNav = document.getElementById('sidebar-nav');
-  var navToggle = document.getElementById('nav-toggle');
-  var navScrim = document.getElementById('nav-scrim');
-  var sidebarLinks = Array.prototype.slice.call(document.querySelectorAll('.sidebar-link, .sidebar-sublink'));
-
-  function closeMobileNav() {
-    sidebarNav.classList.remove('is-open');
-    navToggle.setAttribute('aria-expanded', 'false');
-    navScrim.hidden = true;
-  }
-  function openMobileNav() {
-    sidebarNav.classList.add('is-open');
-    navToggle.setAttribute('aria-expanded', 'true');
-    navScrim.hidden = false;
-  }
-  navToggle.addEventListener('click', function () {
-    if (sidebarNav.classList.contains('is-open')) closeMobileNav(); else openMobileNav();
-  });
-  navScrim.addEventListener('click', closeMobileNav);
-
-  sidebarLinks.forEach(function (link) {
-    link.addEventListener('click', function (e) {
-      e.preventDefault();
-      var target = document.getElementById(link.dataset.target);
-      if (link.dataset.panel) {
-        var tabBtn = document.querySelector('.research-tab[data-panel="' + link.dataset.panel + '"]');
-        if (tabBtn) tabBtn.click();
-      }
-      // Always align to the section's top edge (with a bit of breathing room
-      // via `scroll-margin-top` in CSS), not center — the active-link
-      // IntersectionObserver below watches a band near the top of the
-      // viewport, matching this, rather than the middle.
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      closeMobileNav();
-    });
-  });
-
-  var trackedSections = Array.prototype.slice.call(document.querySelectorAll(
-    '#hero, #research-studio, #lab-notes, #quiz-deck, #field-notes, .essay section[data-accent], #sec-closing'
-  ));
-  if (trackedSections.length && 'IntersectionObserver' in window) {
-    var navObserver = new IntersectionObserver(
-      function (entries) {
-        entries.forEach(function (entry) {
-          if (!entry.isIntersecting) return;
-          var links = sidebarNav.querySelectorAll('[data-target="' + entry.target.id + '"]');
-          if (!links.length) return;
-          sidebarLinks.forEach(function (l) { l.classList.remove('is-active'); });
-          links.forEach(function (l) { l.classList.add('is-active'); });
-        });
-      },
-      { threshold: 0.25, rootMargin: '0px 0px -55% 0px' }
-    );
-    trackedSections.forEach(function (s) { navObserver.observe(s); });
-  }
-
-  // Scroll-progress rail across the whole page.
   var progressFill = document.getElementById('progress-fill');
   function updateProgress() {
     var doc = document.documentElement;
@@ -1816,114 +2494,6 @@
   }
   window.addEventListener('scroll', updateProgress, { passive: true });
   updateProgress();
-
-  // A small, playful interactive touch on the hero sigil — click cycles an
-  // accent hue. Purely decorative, no navigation.
-  var heroSigil = document.getElementById('hero-sigil');
-  var SIGIL_HUES = ['greek', 'dualism', 'abrahamic', 'dharmic', 'secular', ''];
-  var sigilHueIdx = 0;
-  heroSigil.style.cursor = 'pointer';
-  heroSigil.addEventListener('click', function () {
-    sigilHueIdx = (sigilHueIdx + 1) % SIGIL_HUES.length;
-    var hue = SIGIL_HUES[sigilHueIdx];
-    if (hue) {
-      heroSigil.setAttribute('data-accent', hue);
-    } else {
-      heroSigil.removeAttribute('data-accent');
-    }
-  });
-
-
-  // Research studio interactions
-  var researchTabs = Array.prototype.slice.call(document.querySelectorAll('.research-tab'));
-  var researchPanels = Array.prototype.slice.call(document.querySelectorAll('.research-panel'));
-  researchTabs.forEach(function (tab) {
-    tab.addEventListener('click', function () {
-      var name = tab.dataset.panel;
-      researchTabs.forEach(function (t) {
-        var active = t === tab;
-        t.classList.toggle('is-active', active);
-        t.setAttribute('aria-selected', active ? 'true' : 'false');
-      });
-      researchPanels.forEach(function (panel) {
-        panel.classList.toggle('is-active', panel.dataset.panelView === name);
-      });
-    });
-  });
-
-  document.querySelectorAll('.expandable').forEach(function (card) {
-    card.addEventListener('click', function () {
-      card.classList.toggle('is-open');
-      var marker = card.querySelector('b');
-      if (marker) marker.textContent = card.classList.contains('is-open') ? '−' : '+';
-    });
-  });
-
-  var scenarioResult = document.getElementById('scenario-result');
-  document.querySelectorAll('[data-scenario]').forEach(function (button) {
-    button.addEventListener('click', function () {
-      var responses = {
-        conformity: 'Speaking up injects a minority view into the room. Disagreement suddenly becomes visible — and cheaper for the next person to voice.',
-        observation: 'Asking what others think can surface hidden disagreement without you having to plant a flag first.',
-        compliance: 'Staying silent keeps the peace, but it also feeds the illusion that everyone agrees.'
-      };
-      scenarioResult.textContent = responses[button.dataset.scenario];
-    });
-  });
-
-  var frameReadout = document.getElementById('frame-readout');
-  var frameDetail = document.getElementById('frame-detail');
-  document.querySelectorAll('.frame-choice').forEach(function (button) {
-    button.addEventListener('click', function () {
-      var loss = button.dataset.frame === 'loss';
-      frameReadout.textContent = loss ? 'Loss frame' : 'Gain frame';
-      frameDetail.textContent = loss
-        ? 'The message emphasizes avoiding a negative outcome; the reference point is what could be lost.'
-        : 'The message emphasizes a positive outcome; the reference point is what could be gained.';
-    });
-  });
-
-  var biasResult = document.getElementById('bias-result');
-  document.querySelectorAll('[data-answer]').forEach(function (button) {
-    button.addEventListener('click', function () {
-      biasResult.textContent = button.dataset.answer === 'no'
-        ? 'Correct — 20% off $100 is $80, and the second 20% comes off the $80. Final price: $64. Sequential discounts compound; they don\'t add.'
-        : 'Not quite. The second 20% applies to $80, not the original $100 — so $64, not $60.';
-    });
-  });
-
-  var timelineCopy = document.getElementById('timeline-copy');
-  var timelineText = {
-    '1': 'It starts with contact: people notice each other, size up safety and relevance, and form first impressions that are annoyingly durable.',
-    '2': 'People start aligning around shared interests, roles, expectations, or whoever has the most gravity in the room.',
-    '3': 'Repeated patterns harden into norms. What was once negotiated quietly becomes assumed.',
-    '4': 'Eventually the group becomes part of how its members describe themselves — and belonging starts to mean something different.'
-  };
-  document.querySelectorAll('.timeline-step').forEach(function (step) {
-    step.addEventListener('click', function () {
-      document.querySelectorAll('.timeline-step').forEach(function (s) { s.classList.remove('is-active'); });
-      step.classList.add('is-active');
-      timelineCopy.textContent = timelineText[step.dataset.step];
-    });
-  });
-
-  document.querySelectorAll('[data-quiz]').forEach(function (button) {
-    button.addEventListener('click', function () {
-      var feedback = document.getElementById('quiz-feedback');
-      document.querySelectorAll('[data-quiz]').forEach(function (b) { b.classList.remove('picked'); });
-      button.classList.add('picked');
-      feedback.textContent = button.dataset.quiz === 'right'
-        ? 'Correct. Confirmation bias is the tendency to seek, read, and remember information in ways that flatter what you already believe.'
-        : 'Not quite — the key idea is selective processing around a belief you already hold.';
-    });
-  });
-
-  document.querySelectorAll('[data-jump]').forEach(function (button) {
-    button.addEventListener('click', function () {
-      var target = document.getElementById(button.dataset.jump);
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  });
 
   // ---------------------------------------------------------------------
   // Go

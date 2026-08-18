@@ -51,7 +51,11 @@ const MAX_BODY_BYTES = 8 * 1024; // 8KB — plenty for password/username/chat pa
 const MAX_AVATAR_BYTES = 3 * 1024 * 1024; // 3MB — reasonable cap for a profile picture
 const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB — cap for an in-chat image
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const USERNAME_RE = /^[A-Za-z0-9_]{3,20}$/;
+// Any printable characters are allowed in a username (1-20 chars, no
+// control characters). Usernames are NEVER used directly as file paths —
+// see userFileBase(), which encodes them to a fixed-safe alphabet first.
+const USERNAME_RE = /^[^\x00-\x1F\x7F]{1,20}$/;
+const LEGACY_USERNAME_RE = /^[a-z0-9_]{1,20}$/;
 const RESERVED_USERNAMES = new Set(['admin', 'system', 'moderator', 'root', 'soulstudies']);
 // Message text is now an opaque, client-encrypted (AES-GCM) blob, base64-encoded
 // with a 12-byte IV prepended — see public/assets/app.js. The server never sees
@@ -62,7 +66,7 @@ const MAX_MESSAGE_LEN = 4000;
 const MAX_MESSAGES_KEPT = 300;
 const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
-const GAME_IDS = ['snake', 'tetris', 'cookie'];
+const GAME_IDS = ['snake', 'tetris', 'mines', 'cookie'];
 const MAX_GAME_SCORE = 1e15;
 const USERNAME_STALE_MS = 90 * 1000;
 const MAX_GPT_BODY_BYTES = 256 * 1024;
@@ -284,10 +288,10 @@ for (const room of ROOMS) {
   for (const entry of fs.readdirSync(avatarsDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const ext = path.extname(entry.name).slice(1).toLowerCase();
-    const base = path.basename(entry.name, path.extname(entry.name)).toLowerCase();
-    if (ALLOWED_AVATAR_EXTS.includes(ext) && USERNAME_RE.test(base)) {
-      avatarExtByUser.set(base, ext);
-    }
+    if (!ALLOWED_AVATAR_EXTS.includes(ext)) continue;
+    const base = path.basename(entry.name, path.extname(entry.name));
+    const key = decodeUserFileBase(base);
+    if (key) avatarExtByUser.set(key, { ext, base });
   }
 
   const chatImageExtById = new Map();
@@ -573,19 +577,43 @@ function detectImageType(buf) {
   return null;
 }
 
+// Usernames may contain any printable characters, so the on-disk file name
+// is always the base64url encoding of the (lowercased) name, prefixed to
+// distinguish it from legacy plain-name files. Nothing user-controlled is
+// ever used as a path component.
+function userFileBase(usernameKey) {
+  return 'u_' + Buffer.from(usernameKey, 'utf8').toString('base64url');
+}
+
+function decodeUserFileBase(base) {
+  if (base.startsWith('u_')) {
+    try {
+      const key = Buffer.from(base.slice(2), 'base64url').toString('utf8');
+      return USERNAME_RE.test(key) ? key : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  return LEGACY_USERNAME_RE.test(base) ? base : null;
+}
+
 function saveAvatarFile(avatarsDir, usernameKey, ext, buf) {
-  // Remove any previous avatar for this name under a different extension,
-  // so switching file types doesn't leave orphaned files being served.
-  for (const otherExt of ALLOWED_AVATAR_EXTS) {
-    if (otherExt === ext) continue;
-    const stale = path.join(avatarsDir, usernameKey + '.' + otherExt);
-    if (fs.existsSync(stale)) {
-      try { fs.unlinkSync(stale); } catch (e) { /* best effort */ }
+  const base = userFileBase(usernameKey);
+  // Remove any previous avatar for this name (other extensions, and any
+  // legacy plain-name file) so nothing orphaned keeps being served.
+  for (const anyExt of ALLOWED_AVATAR_EXTS) {
+    const stale = [];
+    if (anyExt !== ext) stale.push(path.join(avatarsDir, base + '.' + anyExt));
+    if (LEGACY_USERNAME_RE.test(usernameKey)) stale.push(path.join(avatarsDir, usernameKey + '.' + anyExt));
+    for (const f of stale) {
+      if (fs.existsSync(f)) {
+        try { fs.unlinkSync(f); } catch (e) { /* best effort */ }
+      }
     }
   }
   // Write to a temp file then rename — avoids ever serving a partially
   // written file if a read races an in-progress upload.
-  const finalPath = path.join(avatarsDir, usernameKey + '.' + ext);
+  const finalPath = path.join(avatarsDir, base + '.' + ext);
   const tmpPath = finalPath + '.tmp-' + crypto.randomBytes(6).toString('hex');
   fs.writeFileSync(tmpPath, buf, { mode: 0o600 });
   fs.renameSync(tmpPath, finalPath);
@@ -648,7 +676,7 @@ function callGptUpstream(messages) {
     const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) };
     if (GPT_API_KEY) headers.Authorization = 'Bearer ' + GPT_API_KEY;
     const lib = target.protocol === 'http:' ? http : https;
-    const upstream = lib.request(target, { method: 'POST', headers, timeout: 60000 }, (resp) => {
+    const upstream = lib.request(target, { method: 'POST', headers, timeout: 12000 }, (resp) => {
       const chunks = [];
       let size = 0;
       resp.on('data', (c) => {
@@ -804,7 +832,7 @@ async function handleApi(req, res, pathname) {
 
     const username = typeof body.username === 'string' ? body.username.trim() : '';
     if (!USERNAME_RE.test(username)) {
-      return sendJson(res, 400, { error: 'Use 3-20 letters, numbers, or underscores.' });
+      return sendJson(res, 400, { error: 'Use 1-20 characters.' });
     }
     const roomState = rooms[session.room];
     const key = username.toLowerCase();
@@ -997,7 +1025,7 @@ async function handleApi(req, res, pathname) {
     const key = session.username.toLowerCase();
     try {
       saveAvatarFile(roomState.avatarsDir, key, detected.ext, buf);
-      roomState.avatarExtByUser.set(key, detected.ext);
+      roomState.avatarExtByUser.set(key, { ext: detected.ext, base: userFileBase(key) });
     } catch (e) {
       return sendJson(res, 500, { error: 'Could not save image.' });
     }
@@ -1023,15 +1051,15 @@ async function handleApi(req, res, pathname) {
     if (!USERNAME_RE.test(username)) return sendJson(res, 400, { error: 'Invalid username' });
 
     const key = username.toLowerCase();
-    const ext = roomState.avatarExtByUser.get(key);
-    if (ext) {
-      const filePath = path.join(roomState.avatarsDir, key + '.' + ext);
+    const rec = roomState.avatarExtByUser.get(key);
+    if (rec) {
+      const filePath = path.join(roomState.avatarsDir, rec.base + '.' + rec.ext);
       fs.readFile(filePath, (err, data) => {
         if (err) {
           return sendSvg(res, letterAvatarSvg(username));
         }
         res.writeHead(200, {
-          'Content-Type': AVATAR_MIME[ext],
+          'Content-Type': AVATAR_MIME[rec.ext],
           'Cache-Control': 'private, max-age=120',
         });
         res.end(data);
