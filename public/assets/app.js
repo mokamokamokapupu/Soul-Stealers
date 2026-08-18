@@ -343,6 +343,7 @@
   var renderedIds = Object.create(null);
   var lastAuthor = null; // who sent the most recently rendered message, for grouping
   var replyingTo = null;
+  var roomClearedAt = null; // server's last-clear stamp; a jump means wipe the view
 
   var NEAR_BOTTOM_PX = 80;
 
@@ -648,6 +649,13 @@
     requestAnimationFrame(function () { overlay.classList.add('is-open'); });
   }
 
+  function resetChatView() {
+    messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
+    renderedIds = Object.create(null);
+    lastAuthor = null;
+    cancelReply();
+  }
+
   async function poll() {
     if (pollInFlight) return;
     pollInFlight = true;
@@ -659,6 +667,14 @@
         return;
       }
       var data = await res.json();
+      if (typeof data.clearedAt === 'number') {
+        if (roomClearedAt === null) {
+          roomClearedAt = data.clearedAt;
+        } else if (data.clearedAt > roomClearedAt) {
+          roomClearedAt = data.clearedAt;
+          resetChatView();
+        }
+      }
       await renderMessages(data.messages || []);
     } catch (e) { /* transient — next poll retries */ }
     finally { pollInFlight = false; }
@@ -667,6 +683,7 @@
   function startChatPolling() {
     if (pollTimer) return;
     since = 0;
+    roomClearedAt = null;
     renderedIds = Object.create(null);
     lastAuthor = null;
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
@@ -688,6 +705,33 @@
     e.preventDefault();
     var text = msgInput.value.trim();
     if (!text) return;
+
+    if (text.toLowerCase() === '/clearchat') {
+      msgInput.value = '';
+      try {
+        var clearRes = await fetch('/api/chat/clear', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'X-CSRF-Token': csrfToken },
+        });
+        if (clearRes.status === 403) { showView('gate'); return; }
+        var clearData = await clearRes.json();
+        if (clearRes.ok) {
+          roomClearedAt = clearData.clearedAt || roomClearedAt;
+          resetChatView();
+          setChatStatus('chat cleared for everyone');
+          setTimeout(function () { setChatStatus(''); }, 2500);
+        } else {
+          setChatStatus(clearData.error || 'Could not clear the chat.', true);
+          setTimeout(function () { setChatStatus(''); }, 3000);
+        }
+      } catch (err) {
+        setChatStatus('Could not clear the chat.', true);
+        setTimeout(function () { setChatStatus(''); }, 3000);
+      }
+      return;
+    }
+
     if (cryptoAvailable && !roomKey) { setUnlockVisible(true); return; }
 
     msgInput.value = '';

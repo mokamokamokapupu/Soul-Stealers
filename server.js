@@ -303,6 +303,7 @@ for (const room of ROOMS) {
     messages,
     byId,
     dirty: false,
+    clearedAt: 0,
     scores: loadScores(room.id),
     scoresDirty: false,
     avatarsDir,
@@ -819,7 +820,25 @@ async function handleApi(req, res, pathname) {
     const url = new URL(req.url, 'http://internal');
     const since = Number(url.searchParams.get('since')) || 0;
     const recent = roomState.messages.filter((m) => m.ts > since).slice(-100);
-    return sendJson(res, 200, { messages: recent, serverTime: Date.now() });
+    return sendJson(res, 200, { messages: recent, serverTime: Date.now(), clearedAt: roomState.clearedAt });
+  }
+
+  // POST /api/chat/clear — wipe this room's entire history, including any
+  // sent images on disk. Every room member has this power; other clients
+  // notice via the clearedAt stamp on their next poll.
+  if (pathname === '/api/chat/clear' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    const roomState = rooms[session.room];
+    roomState.messages.length = 0;
+    roomState.byId.clear();
+    roomState.clearedAt = Date.now();
+    for (const [imgId, ext] of roomState.chatImageExtById) {
+      try { fs.unlinkSync(path.join(roomState.chatImagesDir, imgId + '.' + ext)); } catch (e) { /* best effort */ }
+    }
+    roomState.chatImageExtById.clear();
+    scheduleSave(session.room);
+    return sendJson(res, 200, { ok: true, clearedAt: roomState.clearedAt });
   }
 
   // POST /api/chat/send — requires an active session. `text` is an opaque
