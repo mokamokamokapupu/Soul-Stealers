@@ -871,7 +871,7 @@
     if (res) {
       try { applySessionData(await res.json()); } catch (e) { /* ignore */ }
     }
-    lastSubmitted = { snake: 0, tetris: 0, mines: 0, cookie: 0 };
+    lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
     showView('essay');
   });
 
@@ -950,10 +950,10 @@
   var lbPodium = document.getElementById('lb-podium');
   var lbRest = document.getElementById('lb-rest');
   var lbEmpty = document.getElementById('lb-empty');
-  var GAME_LABELS = { snake: 'Snake', tetris: 'Tetris', mines: 'Minesweeper', cookie: 'Cookie Clicker' };
+  var GAME_LABELS = { snake: 'Snake', tetris: 'Tetris', mines: 'Minesweeper', doom: 'Doom', poker: 'Poker', cookie: 'Cookie Clicker' };
   var activeGame = 'snake';
   var lastScores = {};
-  var lastSubmitted = { snake: 0, tetris: 0, mines: 0, cookie: 0 };
+  var lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
 
   gamesBack.addEventListener('click', function () { showView('chat'); });
 
@@ -975,9 +975,15 @@
 
   function renderActiveLb() {
     lbGameLabel.textContent = GAME_LABELS[activeGame] || activeGame;
-    var list = lastScores[activeGame] || [];
     lbPodium.innerHTML = '';
     lbRest.innerHTML = '';
+    if (activeGame === 'doom') {
+      lbEmpty.hidden = false;
+      lbEmpty.textContent = 'no scores in hell — rip and tear';
+      return;
+    }
+    lbEmpty.innerHTML = 'No champions yet.<br>Set the first score.';
+    var list = lastScores[activeGame] || [];
     lbEmpty.hidden = list.length > 0;
 
     [1, 0, 2].forEach(function (idx) {
@@ -1055,10 +1061,13 @@
       stopSnake(true);
       stopTetris(true);
       stopMines();
+      stopDoom();
+      stopPoker(true);
+      bindCapture = null;
     }
     activeGame = name;
     gameTabs.forEach(function (t) { t.classList.toggle('is-active', t.dataset.game === name); });
-    ['snake', 'tetris', 'mines', 'cookie'].forEach(function (g) {
+    ['snake', 'tetris', 'mines', 'doom', 'poker', 'cookie'].forEach(function (g) {
       document.getElementById('stage-' + g).hidden = g !== name;
     });
     renderActiveLb();
@@ -1073,6 +1082,7 @@
     loadCookieState();
     startCookieLoop();
     loadTetrisCfg();
+    initPoker();
     if (!minesBuilt) newMines();
     fetchLeaderboard();
   }
@@ -1081,6 +1091,8 @@
     stopSnake(true);
     stopTetris(true);
     stopMines();
+    stopDoom();
+    stopPoker(true);
     submitScore('cookie', cookie.total);
     stopCookieLoop();
   }
@@ -2080,6 +2092,575 @@
   minesAgainBtn.addEventListener('click', newMines);
 
   // ---------------------------------------------------------------------
+  // Doom — the 1993 shareware episode compiled to WebAssembly (from the
+  // diekmann/wasm-fizzbuzz port, self-hosted). Loaded on first play and
+  // kept warm after that; leaving the tab pauses the loop, the run stays.
+  // ---------------------------------------------------------------------
+
+  var doomCanvas = document.getElementById('doom-canvas');
+  var doomCtx = doomCanvas.getContext('2d');
+  var doomOverlay = document.getElementById('doom-overlay');
+  var doomMsg = document.getElementById('doom-msg');
+  var doomStartBtn = document.getElementById('doom-start');
+  var doomStatusEl = document.getElementById('doom-status');
+  var DOOM_W = 640;
+  var DOOM_H = 400;
+  var doomInstance = null;
+  var doomMemory = null;
+  var doomRaf = null;
+  var doomLoading = false;
+  var doomKeysDown = Object.create(null);
+
+  function doomKeyCode(keyCode) {
+    switch (keyCode) {
+      case 8: return 127;
+      case 17: return 0x80 + 0x1d;
+      case 18: return 0x80 + 0x38;
+      case 37: return 0xac;
+      case 38: return 0xad;
+      case 39: return 0xae;
+      case 40: return 0xaf;
+      default:
+        if (keyCode >= 65 && keyCode <= 90) return keyCode + 32;
+        if (keyCode >= 112 && keyCode <= 123) return keyCode + 75;
+        return keyCode;
+    }
+  }
+
+  function doomDraw(ptr) {
+    var buf = new Uint8ClampedArray(doomMemory.buffer, ptr, DOOM_W * DOOM_H * 4);
+    doomCtx.putImageData(new ImageData(buf, DOOM_W, DOOM_H), 0, 0);
+  }
+
+  function doomLoopFrame() {
+    if (!doomInstance || !doomRaf) { doomRaf = null; return; }
+    doomInstance.exports.doom_loop_step();
+    doomRaf = requestAnimationFrame(doomLoopFrame);
+  }
+
+  async function startDoom() {
+    if (doomInstance) {
+      doomOverlay.hidden = true;
+      doomStatusEl.textContent = 'running';
+      if (!doomRaf) doomRaf = requestAnimationFrame(doomLoopFrame);
+      return;
+    }
+    if (doomLoading) return;
+    doomLoading = true;
+    doomStartBtn.disabled = true;
+    doomStatusEl.textContent = 'loading…';
+    try {
+      doomMemory = new WebAssembly.Memory({ initial: 108 });
+      var noop = function () {};
+      var imports = {
+        js: {
+          js_console_log: noop,
+          js_stdout: noop,
+          js_stderr: noop,
+          js_milliseconds_since_start: function () { return performance.now(); },
+          js_draw_screen: doomDraw,
+        },
+        env: { memory: doomMemory },
+      };
+      var resp = await fetch('/assets/doom.wasm');
+      if (!resp.ok) throw new Error('fetch failed');
+      var bytes = await resp.arrayBuffer();
+      var result = await WebAssembly.instantiate(bytes, imports);
+      doomInstance = result.instance;
+      doomInstance.exports.main();
+      doomOverlay.hidden = true;
+      doomStatusEl.textContent = 'running';
+      doomRaf = requestAnimationFrame(doomLoopFrame);
+    } catch (e) {
+      doomStatusEl.textContent = 'failed';
+      doomMsg.textContent = 'Could not load the engine. Refresh and try again.';
+    } finally {
+      doomLoading = false;
+      doomStartBtn.disabled = false;
+    }
+  }
+
+  function stopDoom() {
+    if (doomRaf) { cancelAnimationFrame(doomRaf); doomRaf = null; }
+    if (doomInstance) {
+      Object.keys(doomKeysDown).forEach(function (k) {
+        doomInstance.exports.add_browser_event(1, Number(k));
+      });
+      doomStatusEl.textContent = 'paused';
+      doomMsg.textContent = 'paused — your run is kept';
+      doomStartBtn.textContent = 'resume';
+      doomOverlay.hidden = false;
+    }
+    doomKeysDown = Object.create(null);
+  }
+
+  doomStartBtn.addEventListener('click', startDoom);
+
+  // ---------------------------------------------------------------------
+  // Poker — no-limit Texas Hold'em against three bots, with real side-pot
+  // handling. Your chips persist per username; the leaderboard tracks
+  // your biggest stack.
+  // ---------------------------------------------------------------------
+
+  var pokerChipsEl = document.getElementById('poker-chips');
+  var pokerPotEl = document.getElementById('poker-pot');
+  var pokerBoardEl = document.getElementById('poker-board');
+  var pokerMsgEl = document.getElementById('poker-msg');
+  var pokerOverlay = document.getElementById('poker-overlay');
+  var pokerOverlayMsg = document.getElementById('poker-overlay-msg');
+  var pokerDealBtn = document.getElementById('poker-deal');
+  var pokerActionsEl = document.getElementById('poker-actions');
+  var pokerFoldBtn = document.getElementById('poker-fold');
+  var pokerCallBtn = document.getElementById('poker-call');
+  var pokerRaiseBtn = document.getElementById('poker-raise');
+  var pokerRaiseAmt = document.getElementById('poker-raise-amt');
+  var pokerRaiseVal = document.getElementById('poker-raise-val');
+
+  var POKER_BOTS = ['raven', 'onyx', 'clover'];
+  var POKER_SB = 10;
+  var POKER_BB = 20;
+  var POKER_START = 1000;
+  var POKER_IDLE_MSG = 'texas hold\'em · you vs three bots · chips carry between visits';
+  var SUITS = ['♠', '♥', '♦', '♣'];
+  var RANK_CHARS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+  var POKER_HAND_NAMES = ['high card', 'a pair', 'two pair', 'three of a kind', 'a straight',
+    'a flush', 'a full house', 'four of a kind', 'a straight flush'];
+
+  var poker = null;
+  var pokerGen = 0;
+  var pokerDealer = 3;
+  var pokerStacks = null;
+
+  function pokerStorageKey() {
+    return 'ss_poker_' + (myRoom || '') + '_' + (myUsername || '').toLowerCase();
+  }
+
+  function loadPokerChips() {
+    var chips = POKER_START;
+    try {
+      var raw = localStorage.getItem(pokerStorageKey());
+      if (raw) {
+        var n = Math.floor(Number(JSON.parse(raw).chips));
+        if (n > 0) chips = n;
+      }
+    } catch (e) { /* fresh stack */ }
+    return chips;
+  }
+
+  function savePokerChips() {
+    if (!pokerStacks) return;
+    try { localStorage.setItem(pokerStorageKey(), JSON.stringify({ chips: pokerStacks[0] })); } catch (e) { /* ignore */ }
+  }
+
+  function initPoker() {
+    pokerGen++;
+    pokerStacks = [loadPokerChips(), POKER_START, POKER_START, POKER_START];
+    poker = null;
+    pokerDealer = Math.floor(Math.random() * 4);
+    pokerOverlayMsg.textContent = POKER_IDLE_MSG;
+    pokerDealBtn.textContent = 'deal me in';
+    pokerOverlay.hidden = false;
+    pokerBoardEl.innerHTML = '';
+    pokerMsgEl.textContent = '';
+    for (var s = 0; s < 4; s++) document.getElementById('poker-seat-' + s).innerHTML = '';
+    hidePokerActions();
+    updatePokerHud();
+  }
+
+  // Cards are ints 0..51: rank = c >> 2 (0 = deuce … 12 = ace), suit = c & 3.
+
+  function pokerEval5(cs) {
+    var ranks = cs.map(function (c) { return c >> 2; }).sort(function (a, b) { return b - a; });
+    var flush = cs.every(function (c) { return (c & 3) === (cs[0] & 3); });
+    var counts = {};
+    ranks.forEach(function (r) { counts[r] = (counts[r] || 0) + 1; });
+    var groups = Object.keys(counts).map(Number).map(function (r) { return [counts[r], r]; });
+    groups.sort(function (a, b) { return b[0] - a[0] || b[1] - a[1]; });
+    var straightHigh = -1;
+    if (groups.length === 5) {
+      if (ranks[0] - ranks[4] === 4) straightHigh = ranks[0];
+      else if (ranks[0] === 12 && ranks[1] === 3) straightHigh = 3;
+    }
+    if (flush && straightHigh >= 0) return [8, straightHigh];
+    if (groups[0][0] === 4) return [7, groups[0][1], groups[1][1]];
+    if (groups[0][0] === 3 && groups[1][0] === 2) return [6, groups[0][1], groups[1][1]];
+    if (flush) return [5].concat(ranks);
+    if (straightHigh >= 0) return [4, straightHigh];
+    if (groups[0][0] === 3) return [3, groups[0][1], groups[1][1], groups[2][1]];
+    if (groups[0][0] === 2 && groups[1][0] === 2) return [2, groups[0][1], groups[1][1], groups[2][1]];
+    if (groups[0][0] === 2) return [1, groups[0][1], groups[1][1], groups[2][1], groups[3][1]];
+    return [0].concat(ranks);
+  }
+
+  function pokerCmp(a, b) {
+    for (var i = 0; i < Math.max(a.length, b.length); i++) {
+      var d = (a[i] || 0) - (b[i] || 0);
+      if (d) return d;
+    }
+    return 0;
+  }
+
+  function pokerEval7(cs) {
+    var best = null;
+    for (var i = 0; i < 7; i++) {
+      for (var j = i + 1; j < 7; j++) {
+        var five = [];
+        for (var k = 0; k < 7; k++) if (k !== i && k !== j) five.push(cs[k]);
+        var v = pokerEval5(five);
+        if (!best || pokerCmp(v, best) > 0) best = v;
+      }
+    }
+    return best;
+  }
+
+  function pokerPot() {
+    return poker ? poker.players.reduce(function (s, p) { return s + p.total; }, 0) : 0;
+  }
+
+  function pokerCommit(p, amount) {
+    amount = Math.min(amount, p.chips);
+    p.chips -= amount;
+    p.bet += amount;
+    p.total += amount;
+    if (p.chips === 0) p.allIn = true;
+    pokerStacks[p.seat] = p.chips;
+  }
+
+  function startPokerHand() {
+    if (!pokerStacks) return;
+    for (var i = 0; i < 4; i++) if (pokerStacks[i] <= 0) pokerStacks[i] = POKER_START;
+    savePokerChips();
+
+    var deck = [];
+    for (var c = 0; c < 52; c++) deck.push(c);
+    for (var d = deck.length - 1; d > 0; d--) {
+      var j = Math.floor(Math.random() * (d + 1));
+      var t = deck[d]; deck[d] = deck[j]; deck[j] = t;
+    }
+
+    pokerDealer = (pokerDealer + 1) % 4;
+    poker = { deck: deck, board: [], stage: 0, currentBet: 0, minRaise: POKER_BB, toAct: -1, players: [], settled: false };
+    for (var s = 0; s < 4; s++) {
+      poker.players.push({
+        seat: s,
+        name: s === 0 ? (myUsername || 'you') : POKER_BOTS[s - 1],
+        chips: pokerStacks[s],
+        cards: [deck.pop(), deck.pop()],
+        bet: 0,
+        total: 0,
+        folded: false,
+        allIn: false,
+        out: false,
+        acted: false,
+        say: '',
+        revealed: s === 0,
+      });
+    }
+
+    pokerCommit(poker.players[(pokerDealer + 1) % 4], POKER_SB);
+    pokerCommit(poker.players[(pokerDealer + 2) % 4], POKER_BB);
+    poker.currentBet = POKER_BB;
+    poker.toAct = (pokerDealer + 3) % 4;
+
+    pokerOverlay.hidden = true;
+    pokerMsgEl.textContent = '';
+    renderPoker();
+    pokerAdvanceTurn();
+  }
+
+  function pokerRoundDone() {
+    var live = poker.players.filter(function (p) { return !p.folded && !p.out && !p.allIn; });
+    return live.every(function (p) { return p.acted && p.bet === poker.currentBet; });
+  }
+
+  function pokerAdvanceTurn() {
+    if (!poker || poker.settled) return;
+    var alive = poker.players.filter(function (p) { return !p.folded && !p.out; });
+    if (alive.length === 1) { pokerAwardUncontested(alive[0]); return; }
+    if (pokerRoundDone()) { pokerNextStreet(); return; }
+    var guard = 0;
+    while (guard++ < 8) {
+      var p = poker.players[poker.toAct];
+      if (!p.folded && !p.out && !p.allIn && !(p.acted && p.bet === poker.currentBet)) break;
+      poker.toAct = (poker.toAct + 1) % 4;
+    }
+    renderPoker();
+    var actor = poker.players[poker.toAct];
+    if (actor.seat === 0) {
+      showPokerActions();
+    } else {
+      var gen = pokerGen;
+      setTimeout(function () {
+        if (gen !== pokerGen || !poker || poker.settled) return;
+        pokerBotAct(actor);
+      }, 650 + Math.random() * 550);
+    }
+  }
+
+  function pokerDoAction(p, action, raiseTo) {
+    if (action === 'fold') {
+      p.folded = true;
+      p.acted = true;
+      p.say = 'fold';
+    } else if (action === 'call') {
+      var owe = poker.currentBet - p.bet;
+      pokerCommit(p, owe);
+      p.acted = true;
+      p.say = owe > 0 ? (p.allIn ? 'all-in' : 'call') : 'check';
+    } else {
+      raiseTo = Math.max(raiseTo, poker.currentBet + poker.minRaise);
+      var add = raiseTo - p.bet;
+      if (add >= p.chips) { add = p.chips; raiseTo = p.bet + add; }
+      pokerCommit(p, add);
+      if (raiseTo > poker.currentBet) {
+        poker.minRaise = Math.max(POKER_BB, raiseTo - poker.currentBet);
+        poker.currentBet = raiseTo;
+        poker.players.forEach(function (o) { if (o !== p) o.acted = false; });
+      }
+      p.acted = true;
+      p.say = p.allIn ? 'all-in' : (poker.board.length ? 'bet ' + raiseTo : 'raise ' + raiseTo);
+    }
+    poker.toAct = (poker.toAct + 1) % 4;
+    hidePokerActions();
+    renderPoker();
+    pokerAdvanceTurn();
+  }
+
+  function pokerNextStreet() {
+    poker.players.forEach(function (p) { p.bet = 0; p.acted = false; p.say = ''; });
+    poker.currentBet = 0;
+    poker.minRaise = POKER_BB;
+    if (poker.stage === 0) { poker.board.push(poker.deck.pop(), poker.deck.pop(), poker.deck.pop()); poker.stage = 1; }
+    else if (poker.stage === 1) { poker.board.push(poker.deck.pop()); poker.stage = 2; }
+    else if (poker.stage === 2) { poker.board.push(poker.deck.pop()); poker.stage = 3; }
+    else { pokerShowdown(); return; }
+    renderPoker();
+    var canAct = poker.players.filter(function (p) { return !p.folded && !p.out && !p.allIn; });
+    if (canAct.length <= 1) {
+      var gen = pokerGen;
+      setTimeout(function () { if (gen === pokerGen && poker && !poker.settled) pokerNextStreet(); }, 900);
+      return;
+    }
+    poker.toAct = (pokerDealer + 1) % 4;
+    pokerAdvanceTurn();
+  }
+
+  function pokerAwardUncontested(winner) {
+    poker.settled = true;
+    var pot = pokerPot();
+    winner.chips += pot;
+    pokerStacks[winner.seat] = winner.chips;
+    pokerFinishHand(winner.name + ' takes ' + pot + ' uncontested');
+  }
+
+  function pokerShowdown() {
+    poker.settled = true;
+    var contenders = poker.players.filter(function (p) { return !p.folded && !p.out; });
+    contenders.forEach(function (p) {
+      p.revealed = true;
+      p.handVal = pokerEval7(p.cards.concat(poker.board));
+    });
+
+    // Split the money into side pots by all-in level; any uncalled excess
+    // falls into a pot only its owner is eligible for, i.e. a refund.
+    var levels = contenders.map(function (p) { return p.total; })
+      .filter(function (v, i, a) { return a.indexOf(v) === i; })
+      .sort(function (a, b) { return a - b; });
+    var prev = 0;
+    var winnersNamed = {};
+    levels.forEach(function (level) {
+      var potHere = 0;
+      poker.players.forEach(function (p) { potHere += Math.max(0, Math.min(p.total, level) - prev); });
+      var eligible = contenders.filter(function (p) { return p.total >= level; });
+      var best = null;
+      eligible.forEach(function (p) { if (!best || pokerCmp(p.handVal, best.handVal) > 0) best = p; });
+      var winners = eligible.filter(function (p) { return pokerCmp(p.handVal, best.handVal) === 0; });
+      var share = Math.floor(potHere / winners.length);
+      var rem = potHere - share * winners.length;
+      winners.forEach(function (w, i) {
+        w.chips += share + (i === 0 ? rem : 0);
+        if (winners.length < eligible.length || eligible.length > 1) winnersNamed[w.name] = w.handVal;
+      });
+      prev = level;
+    });
+    poker.players.forEach(function (p) { pokerStacks[p.seat] = p.chips; });
+    var names = Object.keys(winnersNamed);
+    var msg = names.length
+      ? names.map(function (n) { return n + ' wins with ' + POKER_HAND_NAMES[winnersNamed[n][0]]; }).join(' · ')
+      : 'pot returned';
+    pokerFinishHand(msg);
+  }
+
+  function pokerFinishHand(msg) {
+    poker.players.forEach(function (p) { p.total = 0; p.bet = 0; });
+    hidePokerActions();
+    savePokerChips();
+    submitScore('poker', pokerStacks[0]);
+    renderPoker();
+    pokerMsgEl.textContent = msg;
+    var gen = pokerGen;
+    setTimeout(function () {
+      if (gen !== pokerGen) return;
+      pokerOverlayMsg.textContent = msg + (pokerStacks[0] <= 0 ? ' — you\'re felted; a fresh 1000 is waiting' : '');
+      pokerDealBtn.textContent = 'next hand';
+      pokerOverlay.hidden = false;
+    }, 2600);
+  }
+
+  function pokerBotAct(p) {
+    var owe = poker.currentBet - p.bet;
+    var pot = pokerPot();
+    var strength;
+    if (poker.stage === 0) {
+      var r1 = p.cards[0] >> 2;
+      var r2 = p.cards[1] >> 2;
+      var hi = Math.max(r1, r2);
+      var lo = Math.min(r1, r2);
+      if (r1 === r2) {
+        strength = 0.55 + r1 / 26;
+      } else {
+        strength = hi / 24 + lo / 48;
+        if ((p.cards[0] & 3) === (p.cards[1] & 3)) strength += 0.06;
+        if (hi - lo === 1) strength += 0.05;
+        if (hi >= 11) strength += 0.08;
+      }
+    } else {
+      var v = pokerEval7(p.cards.concat(poker.board));
+      strength = Math.min(0.25 + v[0] * 0.11 + (v[1] || 0) / 160, 1);
+    }
+    strength += (Math.random() - 0.5) * 0.12;
+
+    var potOdds = owe > 0 ? owe / (pot + owe) : 0;
+    if (owe === 0) {
+      if (strength > 0.62 && Math.random() < 0.7) {
+        pokerDoAction(p, 'raise', poker.currentBet + Math.max(poker.minRaise, Math.round(pot * 0.05) * 10));
+      } else {
+        pokerDoAction(p, 'call');
+      }
+    } else if (strength > 0.78 && Math.random() < 0.65) {
+      pokerDoAction(p, 'raise', poker.currentBet + Math.max(poker.minRaise, Math.round(pot * 0.06) * 10));
+    } else if (strength > potOdds + 0.12 || owe <= POKER_BB || Math.random() < 0.06) {
+      pokerDoAction(p, 'call');
+    } else {
+      pokerDoAction(p, 'fold');
+    }
+  }
+
+  function showPokerActions() {
+    var me = poker.players[0];
+    var owe = poker.currentBet - me.bet;
+    pokerCallBtn.textContent = owe > 0 ? (owe >= me.chips ? 'all-in (' + me.chips + ')' : 'call ' + owe) : 'check';
+    var minTo = poker.currentBet + poker.minRaise;
+    var maxTo = me.bet + me.chips;
+    var canRaise = maxTo > poker.currentBet;
+    pokerRaiseAmt.min = String(Math.min(minTo, maxTo));
+    pokerRaiseAmt.max = String(maxTo);
+    pokerRaiseAmt.value = String(Math.min(Math.max(minTo, POKER_BB * 3), maxTo));
+    pokerRaiseVal.textContent = pokerRaiseAmt.value;
+    pokerRaiseBtn.disabled = !canRaise;
+    pokerRaiseAmt.disabled = !canRaise;
+    pokerActionsEl.hidden = false;
+  }
+
+  function hidePokerActions() {
+    pokerActionsEl.hidden = true;
+  }
+
+  function pokerCardEl(card, hidden) {
+    var el = document.createElement('div');
+    el.className = 'pcard' + (hidden ? ' back' : '');
+    if (!hidden && card != null) {
+      var suit = card & 3;
+      if (suit === 1 || suit === 2) el.classList.add('red');
+      var rank = document.createElement('b');
+      rank.textContent = RANK_CHARS[card >> 2];
+      var glyph = document.createElement('span');
+      glyph.textContent = SUITS[suit];
+      el.appendChild(rank);
+      el.appendChild(glyph);
+    }
+    return el;
+  }
+
+  function renderPoker() {
+    if (!poker) return;
+    poker.players.forEach(function (p) {
+      var seatEl = document.getElementById('poker-seat-' + p.seat);
+      seatEl.innerHTML = '';
+      var name = document.createElement('span');
+      name.className = 'poker-name';
+      name.textContent = p.name;
+      var chips = document.createElement('span');
+      chips.className = 'poker-stack';
+      chips.textContent = String(p.chips);
+      var cardsWrap = document.createElement('div');
+      cardsWrap.className = 'poker-cards';
+      p.cards.forEach(function (c) { cardsWrap.appendChild(pokerCardEl(c, !p.revealed)); });
+      seatEl.appendChild(cardsWrap);
+      seatEl.appendChild(name);
+      seatEl.appendChild(chips);
+      if (p.seat === pokerDealer) {
+        var dbtn = document.createElement('span');
+        dbtn.className = 'poker-dealer';
+        dbtn.textContent = 'D';
+        seatEl.appendChild(dbtn);
+      }
+      if (p.bet > 0 || p.say) {
+        var say = document.createElement('span');
+        say.className = 'poker-say';
+        say.textContent = p.say || String(p.bet);
+        seatEl.appendChild(say);
+      }
+      seatEl.classList.toggle('is-folded', p.folded);
+      seatEl.classList.toggle('is-turn', !poker.settled && poker.toAct === p.seat && !p.folded);
+    });
+    pokerBoardEl.innerHTML = '';
+    for (var i = 0; i < 5; i++) {
+      pokerBoardEl.appendChild(i < poker.board.length ? pokerCardEl(poker.board[i], false) : pokerCardEl(null, true));
+    }
+    updatePokerHud();
+  }
+
+  function updatePokerHud() {
+    pokerChipsEl.textContent = String(pokerStacks ? pokerStacks[0] : 0);
+    pokerPotEl.textContent = String(pokerPot());
+  }
+
+  function stopPoker(abandon) {
+    pokerGen++;
+    if (!poker) return;
+    if (abandon && !poker.settled) {
+      // A hand interrupted mid-play never happened: everyone gets their
+      // chips back.
+      poker.players.forEach(function (p) {
+        p.chips += p.total;
+        pokerStacks[p.seat] = p.chips;
+      });
+    }
+    poker = null;
+    savePokerChips();
+    hidePokerActions();
+    pokerOverlayMsg.textContent = POKER_IDLE_MSG;
+    pokerDealBtn.textContent = 'deal me in';
+    pokerOverlay.hidden = false;
+    updatePokerHud();
+  }
+
+  pokerRaiseAmt.addEventListener('input', function () {
+    pokerRaiseVal.textContent = pokerRaiseAmt.value;
+  });
+  pokerFoldBtn.addEventListener('click', function () {
+    if (poker && !poker.settled && poker.toAct === 0) pokerDoAction(poker.players[0], 'fold');
+  });
+  pokerCallBtn.addEventListener('click', function () {
+    if (poker && !poker.settled && poker.toAct === 0) pokerDoAction(poker.players[0], 'call');
+  });
+  pokerRaiseBtn.addEventListener('click', function () {
+    if (poker && !poker.settled && poker.toAct === 0) pokerDoAction(poker.players[0], 'raise', Number(pokerRaiseAmt.value));
+  });
+  pokerDealBtn.addEventListener('click', startPokerHand);
+
+  // ---------------------------------------------------------------------
   // Cookie clicker
   // ---------------------------------------------------------------------
 
@@ -2249,6 +2830,15 @@
       return;
     }
 
+    if (activeGame === 'doom' && doomInstance && doomRaf) {
+      if (e.key === 'Tab') return; // the panic key stays global
+      var dk = doomKeyCode(e.keyCode);
+      doomKeysDown[dk] = true;
+      doomInstance.exports.add_browser_event(0, dk);
+      e.preventDefault();
+      return;
+    }
+
     if (activeGame === 'snake' && snake) {
       var d = SNAKE_DIRS[e.key ? e.key.toLowerCase() : ''];
       if (d) {
@@ -2302,6 +2892,15 @@
   });
 
   document.addEventListener('keyup', function (e) {
+    if (doomInstance && currentView === 'games' && activeGame === 'doom') {
+      var dk = doomKeyCode(e.keyCode);
+      if (doomKeysDown[dk]) {
+        delete doomKeysDown[dk];
+        doomInstance.exports.add_browser_event(1, dk);
+        e.preventDefault();
+        return;
+      }
+    }
     if (!tetris) return;
     var b = tCfg.binds;
     if (e.code === b.left) {

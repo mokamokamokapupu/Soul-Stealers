@@ -717,6 +717,8 @@
           <button type="button" class="game-tab is-active" data-game="snake">Snake</button>
           <button type="button" class="game-tab" data-game="tetris">Tetris</button>
           <button type="button" class="game-tab" data-game="mines">Minesweeper</button>
+          <button type="button" class="game-tab" data-game="doom">Doom</button>
+          <button type="button" class="game-tab" data-game="poker">Poker</button>
           <button type="button" class="game-tab" data-game="cookie">Cookie Clicker</button>
         </div>
 
@@ -805,6 +807,50 @@
             </div>
           </div>
           <p class="mines-hint">left click reveals · right click flags · click a satisfied number to chord</p>
+        </div>
+
+        <div class="game-stage" id="stage-doom" hidden>
+          <div class="game-hud"><span>status <b id="doom-status">not loaded</b></span></div>
+          <div class="doom-frame">
+            <canvas id="doom-canvas" width="640" height="400" tabindex="0"></canvas>
+            <div class="game-overlay" id="doom-overlay">
+              <p id="doom-msg">DOOM (1993) shareware · runs fully in your browser<br>arrows move · ctrl shoots · space opens · enter/esc for menus</p>
+              <button type="button" id="doom-start">play</button>
+            </div>
+          </div>
+          <p class="doom-hint">wasm port: diekmann/wasm-fizzbuzz · ~7MB loads on first play</p>
+        </div>
+
+        <div class="game-stage" id="stage-poker" hidden>
+          <div class="game-hud">
+            <span>your chips <b id="poker-chips">0</b></span>
+            <span>pot <b id="poker-pot">0</b></span>
+            <span>blinds <b>10 / 20</b></span>
+          </div>
+          <div class="poker-wrap">
+            <div class="poker-table">
+              <div class="poker-seat seat-1" id="poker-seat-1"></div>
+              <div class="poker-seat seat-2" id="poker-seat-2"></div>
+              <div class="poker-seat seat-3" id="poker-seat-3"></div>
+              <div class="poker-center">
+                <div class="poker-board" id="poker-board"></div>
+                <p class="poker-msg" id="poker-msg"></p>
+              </div>
+              <div class="poker-seat seat-0" id="poker-seat-0"></div>
+            </div>
+            <div class="game-overlay" id="poker-overlay">
+              <p id="poker-overlay-msg">texas hold'em · you vs three bots · chips carry between visits</p>
+              <button type="button" id="poker-deal">deal me in</button>
+            </div>
+          </div>
+          <div class="poker-actions" id="poker-actions" hidden>
+            <button type="button" id="poker-fold">fold</button>
+            <button type="button" id="poker-call">call</button>
+            <div class="poker-raise-group">
+              <input type="range" id="poker-raise-amt" min="0" max="0" step="10">
+              <button type="button" id="poker-raise">raise to <b id="poker-raise-val">0</b></button>
+            </div>
+          </div>
         </div>
 
         <div class="game-stage" id="stage-cookie" hidden>

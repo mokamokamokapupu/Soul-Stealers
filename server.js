@@ -65,7 +65,7 @@ const MAX_MESSAGE_LEN = 4000;
 const MAX_MESSAGES_KEPT = 300;
 const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
-const GAME_IDS = ['snake', 'tetris', 'mines', 'cookie'];
+const GAME_IDS = ['snake', 'tetris', 'mines', 'poker', 'cookie'];
 const MAX_GAME_SCORE = 1e15;
 const USERNAME_STALE_MS = 90 * 1000;
 
@@ -486,7 +486,7 @@ function applySecurityHeaders(res) {
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
   );
 }
@@ -682,6 +682,7 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
+  '.wasm': 'application/wasm',
 };
 
 // The frontend is now a single-page app: every one of these paths serves
