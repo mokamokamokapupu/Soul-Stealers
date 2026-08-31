@@ -1,37 +1,5 @@
 'use strict';
 
-/**
- * SOUL STUDIES — backend server
- * -----------------------------
- * Deliberately built with ZERO third-party dependencies (Node built-ins only)
- * so it runs anywhere with `node server.js` — no npm install, no network
- * access required, nothing to go stale.
- *
- * Security model (see SECURITY.md for the full writeup):
- *  - Room passwords are never stored or shipped in any frontend file.
- *    Each one exists only as a salted scrypt hash on disk (data/config.json).
- *  - All access-control decisions (password gate, username stage, chat)
- *    are enforced SERVER-SIDE on every API call, using a signed/opaque
- *    session id in an HttpOnly cookie. Client-side page routing is
- *    convenience only — it grants nothing.
- *  - Login attempts are rate-limited and lock out per IP.
- *  - All state-changing requests require a per-session CSRF token.
- *  - There is no SQL/NoSQL involved (flat in-memory + JSON-file storage),
- *    so classic injection is structurally not possible — but all input
- *    is still validated/allow-listed, because that's the correct default
- *    regardless of storage engine.
- *
- * Rooms
- * -----
- * This server hosts two completely independent chatrooms, each behind its
- * own password/"code" (see ROOMS below). A session is attached to exactly
- * one room the moment its password is verified (in /api/login), and every
- * piece of room data — chat history, usernames-in-use, avatars, chat
- * images — lives in its own per-room namespace (own Maps/arrays, own
- * on-disk files/directories). Nothing is shared or cross-visible between
- * rooms; they only happen to run in the same process.
- */
-
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -52,17 +20,11 @@ const MAX_BODY_BYTES = 8 * 1024; // 8KB — plenty for password/username/chat pa
 const MAX_AVATAR_BYTES = 3 * 1024 * 1024; // 3MB — reasonable cap for a profile picture
 const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB — cap for an in-chat image
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-// Any printable characters are allowed in a username (1-20 chars, no
-// control characters). Usernames are NEVER used directly as file paths —
-// see userFileBase(), which encodes them to a fixed-safe alphabet first.
+
 const USERNAME_RE = /^[^\x00-\x1F\x7F]{1,20}$/;
 const LEGACY_USERNAME_RE = /^[a-z0-9_]{1,20}$/;
 const RESERVED_USERNAMES = new Set(['admin', 'system', 'moderator', 'root', 'soulstudies']);
-// Message text is now an opaque, client-encrypted (AES-GCM) blob, base64-encoded
-// with a 12-byte IV prepended — see public/assets/app.js. The server never sees
-// plaintext chat content, so this cap sizes the ciphertext, not the message a
-// person actually typed (the real 500-character limit is still enforced
-// client-side on the input itself before it's ever encrypted).
+
 const MAX_MESSAGE_LEN = 4000;
 const MAX_MESSAGES_KEPT = 300;
 const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
@@ -71,15 +33,7 @@ const GAME_IDS = ['snake', 'tetris', 'mines', 'poker', 'cookie'];
 const MAX_GAME_SCORE = 1e15;
 const USERNAME_STALE_MS = 90 * 1000;
 
-// ---------------------------------------------------------------------------
-// Spotify integration — server-side OAuth only (the site never sees, and
-// never asks for, a user's Spotify password; see SECURITY.md). Disabled
-// gracefully whenever SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET aren't set —
-// every endpoint below returns a clear "not configured" error instead of
-// crashing or half-working. Tokens are stored per-username, per-room (the
-// same identity as everything else in this app: the name typed in at the
-// username step), never in a cookie and never sent to the browser.
-// ---------------------------------------------------------------------------
+
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID || '';
 const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
 const SPOTIFY_ENABLED = Boolean(SPOTIFY_CLIENT_ID && SPOTIFY_CLIENT_SECRET);
@@ -91,40 +45,21 @@ const SPOTIFY_SCOPES = [
   'user-modify-playback-state',
   'playlist-read-private',
   'playlist-read-collaborative',
-  // Required for the Web Playback SDK (in-browser audio via EME/DRM) — see
-  // the player-token endpoint and public/assets/app.js's
-  // onSpotifyWebPlaybackSDKReady. Added alongside the playlist scopes
-  // before it; same rule applies: an account connected before this scope
-  // existed needs to disconnect and reconnect once to pick it up.
+ 
   'streaming',
 ].join(' ');
-// Signs the short-lived OAuth `state` param so the callback can be verified
-// (and know which room/username it belongs to) WITHOUT relying on the
-// session cookie surviving the redirect from accounts.spotify.com — a
-// SameSite=Strict cookie is not guaranteed to be sent on that hop, by
-// design, so the state token carries everything the callback needs instead.
-// Generated fresh per process start; a restart just invalidates any OAuth
-// attempt currently in flight (click "Connect Spotify" again).
+
 const SPOTIFY_STATE_SECRET = crypto.randomBytes(32);
 const SPOTIFY_STATE_TTL_MS = 5 * 60 * 1000;
 
-// ---------------------------------------------------------------------------
-// Room definitions — each one is a fully independent chatroom with its own
-// password/code. `defaultPassword` only applies the very first time a room
-// has no stored hash yet AND no env var override is set — it's what makes
-// "meowmeow" work immediately without any extra deployment step. Either
-// room's password can still be overridden any time via its env var, exactly
-// like the original single-room app.
-// ---------------------------------------------------------------------------
+
 
 const ROOMS = [
   { id: 'overwatch', envVar: 'SOUL_STUDIES_PASSWORD', label: 'Overwatch' },
   { id: 'meowmeow', envVar: 'SOUL_STUDIES_PASSWORD_2', label: 'meowmeow', defaultPassword: 'meowmeow' },
 ];
 
-// ---------------------------------------------------------------------------
-// Setup / config (password hashes live ONLY here, server-side, never sent out)
-// ---------------------------------------------------------------------------
+
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(AVATARS_DIR)) fs.mkdirSync(AVATARS_DIR, { recursive: true });
@@ -140,10 +75,7 @@ function loadOrCreateConfig() {
     try { stored = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (e) { stored = {}; }
   }
 
-  // Migrate the old single-room format ({salt, hash, createdAt}, from before
-  // this app supported multiple rooms) — that hash belongs to what is now
-  // the "overwatch" room, so carry it forward instead of generating a new
-  // password and breaking anyone who already knows the old one.
+ 
   if (stored.salt && stored.hash && !stored.rooms) {
     stored = { rooms: { overwatch: { salt: stored.salt, hash: stored.hash } }, createdAt: stored.createdAt || Date.now() };
   }
@@ -207,14 +139,7 @@ function verifyPasswordForRoom(candidate) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Session state (mirrored to data/sessions.json — see loadSessions() below
-// — so it survives the process being respawned on the same instance, e.g.
-// a free-tier host spinning back up after an idle period; it does not
-// survive a real new deploy, same as the other data/ files), login rate
-// limiting (intentionally NOT persisted — a fresh rate-limit window after
-// a restart is the safe direction to fail in)
-// ---------------------------------------------------------------------------
+
 
 /** sid -> { stage: 'none'|'password_ok'|'active', room, username, csrfToken, expires, ip } */
 const sessions = new Map();
@@ -222,11 +147,7 @@ const sessions = new Map();
 /** ip -> { failCount, windowStart, lockedUntil } */
 const loginAttempts = new Map();
 
-// ---------------------------------------------------------------------------
-// Per-room state: chat history, username claims, avatars, chat images.
-// Kept in separate namespaces (separate Maps/arrays/directories) per room id
-// so the two rooms never share or leak into each other.
-// ---------------------------------------------------------------------------
+
 
 function loadJsonArray(filePath) {
   try {
@@ -314,28 +235,7 @@ function sessionsPath() {
   return path.join(DATA_DIR, 'sessions.json');
 }
 
-// Sessions used to live purely in the `sessions` Map above, with nothing
-// written to disk. That was invisible on a long-running server, but this
-// app is deployed on a host that regularly stops and restarts the Node
-// process without any code changing (a free-tier instance spins itself
-// down after a few idle minutes and respawns on the next request) — every
-// one of those respawns started with an *empty* Map, so any browser still
-// holding a `sid` cookie from before the respawn silently became an
-// anonymous, stage:'none' session on its very next request. Most of the
-// time that's invisible (the frontend just re-shows the login gate), but
-// a multi-step flow that takes a while and leaves the tab sitting idle —
-// exactly what "click Connect Spotify, authorize on Spotify's site, come
-// back" looks like — is exactly the shape of flow most likely to straddle
-// a respawn, and lands on a protected endpoint with a session that no
-// longer exists, hence "Not authorized" with no obvious cause.
-//
-// Persisting sessions the same way messages/scores/Spotify tokens already
-// are fixes that: a respawn on the *same* instance (the common case) keeps
-// its `data/` directory, so sessions reload right where they left off. It
-// does NOT survive an actual new deploy (Render builds a fresh checkout
-// for those, same as it already does for Spotify tokens), so logging out
-// on a real deploy is expected — only the idle-respawn case, which is by
-// far the more frequent one, is what this fixes.
+
 function loadSessions() {
   let stored;
   try {
@@ -378,10 +278,7 @@ function loadSessions() {
   }
 }
 
-// One-time migration of pre-multi-room data (a flat data/messages.json, and
-// avatars/chat-images stored directly under data/avatars, data/chat-images)
-// into the "overwatch" room's namespace, so existing chat history and
-// uploaded pictures survive the upgrade instead of silently vanishing.
+
 function migrateLegacyOverwatchData() {
   const legacyMessagesPath = path.join(DATA_DIR, 'messages.json');
   const newMessagesPath = messagesPathFor('overwatch');
@@ -456,29 +353,15 @@ for (const room of ROOMS) {
     chatImagesDir,
     avatarExtByUser,
     chatImageExtById,
-    // lowercase username -> sid, see releaseUsername below. A name is only
-    // unavailable *within this room* while an active session there is
-    // actually using it — the same name can be used independently in the
-    // other room at the same time.
+
     usernameOwners: new Map(),
   };
 }
 
-// Restore any sessions that survived from before this process started —
-// see loadSessions()'s comment above for why this matters. Must run after
-// the `rooms` loop above so restored active sessions can re-claim their
-// username slot.
+
 loadSessions();
 
-/** Resolve an optional client-supplied reply target (within the given room)
- * into a safe, server-verified preview object — or undefined if it doesn't
- * check out. Never trusts client-provided username/text for the preview:
- * it's always looked up from the actual stored message. For a type:'text'
- * parent, the parent's ciphertext is copied onto the reply so any recipient
- * can render the quoted snippet locally (with their own room key) even if
- * that older message has since scrolled out of their poll window — the
- * server still never sees plaintext, it's just shuttling opaque bytes
- * around a second time. */
+
 function resolveReplyTo(roomState, rawId) {
   if (typeof rawId !== 'string' || !REPLY_ID_RE.test(rawId)) return undefined;
   const parent = roomState.byId.get(rawId);
@@ -695,23 +578,7 @@ function applySecurityHeaders(res) {
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   res.setHeader(
     'Content-Security-Policy',
-    // script-src/connect-src/frame-src/media-src carry a deliberate,
-    // narrow exception for Spotify's own domains: the Web Playback SDK
-    // (public/assets/app.js's onSpotifyWebPlaybackSDKReady) plays actual
-    // audio inside this page, which is a hard requirement of how Spotify
-    // built that SDK — it loads a script from sdk.scdn.co, opens its own
-    // WebSocket ("dealer") and EME/DRM connections straight to Spotify's
-    // infrastructure, and needs a live OAuth access token handed to it in
-    // JS (see GET /api/spotify/player-token below) to do any of that.
-    // There is no server-proxied way to do in-browser DRM-protected audio
-    // — every site that embeds this SDK has this same exception. Spotify
-    // doesn't publish a fixed hostname list for the dealer/streaming
-    // endpoints (they're sharded by region), so this uses a same-origin
-    // wildcard scoped to Spotify's own domains rather than a hand-picked
-    // list that could silently break. Every other directive is unchanged
-    // from before — this is the one deliberate carve-out, not a general
-    // loosening, and it only matters once a room has actually connected
-    // Spotify.
+
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://sdk.scdn.co; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
     "img-src 'self' data: https://*.scdn.co; " +
