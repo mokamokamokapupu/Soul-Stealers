@@ -607,6 +607,10 @@
         <span class="room-tag" id="room-tag"></span>
       </div>
       <div class="chat-identity">
+        <button type="button" class="icon-btn" id="active-users-btn" title="Who's active" aria-haspopup="true" aria-expanded="false" aria-label="Show active users">
+          <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><circle cx="8.5" cy="8.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 18.5c0-2.9 2.2-4.8 5-4.8s5 1.9 5 4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M15 8.8a2.4 2.4 0 1 0 0-4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M14.2 13.9c2.3.3 3.9 2 3.9 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="active-count-badge" id="active-count-badge" hidden>0</span>
+        </button>
         <button type="button" class="icon-btn" id="chat-settings-btn" title="Appearance settings" aria-haspopup="true" aria-expanded="false" aria-label="Appearance settings">
           <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.2v2.2M12 18.6v2.2M20.8 12h-2.2M5.4 12H3.2M18.2 5.8l-1.6 1.6M7.4 16.6l-1.6 1.6M18.2 18.2l-1.6-1.6M7.4 7.4L5.8 5.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
@@ -637,6 +641,15 @@
           <button type="button" class="skin-swatch" data-skin="paper" title="Paper" aria-label="Paper theme"></button>
         </div>
       </div>
+    </div>
+
+    <div class="active-users-panel" id="active-users-panel" hidden>
+      <div class="active-users-head">
+        <span class="settings-label">active now</span>
+        <span class="active-users-count" id="active-users-count">0</span>
+      </div>
+      <ul class="active-users-list" id="active-users-list"></ul>
+      <p class="active-users-empty" id="active-users-empty" hidden>Just you, for now.</p>
     </div>
 
     <p class="avatar-status" id="avatar-status"></p>
@@ -862,16 +875,63 @@
         </div>
       </div>
 
-      <aside class="leaderboard" aria-label="Leaderboard">
-        <div class="lb-head">
-          <span class="lb-trophy" aria-hidden="true">🏆</span>
-          <h3 class="lb-title-main">LEADERBOARD</h3>
-          <span class="lb-game" id="lb-game-label">Snake</span>
-        </div>
-        <div class="lb-podium" id="lb-podium"></div>
-        <ol class="lb-rest" id="lb-rest"></ol>
-        <p class="lb-empty-note" id="lb-empty" hidden>No champions yet.<br>Set the first score.</p>
-      </aside>
+      <div class="games-sidebar">
+        <aside class="leaderboard" aria-label="Leaderboard">
+          <div class="lb-head">
+            <span class="lb-trophy" aria-hidden="true">🏆</span>
+            <h3 class="lb-title-main">LEADERBOARD</h3>
+            <span class="lb-game" id="lb-game-label">Snake</span>
+          </div>
+          <div class="lb-podium" id="lb-podium"></div>
+          <ol class="lb-rest" id="lb-rest"></ol>
+          <p class="lb-empty-note" id="lb-empty" hidden>No champions yet.<br>Set the first score.</p>
+        </aside>
+
+        <aside class="spotify-panel" id="spotify-panel" aria-label="Spotify">
+          <div class="spotify-head">
+            <span class="spotify-note-icon" aria-hidden="true">♪</span>
+            <h3 class="spotify-title-main">SPOTIFY</h3>
+          </div>
+
+          <div class="spotify-body" id="spotify-body-disabled" hidden>
+            <p class="spotify-empty-note">Spotify isn't set up on this server yet.</p>
+          </div>
+
+          <div class="spotify-body" id="spotify-body-disconnected" hidden>
+            <p class="spotify-empty-note">Connect your Spotify account to search and control playback from here.</p>
+            <button type="button" class="spotify-connect-btn" id="spotify-connect-btn">Connect Spotify</button>
+          </div>
+
+          <div class="spotify-body" id="spotify-body-connected" hidden>
+            <div class="spotify-account-row">
+              <span class="spotify-account-name" id="spotify-account-name">Connected</span>
+              <button type="button" class="spotify-disconnect-btn" id="spotify-disconnect-btn">disconnect</button>
+            </div>
+
+            <div class="spotify-nowplaying" id="spotify-nowplaying" hidden>
+              <img class="spotify-art" id="spotify-art" alt="" hidden>
+              <div class="spotify-track-info">
+                <span class="spotify-track-name" id="spotify-track-name"></span>
+                <span class="spotify-track-artists" id="spotify-track-artists"></span>
+              </div>
+            </div>
+            <p class="spotify-empty-note" id="spotify-nothing-playing">Nothing playing right now — open Spotify on a device, or search below.</p>
+
+            <div class="spotify-controls">
+              <button type="button" class="spotify-ctl-btn" id="spotify-prev" title="Previous" aria-label="Previous track">⏮</button>
+              <button type="button" class="spotify-ctl-btn spotify-ctl-main" id="spotify-toggle" title="Play/Pause" aria-label="Play or pause">▶</button>
+              <button type="button" class="spotify-ctl-btn" id="spotify-next" title="Next" aria-label="Next track">⏭</button>
+            </div>
+
+            <p class="spotify-status-msg" id="spotify-status-msg" hidden></p>
+
+            <form class="spotify-search" id="spotify-search-form">
+              <input type="text" id="spotify-search-input" placeholder="Search a song…" autocomplete="off" maxlength="200">
+            </form>
+            <ul class="spotify-results" id="spotify-results" hidden></ul>
+          </div>
+        </aside>
+      </div>
     </div>
   </div>
 </div>

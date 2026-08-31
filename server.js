@@ -36,6 +36,7 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const { URL } = require('url');
 
 const ROOT = __dirname;
@@ -68,6 +69,35 @@ const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
 const GAME_IDS = ['snake', 'tetris', 'mines', 'poker', 'cookie'];
 const MAX_GAME_SCORE = 1e15;
 const USERNAME_STALE_MS = 90 * 1000;
+
+// ---------------------------------------------------------------------------
+// Spotify integration — server-side OAuth only (the site never sees, and
+// never asks for, a user's Spotify password; see SECURITY.md). Disabled
+// gracefully whenever SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET aren't set —
+// every endpoint below returns a clear "not configured" error instead of
+// crashing or half-working. Tokens are stored per-username, per-room (the
+// same identity as everything else in this app: the name typed in at the
+// username step), never in a cookie and never sent to the browser.
+// ---------------------------------------------------------------------------
+const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID || '';
+const SPOTIFY_CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || '';
+const SPOTIFY_ENABLED = Boolean(SPOTIFY_CLIENT_ID && SPOTIFY_CLIENT_SECRET);
+const SPOTIFY_SCOPES = [
+  'user-read-email',
+  'user-read-private',
+  'user-read-playback-state',
+  'user-read-currently-playing',
+  'user-modify-playback-state',
+].join(' ');
+// Signs the short-lived OAuth `state` param so the callback can be verified
+// (and know which room/username it belongs to) WITHOUT relying on the
+// session cookie surviving the redirect from accounts.spotify.com — a
+// SameSite=Strict cookie is not guaranteed to be sent on that hop, by
+// design, so the state token carries everything the callback needs instead.
+// Generated fresh per process start; a restart just invalidates any OAuth
+// attempt currently in flight (click "Connect Spotify" again).
+const SPOTIFY_STATE_SECRET = crypto.randomBytes(32);
+const SPOTIFY_STATE_TTL_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Room definitions — each one is a fully independent chatroom with its own
@@ -235,6 +265,37 @@ function topScores(roomState) {
   return out;
 }
 
+function spotifyTokensPathFor(roomId) {
+  return path.join(DATA_DIR, 'spotify-' + roomId + '.json');
+}
+
+function loadSpotifyTokens(roomId) {
+  let stored = {};
+  try {
+    stored = JSON.parse(fs.readFileSync(spotifyTokensPathFor(roomId), 'utf8'));
+  } catch (e) {
+    stored = {};
+  }
+  const tokens = {};
+  if (stored && typeof stored === 'object') {
+    for (const key of Object.keys(stored)) {
+      const rec = stored[key];
+      if (rec && typeof rec.accessToken === 'string' && typeof rec.refreshToken === 'string' &&
+          typeof rec.expiresAt === 'number') {
+        tokens[key] = {
+          accessToken: rec.accessToken,
+          refreshToken: rec.refreshToken,
+          expiresAt: rec.expiresAt,
+          scope: typeof rec.scope === 'string' ? rec.scope : '',
+          displayName: typeof rec.displayName === 'string' ? rec.displayName : '',
+          connectedAt: typeof rec.connectedAt === 'number' ? rec.connectedAt : Date.now(),
+        };
+      }
+    }
+  }
+  return tokens;
+}
+
 // One-time migration of pre-multi-room data (a flat data/messages.json, and
 // avatars/chat-images stored directly under data/avatars, data/chat-images)
 // into the "overwatch" room's namespace, so existing chat history and
@@ -265,8 +326,9 @@ function migrateLegacyOverwatchData() {
 
 migrateLegacyOverwatchData();
 
-/** roomId -> { messages, byId, dirty, avatarsDir, chatImagesDir,
- *  avatarExtByUser, chatImageExtById, usernameOwners } */
+/** roomId -> { messages, byId, dirty, spotifyTokens, spotifyDirty,
+ *  avatarsDir, chatImagesDir, avatarExtByUser, chatImageExtById,
+ *  usernameOwners } */
 const rooms = Object.create(null);
 
 for (const room of ROOMS) {
@@ -306,6 +368,8 @@ for (const room of ROOMS) {
     clearedAt: 0,
     scores: loadScores(room.id),
     scoresDirty: false,
+    spotifyTokens: loadSpotifyTokens(room.id),
+    spotifyDirty: false,
     avatarsDir,
     chatImagesDir,
     avatarExtByUser,
@@ -345,6 +409,15 @@ function tooFast(session) {
   return false;
 }
 
+/** Separate, tighter throttle for Spotify transport-control calls (play/
+ * pause/skip), independent of the chat-message throttle above. */
+function spotifyTooFast(session) {
+  const now = Date.now();
+  if (session.lastSpotifyActionAt && now - session.lastSpotifyActionAt < 250) return true;
+  session.lastSpotifyActionAt = now;
+  return false;
+}
+
 /** Debounced disk writes: chat can be chatty, so coalesce writes instead of
  * doing a synchronous fs write on every single message. Worst case on an
  * unclean shutdown you lose the last ~2s of messages, not the whole history. */
@@ -363,6 +436,10 @@ setInterval(() => {
       r.scoresDirty = false;
       fs.writeFile(scoresPathFor(roomId), JSON.stringify(r.scores), () => {});
     }
+    if (r.spotifyDirty) {
+      r.spotifyDirty = false;
+      fs.writeFile(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens), { mode: 0o600 }, () => {});
+    }
   }
 }, 2000).unref();
 
@@ -371,6 +448,7 @@ function flushSaveSync() {
     try {
       fs.writeFileSync(messagesPathFor(roomId), JSON.stringify(rooms[roomId].messages));
       fs.writeFileSync(scoresPathFor(roomId), JSON.stringify(rooms[roomId].scores));
+      fs.writeFileSync(spotifyTokensPathFor(roomId), JSON.stringify(rooms[roomId].spotifyTokens), { mode: 0o600 });
     } catch (e) { /* best effort on shutdown */ }
   }
 }
@@ -404,6 +482,28 @@ function releaseUsername(sid, session) {
   if (roomState.usernameOwners.get(key) === sid) {
     roomState.usernameOwners.delete(key);
   }
+}
+
+/** Usernames currently "present" in a room, for the chat page's active-users
+ * list. Reuses the exact same liveness definition already used to decide
+ * whether a claimed name is reclaimable (USERNAME_STALE_MS since lastSeen) —
+ * a session counts as active here iff it still holds a username in this
+ * room AND has made an API call (message poll, send, anything) recently.
+ * Closing a tab without logging out naturally drops off this list within
+ * USERNAME_STALE_MS, the same way it already frees the username itself. */
+function activeUsernamesInRoom(roomId) {
+  const roomState = rooms[roomId];
+  if (!roomState) return [];
+  const now = Date.now();
+  const names = [];
+  for (const [key, sid] of roomState.usernameOwners) {
+    const s = sessions.get(sid);
+    if (s && s.username && now - (s.lastSeen || 0) < USERNAME_STALE_MS) {
+      names.push(s.username);
+    }
+  }
+  names.sort((a, b) => a.localeCompare(b));
+  return names;
 }
 
 function getSession(req) {
@@ -671,6 +771,192 @@ function sanitizeText(str, maxLen) {
 }
 
 // ---------------------------------------------------------------------------
+// Spotify — OAuth + a thin API proxy. Every call to Spotify's own servers
+// happens HERE, server-side; the browser never talks to accounts.spotify.com
+// or api.spotify.com directly (see SECURITY.md) — it only ever calls our own
+// /api/spotify/* endpoints, exactly like every other feature in this app.
+// ---------------------------------------------------------------------------
+
+function base64UrlJson(obj) {
+  return Buffer.from(JSON.stringify(obj), 'utf8').toString('base64url');
+}
+
+function signState(payload) {
+  const body = base64UrlJson(payload);
+  const sig = crypto.createHmac('sha256', SPOTIFY_STATE_SECRET).update(body).digest('base64url');
+  return body + '.' + sig;
+}
+
+function verifyState(state) {
+  if (typeof state !== 'string' || state.length > 2000) return null;
+  const idx = state.lastIndexOf('.');
+  if (idx === -1) return null;
+  const body = state.slice(0, idx);
+  const sig = state.slice(idx + 1);
+  const expected = crypto.createHmac('sha256', SPOTIFY_STATE_SECRET).update(body).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch (e) {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object') return null;
+  if (typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
+  if (typeof payload.room !== 'string' || typeof payload.username !== 'string') return null;
+  return payload;
+}
+
+/** Generic HTTPS JSON request helper (Node built-ins only, no dependency).
+ * Resolves { status, json } — `json` is null for an empty (e.g. 204) body
+ * or a body that wasn't valid JSON. */
+function httpsRequestJson(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        if (!raw) return resolve({ status: res.statusCode, json: null });
+        try {
+          resolve({ status: res.statusCode, json: JSON.parse(raw) });
+        } catch (e) {
+          resolve({ status: res.statusCode, json: null });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Spotify request timed out')));
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+/** Fetches an image (album art) from Spotify's own CDN, following one
+ * redirect hop if given. Small, best-effort buffering — album art is a few
+ * tens of KB — no streaming complexity needed. */
+function httpsGetBuffer(target) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(target, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return resolve(httpsGetBuffer(res.headers.location));
+      }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        contentType: res.headers['content-type'] || 'application/octet-stream',
+        buffer: Buffer.concat(chunks),
+      }));
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy(new Error('Spotify image request timed out')));
+    req.end();
+  });
+}
+
+/** Exchanges an authorization code, or a refresh token, for tokens. `params`
+ * is the exact application/x-www-form-urlencoded grant body Spotify wants. */
+function spotifyTokenRequest(params) {
+  const body = new URLSearchParams(params).toString();
+  const auth = Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64');
+  return httpsRequestJson({
+    hostname: 'accounts.spotify.com',
+    path: '/api/token',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+      'Authorization': 'Basic ' + auth,
+    },
+  }, body);
+}
+
+/** Authenticated call to the real Spotify Web API. `bodyObj` (if given) is
+ * sent as JSON. Returns { status, json }. */
+function spotifyApiRequest(method, urlPath, accessToken, bodyObj) {
+  const body = bodyObj !== undefined ? JSON.stringify(bodyObj) : null;
+  const headers = { 'Authorization': 'Bearer ' + accessToken };
+  if (body) {
+    headers['Content-Type'] = 'application/json';
+    headers['Content-Length'] = Buffer.byteLength(body);
+  }
+  return httpsRequestJson({ hostname: 'api.spotify.com', path: urlPath, method, headers }, body);
+}
+
+/** Returns a valid access token for this room/username, refreshing it first
+ * if it's expired or close to it — or null if there's no connection, or the
+ * refresh itself fails (the stale connection is dropped in that case, same
+ * as if the user had never connected, so the UI just offers "Connect" again
+ * instead of silently failing forever). */
+async function ensureFreshSpotifyToken(roomState, key) {
+  const rec = roomState.spotifyTokens[key];
+  if (!rec) return null;
+  if (rec.expiresAt - Date.now() > 60 * 1000) return rec.accessToken;
+
+  try {
+    const { status, json } = await spotifyTokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: rec.refreshToken,
+    });
+    if (status !== 200 || !json || !json.access_token) {
+      delete roomState.spotifyTokens[key];
+      roomState.spotifyDirty = true;
+      return null;
+    }
+    rec.accessToken = json.access_token;
+    if (json.refresh_token) rec.refreshToken = json.refresh_token;
+    rec.expiresAt = Date.now() + (Number(json.expires_in) || 3600) * 1000;
+    if (typeof json.scope === 'string') rec.scope = json.scope;
+    roomState.spotifyDirty = true;
+    return rec.accessToken;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Drops a stored Spotify connection outright — used when Spotify's own API
+ * returns 401 on an access token ensureFreshSpotifyToken() had just called
+ * "not expired" (e.g. the user revoked Soul Studies' access from their
+ * Spotify account settings). Without this, that state would otherwise look
+ * like "connected, but nothing ever plays," forever. */
+function dropSpotifyConnection(roomState, key) {
+  if (roomState.spotifyTokens[key]) {
+    delete roomState.spotifyTokens[key];
+    roomState.spotifyDirty = true;
+  }
+}
+
+// The Redirect URI must match, character-for-character, whatever's
+// registered on the Spotify Developer dashboard for this app. Computed from
+// the incoming request by default (so it's automatically right for
+// whatever domain this is actually running on); SPOTIFY_REDIRECT_URI can
+// override it if a deployment ever needs that.
+function spotifyRedirectUri(req) {
+  if (process.env.SPOTIFY_REDIRECT_URI) return process.env.SPOTIFY_REDIRECT_URI;
+  const secure = req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
+  return (secure ? 'https' : 'http') + '://' + req.headers.host + '/api/spotify/callback';
+}
+
+function simplifyTrack(t) {
+  if (!t) return null;
+  const images = (t.album && Array.isArray(t.album.images)) ? t.album.images : [];
+  const art = images.length ? (images[Math.min(1, images.length - 1)] || images[0]).url : null;
+  return {
+    id: t.id,
+    uri: t.uri,
+    name: t.name,
+    artists: Array.isArray(t.artists) ? t.artists.map((a) => a.name).join(', ') : '',
+    album: t.album ? t.album.name : '',
+    durationMs: t.duration_ms || 0,
+    albumArt: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Static file serving (public/ only, path-traversal safe)
 // ---------------------------------------------------------------------------
 
@@ -821,7 +1107,12 @@ async function handleApi(req, res, pathname) {
     const url = new URL(req.url, 'http://internal');
     const since = Number(url.searchParams.get('since')) || 0;
     const recent = roomState.messages.filter((m) => m.ts > since).slice(-100);
-    return sendJson(res, 200, { messages: recent, serverTime: Date.now(), clearedAt: roomState.clearedAt });
+    return sendJson(res, 200, {
+      messages: recent,
+      serverTime: Date.now(),
+      clearedAt: roomState.clearedAt,
+      activeUsers: activeUsernamesInRoom(session.room),
+    });
   }
 
   // POST /api/chat/clear — wipe this room's entire history, including any
@@ -1061,6 +1352,301 @@ async function handleApi(req, res, pathname) {
       roomState.scoresDirty = true;
     }
     return sendJson(res, 200, { ok: true, scores: topScores(roomState) });
+  }
+
+  // ---------------------------------------------------------------------
+  // Spotify — connect/disconnect, search, and playback control. Every
+  // endpoint requires an active (username-created) session, exactly like
+  // chat; the Spotify connection lives on that same room+username identity,
+  // and lives only on the games page (see public/index.html / app.js).
+  // ---------------------------------------------------------------------
+
+  // GET /api/spotify/login — kicks off the OAuth flow. Meant to be opened
+  // in a popup window from the games page so the main site never navigates
+  // away; Spotify's own login page only ever appears inside that popup,
+  // never embedded in ours (Spotify blocks embedding it anyway, and it
+  // would be inappropriate to try). No CSRF token here — this is a plain
+  // top-level navigation (window.open can't attach custom headers) — but it
+  // can't do anything by itself beyond starting a handshake tied to the
+  // session that requested it.
+  if (pathname === '/api/spotify/login' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+
+    const state = signState({
+      room: session.room,
+      username: session.username,
+      nonce: crypto.randomBytes(8).toString('hex'),
+      exp: Date.now() + SPOTIFY_STATE_TTL_MS,
+    });
+    const params = new URLSearchParams({
+      client_id: SPOTIFY_CLIENT_ID,
+      response_type: 'code',
+      redirect_uri: spotifyRedirectUri(req),
+      scope: SPOTIFY_SCOPES,
+      state,
+      show_dialog: 'false',
+    });
+    res.writeHead(302, { Location: 'https://accounts.spotify.com/authorize?' + params.toString() });
+    return res.end();
+  }
+
+  // GET /api/spotify/callback — where Spotify sends the browser back. This
+  // request may arrive WITHOUT our session cookie (a SameSite=Strict cookie
+  // is not guaranteed to be sent on a redirect chain that passed through
+  // accounts.spotify.com), so identity here comes entirely from the signed
+  // `state` param minted in /api/spotify/login above, not from getSession().
+  // Finishes by redirecting into the SPA with a `?spotify=` flag; app.js
+  // notices that, tells the opener window it's done, and closes the popup.
+  if (pathname === '/api/spotify/callback' && req.method === 'GET') {
+    const url = new URL(req.url, 'http://internal');
+    const redirectHome = (flag) => { res.writeHead(302, { Location: '/?spotify=' + flag }); res.end(); };
+
+    if (!SPOTIFY_ENABLED) return redirectHome('error');
+    if (url.searchParams.get('error')) return redirectHome('denied');
+
+    const payload = verifyState(url.searchParams.get('state'));
+    if (!payload || !rooms[payload.room]) return redirectHome('error');
+
+    const code = url.searchParams.get('code');
+    if (typeof code !== 'string' || !code) return redirectHome('error');
+
+    let tokenRes;
+    try {
+      tokenRes = await spotifyTokenRequest({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: spotifyRedirectUri(req),
+      });
+    } catch (e) {
+      return redirectHome('error');
+    }
+    if (tokenRes.status !== 200 || !tokenRes.json || !tokenRes.json.access_token) {
+      return redirectHome('error');
+    }
+
+    const json = tokenRes.json;
+    const roomState = rooms[payload.room];
+    const key = payload.username.toLowerCase();
+
+    let displayName = '';
+    try {
+      const me = await spotifyApiRequest('GET', '/v1/me', json.access_token);
+      if (me.status === 200 && me.json && typeof me.json.display_name === 'string') {
+        displayName = me.json.display_name;
+      }
+    } catch (e) { /* not critical — the connection still succeeds without it */ }
+
+    roomState.spotifyTokens[key] = {
+      accessToken: json.access_token,
+      refreshToken: json.refresh_token || (roomState.spotifyTokens[key] && roomState.spotifyTokens[key].refreshToken) || '',
+      expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
+      scope: typeof json.scope === 'string' ? json.scope : '',
+      displayName,
+      connectedAt: Date.now(),
+    };
+    roomState.spotifyDirty = true;
+    return redirectHome('connected');
+  }
+
+  // GET /api/spotify/status — cheap "am I connected" check for the games
+  // page to render its Spotify panel on load. Reports `enabled` (whether
+  // this server has Spotify credentials configured at all) separately from
+  // `connected` (whether THIS username has linked their own account), so
+  // the UI can tell the two states apart.
+  if (pathname === '/api/spotify/status' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const roomState = rooms[session.room];
+    const rec = roomState.spotifyTokens[session.username.toLowerCase()];
+    return sendJson(res, 200, {
+      enabled: SPOTIFY_ENABLED,
+      connected: Boolean(rec),
+      displayName: rec ? rec.displayName : null,
+    });
+  }
+
+  // POST /api/spotify/disconnect — forgets this username's stored tokens.
+  // (This only removes the connection on our end; to fully revoke Soul
+  // Studies' access on Spotify's side too, a user can also remove it from
+  // open.spotify.com/account/apps — worth a line in the UI, not enforced
+  // here.)
+  if (pathname === '/api/spotify/disconnect' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    if (roomState.spotifyTokens[key]) {
+      delete roomState.spotifyTokens[key];
+      roomState.spotifyDirty = true;
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // GET /api/spotify/image?u=<encoded album-art URL> — proxies Spotify's
+  // own CDN image through our server (the browser never fetches it
+  // directly), so the existing CSP (img-src 'self' data:) doesn't need
+  // loosening to talk to a third-party host. `u` is checked against an
+  // allowlist of Spotify's actual image CDN hostnames before it's ever
+  // fetched, so this can't be turned into an open image proxy.
+  if (pathname === '/api/spotify/image' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const url = new URL(req.url, 'http://internal');
+    let parsed;
+    try { parsed = new URL(url.searchParams.get('u') || ''); } catch (e) { return sendJson(res, 400, { error: 'Invalid image URL' }); }
+    const host = parsed.hostname;
+    const allowed = parsed.protocol === 'https:' && (host === 'i.scdn.co' || host.endsWith('.scdn.co') || host.endsWith('.spotifycdn.com'));
+    if (!allowed) return sendJson(res, 400, { error: 'Invalid image URL' });
+
+    try {
+      const { status, contentType, buffer } = await httpsGetBuffer(parsed.toString());
+      if (status !== 200 || !buffer.length) return sendJson(res, 404, { error: 'Not found' });
+      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'private, max-age=86400, immutable' });
+      return res.end(buffer);
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not load image' });
+    }
+  }
+
+  // GET /api/spotify/now-playing
+  if (pathname === '/api/spotify/now-playing' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    try {
+      const { status, json } = await spotifyApiRequest('GET', '/v1/me/player/currently-playing', token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 204 || !json) return sendJson(res, 200, { connected: true, playing: false, track: null });
+      return sendJson(res, 200, {
+        connected: true,
+        playing: Boolean(json.is_playing),
+        progressMs: json.progress_ms || 0,
+        track: simplifyTrack(json.item),
+      });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // GET /api/spotify/search?q=...
+  if (pathname === '/api/spotify/search' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    const url = new URL(req.url, 'http://internal');
+    const q = sanitizeText(url.searchParams.get('q') || '', 200);
+    if (!q) return sendJson(res, 200, { results: [] });
+
+    try {
+      const qs = new URLSearchParams({ q, type: 'track', limit: '12' }).toString();
+      const { status, json } = await spotifyApiRequest('GET', '/v1/search?' + qs, token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status !== 200 || !json || !json.tracks) return sendJson(res, 502, { error: 'Search failed.' });
+      return sendJson(res, 200, { results: (json.tracks.items || []).map(simplifyTrack) });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/play — body may include { uri } to start a specific
+  // track, or be empty to resume whatever was last playing.
+  if (pathname === '/api/spotify/play' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const bodyObj = typeof body.uri === 'string' && body.uri.startsWith('spotify:track:') ? { uris: [body.uri] } : undefined;
+
+    try {
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/play', token, bodyObj);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status === 403) return sendJson(res, 409, { error: 'Playback control needs Spotify Premium.' });
+      if (status >= 400) return sendJson(res, 502, { error: 'Spotify could not play that.' });
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/pause
+  if (pathname === '/api/spotify/pause' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    try {
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/pause', token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status >= 400 && status !== 403) return sendJson(res, 502, { error: 'Spotify could not pause that.' });
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/next
+  if (pathname === '/api/spotify/next' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    try {
+      const { status } = await spotifyApiRequest('POST', '/v1/me/player/next', token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status >= 400) return sendJson(res, 502, { error: 'Spotify could not skip that.' });
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/previous
+  if (pathname === '/api/spotify/previous' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    try {
+      const { status } = await spotifyApiRequest('POST', '/v1/me/player/previous', token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status >= 400) return sendJson(res, 502, { error: 'Spotify could not go back.' });
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
   }
 
   return sendJson(res, 404, { error: 'Not found' });

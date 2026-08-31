@@ -50,6 +50,40 @@ run `node server.js`) and ideally put it behind HTTPS (most of those
 platforms do this for you automatically). See `SECURITY.md` for the one
 thing this app doesn't do for you (TLS termination) if you go that route.
 
+### Setting up Spotify (optional)
+
+The games page can link a Spotify account to search for and control music
+from right there — search, play/pause, skip forward and back, staying
+logged in between visits. It's entirely optional and off by default; the
+rest of the app works exactly the same without it.
+
+To turn it on:
+
+1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+   and log in with your Spotify account.
+2. Click **Create app**. Any name/description is fine.
+3. Under **Redirect URI**, add `https://<your-domain>/api/spotify/callback`
+   (swap in whatever domain this ends up running on — for local testing
+   that's `http://localhost:3000/api/spotify/callback`). It has to match
+   exactly, so add both if you test locally and deploy for real.
+4. Save, then copy the **Client ID** and reveal the **Client Secret** from
+   the app's settings page.
+5. Set both as environment variables alongside `SOUL_STUDIES_PASSWORD`:
+
+```
+SPOTIFY_CLIENT_ID="your client id" SPOTIFY_CLIENT_SECRET="your client secret" node server.js
+```
+
+If you registered more than one redirect URI (step 3), you don't need to
+tell the server which one — it's derived automatically from whatever
+domain a given request actually came in on.
+
+Playback control (play/pause/skip) requires the connecting account to have
+Spotify Premium and an active device open somewhere (the Spotify app on a
+phone, desktop, or its web player) — that's a Spotify-side requirement, not
+something this app can work around. Search and account linking work either
+way. See `SECURITY.md` for the full security writeup of this integration.
+
 ## How the flow works
 
 1. **`/`** — the essay (public, no password needed). A small pulsing mark

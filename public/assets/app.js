@@ -676,6 +676,7 @@
         }
       }
       await renderMessages(data.messages || []);
+      updateActiveUsers(data.activeUsers || []);
     } catch (e) { /* transient — next poll retries */ }
     finally { pollInFlight = false; }
   }
@@ -940,6 +941,64 @@
   applySkin();
 
   // ---------------------------------------------------------------------
+  // Active users — who currently holds a claimed username in this room,
+  // per the server's activeUsers list on every /api/chat/messages poll
+  // (see server.js: activeUsernamesInRoom). Visibility is a simple toggle,
+  // persisted locally like the appearance settings above, so it stays
+  // shown/hidden across visits per the same "optional to hide" pattern.
+  // ---------------------------------------------------------------------
+
+  var ACTIVE_PANEL_KEY = 'ss_active_users_open';
+  var activeUsersBtn = document.getElementById('active-users-btn');
+  var activeUsersPanel = document.getElementById('active-users-panel');
+  var activeUsersList = document.getElementById('active-users-list');
+  var activeUsersCount = document.getElementById('active-users-count');
+  var activeUsersEmpty = document.getElementById('active-users-empty');
+  var activeCountBadge = document.getElementById('active-count-badge');
+
+  function setActiveUsersPanelOpen(open) {
+    activeUsersPanel.hidden = !open;
+    activeUsersBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    activeUsersBtn.classList.toggle('is-active', open);
+    try { localStorage.setItem(ACTIVE_PANEL_KEY, open ? '1' : '0'); } catch (e) { /* private mode */ }
+  }
+
+  activeUsersBtn.addEventListener('click', function () {
+    setActiveUsersPanelOpen(activeUsersPanel.hidden);
+  });
+
+  var startPanelOpen = false;
+  try { startPanelOpen = localStorage.getItem(ACTIVE_PANEL_KEY) === '1'; } catch (e) { /* private mode */ }
+  setActiveUsersPanelOpen(startPanelOpen);
+
+  function updateActiveUsers(list) {
+    list = list || [];
+    var count = String(list.length);
+    activeUsersCount.textContent = count;
+    if (activeCountBadge) {
+      activeCountBadge.textContent = count;
+      activeCountBadge.hidden = list.length === 0;
+    }
+    activeUsersList.innerHTML = '';
+    activeUsersEmpty.hidden = list.length !== 0;
+    list.forEach(function (name) {
+      var li = document.createElement('li');
+      li.className = 'active-user-row' + (name === myUsername ? ' is-me' : '');
+      var img = document.createElement('img');
+      img.className = 'avatar';
+      img.alt = '';
+      img.loading = 'lazy';
+      img.src = avatarUrl(name);
+      var span = document.createElement('span');
+      span.className = 'active-user-name';
+      span.textContent = name; // textContent — never innerHTML
+      li.appendChild(img);
+      li.appendChild(span);
+      activeUsersList.appendChild(li);
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // Arcade shared: tabs, leaderboard, score submission
   // ---------------------------------------------------------------------
 
@@ -1085,6 +1144,7 @@
     initPoker();
     if (!minesBuilt) newMines();
     fetchLeaderboard();
+    refreshSpotifyStatus();
   }
 
   function leaveGames() {
@@ -1095,7 +1155,282 @@
     stopPoker(true);
     submitScore('cookie', cookie.total);
     stopCookieLoop();
+    stopSpotifyPolling();
   }
+
+  // ---------------------------------------------------------------------
+  // Spotify — games-page only. Every call to Spotify's own servers happens
+  // on the backend (see server.js); this file only ever talks to our own
+  // /api/spotify/* endpoints, exactly like every other feature in this app.
+  // Login happens in a popup so the main site never navigates away — see
+  // openSpotifyPopup() and handleSpotifyRedirectParam() below.
+  // ---------------------------------------------------------------------
+
+  var spotifyPanel = document.getElementById('spotify-panel');
+  var spotifyBodyDisabled = document.getElementById('spotify-body-disabled');
+  var spotifyBodyDisconnected = document.getElementById('spotify-body-disconnected');
+  var spotifyBodyConnected = document.getElementById('spotify-body-connected');
+  var spotifyConnectBtn = document.getElementById('spotify-connect-btn');
+  var spotifyDisconnectBtn = document.getElementById('spotify-disconnect-btn');
+  var spotifyAccountName = document.getElementById('spotify-account-name');
+  var spotifyNowplaying = document.getElementById('spotify-nowplaying');
+  var spotifyArt = document.getElementById('spotify-art');
+  var spotifyTrackName = document.getElementById('spotify-track-name');
+  var spotifyTrackArtists = document.getElementById('spotify-track-artists');
+  var spotifyNothingPlaying = document.getElementById('spotify-nothing-playing');
+  var spotifyPrevBtn = document.getElementById('spotify-prev');
+  var spotifyToggleBtn = document.getElementById('spotify-toggle');
+  var spotifyNextBtn = document.getElementById('spotify-next');
+  var spotifyStatusMsg = document.getElementById('spotify-status-msg');
+  var spotifySearchForm = document.getElementById('spotify-search-form');
+  var spotifySearchInput = document.getElementById('spotify-search-input');
+  var spotifyResultsEl = document.getElementById('spotify-results');
+
+  var spotifyConnected = false;
+  var spotifyPlaying = false;
+  var spotifyPollTimer = null;
+  var spotifySearchDebounce = null;
+
+  function setSpotifyStatusMsg(msg) {
+    if (!spotifyStatusMsg) return;
+    spotifyStatusMsg.textContent = msg || '';
+    spotifyStatusMsg.hidden = !msg;
+  }
+
+  async function refreshSpotifyStatus() {
+    if (!spotifyPanel) return;
+    try {
+      var res = await fetch('/api/spotify/status', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      var data = await res.json();
+      spotifyConnected = !!data.connected;
+      spotifyBodyDisabled.hidden = !!data.enabled;
+      spotifyBodyDisconnected.hidden = !data.enabled || spotifyConnected;
+      spotifyBodyConnected.hidden = !spotifyConnected;
+      if (spotifyConnected) {
+        spotifyAccountName.textContent = data.displayName ? 'Connected as ' + data.displayName : 'Connected';
+        startSpotifyPolling();
+        refreshNowPlaying();
+      } else {
+        stopSpotifyPolling();
+      }
+    } catch (e) { /* transient — tries again next time the games view opens */ }
+  }
+
+  function startSpotifyPolling() {
+    if (spotifyPollTimer) return;
+    spotifyPollTimer = setInterval(refreshNowPlaying, 6000);
+  }
+  function stopSpotifyPolling() {
+    if (spotifyPollTimer) { clearInterval(spotifyPollTimer); spotifyPollTimer = null; }
+  }
+
+  async function refreshNowPlaying() {
+    if (!spotifyConnected) return;
+    try {
+      var res = await fetch('/api/spotify/now-playing', { credentials: 'same-origin' });
+      if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); return; }
+      if (!res.ok) return;
+      var data = await res.json();
+      spotifyPlaying = !!data.playing;
+      spotifyToggleBtn.textContent = spotifyPlaying ? '⏸' : '▶';
+      if (data.track) {
+        spotifyNowplaying.hidden = false;
+        spotifyNothingPlaying.hidden = true;
+        spotifyTrackName.textContent = data.track.name || '';
+        spotifyTrackArtists.textContent = data.track.artists || '';
+        if (data.track.albumArt) {
+          spotifyArt.src = data.track.albumArt;
+          spotifyArt.hidden = false;
+        } else {
+          spotifyArt.hidden = true;
+        }
+      } else {
+        spotifyNowplaying.hidden = true;
+        spotifyNothingPlaying.hidden = false;
+      }
+    } catch (e) { /* transient — next poll picks it back up */ }
+  }
+
+  function openSpotifyPopup() {
+    var w = 420, h = 720;
+    var left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
+    var top = window.screenY + Math.max(0, (window.outerHeight - h) / 2);
+    var popup = window.open('/api/spotify/login', 'spotify-connect', 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top);
+    if (!popup) {
+      // Popup blocked — fall back to a normal top-level navigation; the
+      // return trip is picked up by handleSpotifyRedirectParam() below.
+      window.location.href = '/api/spotify/login';
+    }
+  }
+
+  if (spotifyConnectBtn) {
+    spotifyConnectBtn.addEventListener('click', function () {
+      setSpotifyStatusMsg('');
+      openSpotifyPopup();
+    });
+  }
+
+  if (spotifyDisconnectBtn) {
+    spotifyDisconnectBtn.addEventListener('click', async function () {
+      try {
+        await fetch('/api/spotify/disconnect', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        });
+      } catch (e) { /* falls back to whatever refreshSpotifyStatus() reports next */ }
+      spotifyConnected = false;
+      stopSpotifyPolling();
+      refreshSpotifyStatus();
+    });
+  }
+
+  async function spotifyTransport(action, errorFallback) {
+    setSpotifyStatusMsg('');
+    try {
+      var res = await fetch('/api/spotify/' + action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        setSpotifyStatusMsg(data.error || errorFallback);
+        if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        return;
+      }
+      setTimeout(refreshNowPlaying, 400);
+    } catch (e) {
+      setSpotifyStatusMsg(errorFallback);
+    }
+  }
+
+  if (spotifyToggleBtn) {
+    spotifyToggleBtn.addEventListener('click', function () {
+      spotifyTransport(spotifyPlaying ? 'pause' : 'play', 'Could not reach Spotify.');
+    });
+  }
+  if (spotifyPrevBtn) {
+    spotifyPrevBtn.addEventListener('click', function () { spotifyTransport('previous', 'Could not go back.'); });
+  }
+  if (spotifyNextBtn) {
+    spotifyNextBtn.addEventListener('click', function () { spotifyTransport('next', 'Could not skip.'); });
+  }
+
+  async function playSpotifyTrack(uri) {
+    setSpotifyStatusMsg('');
+    try {
+      var res = await fetch('/api/spotify/play', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ uri: uri }),
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        setSpotifyStatusMsg(data.error || 'Could not play that.');
+        if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        return;
+      }
+      setTimeout(refreshNowPlaying, 400);
+    } catch (e) {
+      setSpotifyStatusMsg('Could not reach Spotify.');
+    }
+  }
+
+  function renderSpotifyResults(results) {
+    spotifyResultsEl.innerHTML = '';
+    if (!results || !results.length) {
+      spotifyResultsEl.hidden = true;
+      return;
+    }
+    results.forEach(function (track) {
+      var li = document.createElement('li');
+      li.className = 'spotify-result-row';
+      var img = document.createElement('img');
+      img.className = 'spotify-result-art';
+      img.alt = '';
+      img.loading = 'lazy';
+      if (track.albumArt) img.src = track.albumArt;
+      var info = document.createElement('div');
+      info.className = 'spotify-result-info';
+      var name = document.createElement('span');
+      name.className = 'spotify-result-name';
+      name.textContent = track.name || ''; // textContent — never innerHTML
+      var artists = document.createElement('span');
+      artists.className = 'spotify-result-artists';
+      artists.textContent = track.artists || '';
+      info.appendChild(name);
+      info.appendChild(artists);
+      li.appendChild(img);
+      li.appendChild(info);
+      li.addEventListener('click', function () { playSpotifyTrack(track.uri); });
+      spotifyResultsEl.appendChild(li);
+    });
+    spotifyResultsEl.hidden = false;
+  }
+
+  async function runSpotifySearch(q) {
+    if (!q) { renderSpotifyResults([]); return; }
+    try {
+      var res = await fetch('/api/spotify/search?q=' + encodeURIComponent(q), { credentials: 'same-origin' });
+      if (!res.ok) return;
+      var data = await res.json();
+      renderSpotifyResults(data.results);
+    } catch (e) { /* transient */ }
+  }
+
+  if (spotifySearchForm) {
+    spotifySearchForm.addEventListener('submit', function (e) { e.preventDefault(); });
+  }
+  if (spotifySearchInput) {
+    spotifySearchInput.addEventListener('input', function () {
+      var q = spotifySearchInput.value.trim();
+      if (spotifySearchDebounce) clearTimeout(spotifySearchDebounce);
+      spotifySearchDebounce = setTimeout(function () { runSpotifySearch(q); }, 350);
+    });
+  }
+
+  // Handles the popup's return trip from Spotify. The server already did
+  // all the real work (token exchange) before redirecting here with
+  // ?spotify=connected|denied|error — this just tells the ORIGINAL window
+  // (via postMessage — window.opener is reachable across origins for that
+  // one purpose) that it's done, then closes this popup. If there's no
+  // opener (the popup was blocked, so this ran as a normal top-level
+  // navigation in the same tab instead), it lands back on the games page
+  // itself rather than the default landing page.
+  function handleSpotifyRedirectParam() {
+    var params = new URLSearchParams(window.location.search);
+    var flag = params.get('spotify');
+    if (!flag) return;
+    try { window.history.replaceState(null, '', window.location.pathname); } catch (e) { /* ignore */ }
+
+    if (window.opener && !window.opener.closed) {
+      try {
+        window.opener.postMessage({ source: 'soulstudies-spotify', status: flag }, window.location.origin);
+      } catch (e) { /* ignore */ }
+      window.close();
+      return;
+    }
+
+    if (currentView !== 'chat' && currentView !== 'games') showView('games');
+    refreshSpotifyStatus();
+    if (flag === 'denied') setSpotifyStatusMsg('Spotify connection was cancelled.');
+    else if (flag === 'error') setSpotifyStatusMsg('Could not connect to Spotify — try again.');
+  }
+
+  window.addEventListener('message', function (event) {
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || event.data.source !== 'soulstudies-spotify') return;
+    if (event.data.status === 'connected') {
+      refreshSpotifyStatus();
+    } else if (event.data.status === 'denied') {
+      setSpotifyStatusMsg('Spotify connection was cancelled.');
+    } else {
+      setSpotifyStatusMsg('Could not connect to Spotify — try again.');
+    }
+  });
 
   // ---------------------------------------------------------------------
   // Snake — speed and apple count are adjustable, Google-style
@@ -3053,5 +3388,5 @@
   // Go
   // ---------------------------------------------------------------------
 
-  bootstrapRouting();
+  bootstrapRouting().then(handleSpotifyRedirectParam);
 })();

@@ -167,6 +167,67 @@ decrypt it, including the server operator reading that file directly.
   before this feature existed), the UI shows a "🔒 Unable to decrypt this
   message" placeholder rather than crashing or showing garbage.
 
+## 8. Spotify integration (OAuth)
+
+The games page can optionally link a Spotify account (per room + username,
+same identity as everything else) to search and control playback. This
+talks to a real third-party API, so it gets its own threat-model writeup.
+
+**The mistakes this avoids:**
+- **Asking for the user's Spotify password directly.** This app never sees
+  it, never asks for it, and couldn't accept it if it wanted to — all of it
+  goes through Spotify's own OAuth "Authorization Code" flow. The only
+  thing this server ever holds is an access/refresh token pair, scoped to
+  exactly the permissions requested (search, read playback state, control
+  playback) and revocable by the user at any time from
+  `open.spotify.com/account/apps`, independent of this app.
+- **Embedding Spotify's login page in an iframe**, which would look like
+  this site is presenting Spotify's login (and which Spotify itself blocks
+  via its own frame-busting headers, precisely to prevent that pattern).
+  Instead, "Connect Spotify" opens Spotify's real login in a separate popup
+  window; this site's own page never navigates away and never touches
+  Spotify credentials in any form.
+- **A forgeable OAuth `state` parameter**, which would let one session's
+  callback be replayed against another session, or let an attacker link
+  their own Spotify account to a victim's username. The `state` value is
+  HMAC-signed server-side (`signState`/`verifyState` in `server.js`) with a
+  key generated fresh at process start and never exposed — a tampered or
+  expired (5-minute TTL) state is rejected outright.
+- **Relying on the session cookie surviving the OAuth redirect.** This
+  app's session cookie is `SameSite=Strict` (see section 3) specifically so
+  it's never sent cross-site — which also means it can't be trusted to
+  identify who's returning from `accounts.spotify.com`. The signed `state`
+  parameter carries that identity instead, so the callback works correctly
+  regardless of how the browser handles the cookie on that hop.
+- **An open image-proxy.** Album art is fetched server-side and re-served
+  from this app's own origin (`/api/spotify/image`) rather than the browser
+  loading `i.scdn.co` URLs directly, so the Content-Security-Policy doesn't
+  need to trust a third-party host. The `u` parameter is checked against an
+  allowlist of Spotify's actual CDN hostnames before anything is fetched, so
+  this endpoint can't be turned into a general-purpose SSRF/open proxy.
+- **Storing tokens where the browser (or an XSS) could read them.** Access
+  and refresh tokens live only in `data/spotify-<room>.json` on the server
+  (written with `0o600` permissions, like the room password hashes) and are
+  never included in any API response to the browser — the frontend only
+  ever learns *whether* a username is connected, and to whom.
+
+**What happens if Spotify itself revokes access** (the user disconnects the
+app from their Spotify account settings, rather than clicking "disconnect"
+in this app): the next API call gets a `401` from Spotify's own servers,
+this app drops the stale local tokens immediately (`dropSpotifyConnection`),
+and the UI falls back to "Connect Spotify" — it doesn't get stuck showing a
+connection that no longer actually works.
+
+**Known limitation:** like section 6 (chat images), this is a
+server-operator trust boundary, not a zero-trust one — whoever can read
+`data/spotify-<room>.json` on disk (i.e., whoever can already read
+`data/config.json`, the password hashes) could technically use a stored
+token to make Spotify API calls as that user until it's disconnected or
+naturally expires without renewal. This is the same trust level the
+operator already has over every other piece of server-held state in this
+app (chat history, avatars); it isn't a new category of exposure introduced
+by this feature.
+
 ## Network privacy / "untraceability"
 
 This app follows standard privacy hygiene rather than anything built to
@@ -229,3 +290,12 @@ defeat abuse investigation or make senders unidentifiable within the room:
   localhost; if you expose this to the internet, put it behind a reverse
   proxy (Caddy, nginx, or a platform like Render/Railway) that terminates
   TLS, so the session cookie and password aren't sent in the clear.
+- **Spotify is opt-in and off by default.** Every `/api/spotify/*` endpoint
+  checks for `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` and returns a plain
+  "not configured" error if they're unset, rather than half-working or
+  crashing — nothing about the rest of the app depends on Spotify being set
+  up. The OAuth redirect URI is derived from the incoming request's own
+  `Host` header by default (matching whatever it's actually deployed as),
+  or can be pinned with `SPOTIFY_REDIRECT_URI` — either way it has to match,
+  character-for-character, what's registered on the Spotify Developer
+  dashboard for the app.
