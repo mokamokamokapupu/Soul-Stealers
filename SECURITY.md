@@ -273,6 +273,88 @@ operator already has over every other piece of server-held state in this
 app (chat history, avatars); it isn't a new category of exposure introduced
 by this feature.
 
+**2026-08-31 fix — "Connect Spotify" returning `{"error":"Not authorized"}"`
+before the OAuth flow could even start, on the live deployment only (the
+local mock test setup never showed this).** Traced the live request:
+`GET /api/spotify/login` requires `session.stage === 'active'`, which the
+frontend expects to already be true because the person just finished
+logging in. Pulled the live Render logs for the exact window and found the
+real cause — not a Spotify config or cookie/origin problem: `sessions` was
+an in-memory-only `Map`, and the free-tier instance this app runs on stops
+and restarts its Node process on its own (spins down after a few idle
+minutes, restarts on the next request) far more often than a real deploy
+happens — the logs showed 7 process restarts in 4 hours, only 3 of which
+were actual `git push` deploys. Every one of those restarts started with an
+empty `sessions` Map, so a browser that still held a `sid` cookie from
+before the restart silently became a brand-new, unauthenticated session on
+its very next request — invisible for a quick chat action, but exactly the
+shape of failure a slower multi-step flow like "open Spotify's consent
+page and come back" is likely to straddle. Confirmed with a live
+reproduction: log in, kill the process, start a fresh one against the same
+`data/` directory, replay the original browser's cookie — `Not authorized`
+every time, before the fix.
+Fixed by persisting `sessions` to `data/sessions.json` the same
+debounced/best-effort way messages, scores, and Spotify tokens already are
+(`loadSessions()`/the shared save interval/`flushSaveSync()` in
+`server.js`), reloaded on boot including re-claiming each restored
+session's username slot in its room so a second person can't grab the same
+name out from under it. This survives the common case (an idle
+respawn on the same instance, filesystem intact) but — like Spotify tokens
+— does not survive an actual new deploy (Render builds a fresh checkout
+each time), so a real deploy still logs everyone out once; that's expected
+and unchanged. Verified end-to-end with the exact repro above (session
+recognized and username slot correctly re-claimed after a simulated
+restart) and by re-running the full local mock/Playwright suite, which
+still passed all 34 checks.
+
+**2026-08-31 addition — real in-browser audio via the Web Playback SDK,
+not just remote control.** Before this, every playback control
+(`play`/`pause`/`next`/`previous`/`volume`/`seek`) sent a command to
+*whatever Spotify Connect device was already active* (a phone, the desktop
+app, etc.) — this app never produced any audio itself. Spotify's Web
+Playback SDK is the only way to actually decode and play audio inside a
+browser tab, and it has one hard, non-negotiable requirement: it needs a
+live OAuth access token handed to it in JavaScript to open its own
+DRM-authenticated connection to Spotify — there's no way to proxy that
+server-side, because it's not a normal HTTP call this server can make on
+the browser's behalf. `GET /api/spotify/player-token` is the one
+deliberate, narrow exception to "the browser never talks to Spotify
+directly" elsewhere in this doc: it hands out the same server-held access
+token already used for every other Spotify call here, nothing new or
+weaker, scoped by the same `session.stage === 'active'` check as
+everything else, and the frontend never caches it beyond a single SDK
+callback. The Content-Security-Policy gained a matching, equally narrow
+carve-out (`script-src` for `sdk.scdn.co`, `connect-src`/`frame-src` for
+Spotify's own domains) — every other directive is unchanged. Requires the
+new `streaming` OAuth scope (already-connected accounts need to reconnect
+once, same pattern as the playlist scopes above) and a Spotify Premium
+account on the connected account (Spotify's SDK itself enforces this,
+firing an `account_error` the frontend already handles). This is
+additive, not a replacement: `POST /api/spotify/play` and the other
+transport endpoints now accept an optional `deviceId` to target this tab's
+player specifically once it's ready; when it isn't (no Premium, SDK
+blocked, not yet connected), every control keeps working exactly as
+before by remote-controlling whatever device is already active elsewhere.
+`POST /api/spotify/transfer` is a new endpoint (same CSRF/throttle pattern
+as the other playback routes) that makes the in-page player the active
+device.
+Verified in this sandbox: the token/transfer endpoints and device-targeted
+play/pause/next/previous/seek/volume calls all work correctly against a
+schema-accurate mock; the frontend correctly registers
+`onSpotifyWebPlaybackSDKReady` and degrades to the pre-existing
+remote-control behavior with zero regressions (the same 34-check suite
+still passes) when the SDK script can't load — which is also exactly what
+this sandbox's own network restrictions do to it here, so that fallback
+path got real, if accidental, coverage. What could **not** be verified
+here, and needs a live check: whether `sdk.scdn.co` and the CSP's Spotify
+wildcards are sufficient for the SDK to actually connect and stream from a
+real browser reaching real Spotify infrastructure (Spotify doesn't publish
+a fixed hostname list for this — the wildcards are a considered choice,
+not a copied one), and the full real-audio experience (Premium account,
+EME/DRM handshake, actual sound). If the browser console shows a CSP
+"Refused to connect" violation once this is live, it will name the exact
+host to add.
+
 ## Network privacy / "untraceability"
 
 This app follows standard privacy hygiene rather than anything built to
@@ -298,18 +380,26 @@ defeat abuse investigation or make senders unidentifiable within the room:
 
 ## Known limitations (by design, for a single-process demo)
 
-- **Chat history persists; usernames and sessions don't.** Messages are
-  written to `data/messages.json` (debounced, roughly every 2 seconds, plus
-  a synchronous flush on `SIGINT`/`SIGTERM` so a normal shutdown doesn't
-  lose the last couple of seconds of chat). Usernames, on the other hand,
-  are deliberately **not** persisted — a name is reserved only for as long
-  as the session that claimed it is still active, and is released the
-  moment that session logs out or expires (or the process restarts, since
-  sessions are in-memory only). That's what lets the same person reuse
-  their usual name the next time they show up, instead of every name
-  becoming permanently unusable after a single use. It also means two
-  different people can end up using the same display name at different
-  times — there's no per-user identity to prevent that (see below).
+- **Chat history, sessions, and (as of 2026-08-31) the usernames tied to
+  active sessions all persist across a same-instance restart; nothing
+  survives a real new deploy.** Messages are written to
+  `data/messages.json` (debounced, roughly every 2 seconds, plus a
+  synchronous flush on `SIGINT`/`SIGTERM` so a normal shutdown doesn't lose
+  the last couple of seconds of chat), and sessions now follow the exact
+  same pattern (`data/sessions.json` — see section 8's 2026-08-31 fix for
+  why this was added: the free-tier host this app runs on restarts its
+  process on its own far more often than it's actually redeployed, and an
+  in-memory-only session store silently logged people out on every one of
+  those). A username is still only reserved for as long as the session
+  that claimed it is genuinely active — restoring a session from disk on
+  boot re-claims its username slot too, so that lets the same person
+  resume where they left off after a restart, while a session that
+  actually expired (or never existed) still can't hold a name hostage.
+  None of this survives an actual new deploy, since Render builds a fresh
+  checkout each time — a real deploy still logs everyone out, same as
+  before. It also means two different people can end up using the same
+  display name at different times (once a session's claim has genuinely
+  lapsed) — there's no per-user identity to prevent that (see below).
   Uploaded avatars persist on disk under `data/avatars/`, keyed to the
   username string itself, independent of any session — if you free up a
   name and someone else claims it later, they'll see whatever picture was

@@ -91,6 +91,12 @@ const SPOTIFY_SCOPES = [
   'user-modify-playback-state',
   'playlist-read-private',
   'playlist-read-collaborative',
+  // Required for the Web Playback SDK (in-browser audio via EME/DRM) — see
+  // the player-token endpoint and public/assets/app.js's
+  // onSpotifyWebPlaybackSDKReady. Added alongside the playlist scopes
+  // before it; same rule applies: an account connected before this scope
+  // existed needs to disconnect and reconnect once to pick it up.
+  'streaming',
 ].join(' ');
 // Signs the short-lived OAuth `state` param so the callback can be verified
 // (and know which room/username it belongs to) WITHOUT relying on the
@@ -202,7 +208,12 @@ function verifyPasswordForRoom(candidate) {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory state: sessions, login rate limiting
+// Session state (mirrored to data/sessions.json — see loadSessions() below
+// — so it survives the process being respawned on the same instance, e.g.
+// a free-tier host spinning back up after an idle period; it does not
+// survive a real new deploy, same as the other data/ files), login rate
+// limiting (intentionally NOT persisted — a fresh rate-limit window after
+// a restart is the safe direction to fail in)
 // ---------------------------------------------------------------------------
 
 /** sid -> { stage: 'none'|'password_ok'|'active', room, username, csrfToken, expires, ip } */
@@ -299,6 +310,74 @@ function loadSpotifyTokens(roomId) {
   return tokens;
 }
 
+function sessionsPath() {
+  return path.join(DATA_DIR, 'sessions.json');
+}
+
+// Sessions used to live purely in the `sessions` Map above, with nothing
+// written to disk. That was invisible on a long-running server, but this
+// app is deployed on a host that regularly stops and restarts the Node
+// process without any code changing (a free-tier instance spins itself
+// down after a few idle minutes and respawns on the next request) — every
+// one of those respawns started with an *empty* Map, so any browser still
+// holding a `sid` cookie from before the respawn silently became an
+// anonymous, stage:'none' session on its very next request. Most of the
+// time that's invisible (the frontend just re-shows the login gate), but
+// a multi-step flow that takes a while and leaves the tab sitting idle —
+// exactly what "click Connect Spotify, authorize on Spotify's site, come
+// back" looks like — is exactly the shape of flow most likely to straddle
+// a respawn, and lands on a protected endpoint with a session that no
+// longer exists, hence "Not authorized" with no obvious cause.
+//
+// Persisting sessions the same way messages/scores/Spotify tokens already
+// are fixes that: a respawn on the *same* instance (the common case) keeps
+// its `data/` directory, so sessions reload right where they left off. It
+// does NOT survive an actual new deploy (Render builds a fresh checkout
+// for those, same as it already does for Spotify tokens), so logging out
+// on a real deploy is expected — only the idle-respawn case, which is by
+// far the more frequent one, is what this fixes.
+function loadSessions() {
+  let stored;
+  try {
+    stored = JSON.parse(fs.readFileSync(sessionsPath(), 'utf8'));
+  } catch (e) {
+    return; // missing or corrupt file — start with no sessions, not a crash
+  }
+  if (!Array.isArray(stored)) return;
+  const now = Date.now();
+  const roomIds = new Set(ROOMS.map((r) => r.id));
+  for (const entry of stored) {
+    if (!Array.isArray(entry) || entry.length !== 2) continue;
+    const [sid, s] = entry;
+    if (typeof sid !== 'string' || !/^[0-9a-f]{16,64}$/i.test(sid)) continue;
+    if (!s || typeof s !== 'object') continue;
+    if (s.stage !== 'none' && s.stage !== 'password_ok' && s.stage !== 'active') continue;
+    if (typeof s.expires !== 'number' || s.expires <= now) continue; // drop expired
+    if (s.room !== null && !roomIds.has(s.room)) continue;
+    if (s.username !== null && (typeof s.username !== 'string' || !USERNAME_RE.test(s.username))) continue;
+    if (typeof s.csrfToken !== 'string' || !/^[0-9a-f]{32}$/i.test(s.csrfToken)) continue;
+    const session = {
+      stage: s.stage,
+      room: s.room,
+      username: s.username,
+      csrfToken: s.csrfToken,
+      expires: s.expires,
+      lastSeen: typeof s.lastSeen === 'number' ? s.lastSeen : now,
+      ip: typeof s.ip === 'string' ? s.ip : 'unknown',
+    };
+    sessions.set(sid, session);
+    // Re-claim the username slot in its room so a second person can't grab
+    // the same name out from under a session restored from disk.
+    if (session.stage === 'active' && session.username && session.room) {
+      const roomState = rooms[session.room];
+      const key = session.username.toLowerCase();
+      if (roomState && !RESERVED_USERNAMES.has(key) && !roomState.usernameOwners.has(key)) {
+        roomState.usernameOwners.set(key, sid);
+      }
+    }
+  }
+}
+
 // One-time migration of pre-multi-room data (a flat data/messages.json, and
 // avatars/chat-images stored directly under data/avatars, data/chat-images)
 // into the "overwatch" room's namespace, so existing chat history and
@@ -385,6 +464,12 @@ for (const room of ROOMS) {
   };
 }
 
+// Restore any sessions that survived from before this process started —
+// see loadSessions()'s comment above for why this matters. Must run after
+// the `rooms` loop above so restored active sessions can re-claim their
+// username slot.
+loadSessions();
+
 /** Resolve an optional client-supplied reply target (within the given room)
  * into a safe, server-verified preview object — or undefined if it doesn't
  * check out. Never trusts client-provided username/text for the preview:
@@ -409,6 +494,17 @@ function tooFast(session) {
   const now = Date.now();
   if (session.lastMessageAt && now - session.lastMessageAt < 400) return true;
   session.lastMessageAt = now;
+  return false;
+}
+
+/** Validates an optional client-supplied Spotify device id (used to target
+ * the in-page Web Playback SDK device specifically, instead of whatever
+ * device Spotify considers "active"). Returns '' if none was given, the
+ * validated id string if it looks like a real device id, or false if the
+ * value present is malformed — callers should treat false as a 400. */
+function spotifyDeviceIdOrFalse(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (typeof v === 'string' && /^[A-Za-z0-9]{1,64}$/.test(v)) return v;
   return false;
 }
 
@@ -444,6 +540,13 @@ setInterval(() => {
       fs.writeFile(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens), { mode: 0o600 }, () => {});
     }
   }
+  // Sessions aren't tracked with a dirty flag like the per-room state above
+  // — the Map is small (a handful of concurrently logged-in people at
+  // most), so it's cheap enough to just re-serialize it every tick rather
+  // than instrument every single place a session field changes (login,
+  // username claim, csrf rotation, Spotify connect, logout, ...) and risk
+  // missing one and silently losing persistence for that path.
+  fs.writeFile(sessionsPath(), JSON.stringify(Array.from(sessions.entries())), { mode: 0o600 }, () => {});
 }, 2000).unref();
 
 function flushSaveSync() {
@@ -454,6 +557,9 @@ function flushSaveSync() {
       fs.writeFileSync(spotifyTokensPathFor(roomId), JSON.stringify(rooms[roomId].spotifyTokens), { mode: 0o600 });
     } catch (e) { /* best effort on shutdown */ }
   }
+  try {
+    fs.writeFileSync(sessionsPath(), JSON.stringify(Array.from(sessions.entries())), { mode: 0o600 });
+  } catch (e) { /* best effort on shutdown */ }
 }
 
 process.on('SIGINT', () => { flushSaveSync(); process.exit(0); });
@@ -589,8 +695,29 @@ function applySecurityHeaders(res) {
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+    // script-src/connect-src/frame-src/media-src carry a deliberate,
+    // narrow exception for Spotify's own domains: the Web Playback SDK
+    // (public/assets/app.js's onSpotifyWebPlaybackSDKReady) plays actual
+    // audio inside this page, which is a hard requirement of how Spotify
+    // built that SDK — it loads a script from sdk.scdn.co, opens its own
+    // WebSocket ("dealer") and EME/DRM connections straight to Spotify's
+    // infrastructure, and needs a live OAuth access token handed to it in
+    // JS (see GET /api/spotify/player-token below) to do any of that.
+    // There is no server-proxied way to do in-browser DRM-protected audio
+    // — every site that embeds this SDK has this same exception. Spotify
+    // doesn't publish a fixed hostname list for the dealer/streaming
+    // endpoints (they're sharded by region), so this uses a same-origin
+    // wildcard scoped to Spotify's own domains rather than a hand-picked
+    // list that could silently break. Every other directive is unchanged
+    // from before — this is the one deliberate carve-out, not a general
+    // loosening, and it only matters once a room has actually connected
+    // Spotify.
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://sdk.scdn.co; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
+    "img-src 'self' data: https://*.scdn.co; " +
+    "connect-src 'self' https://*.spotify.com wss://*.spotify.com https://*.scdn.co; " +
+    "media-src 'self' blob: https://*.scdn.co; frame-src https://sdk.scdn.co https://*.spotify.com; " +
+    "frame-ancestors 'none'; base-uri 'none'"
   );
 }
 
@@ -1642,6 +1769,64 @@ async function handleApi(req, res, pathname) {
     }
   }
 
+  // GET /api/spotify/player-token — the one deliberate exception to "the
+  // browser never sees a Spotify access token" (see applySecurityHeaders'
+  // CSP comment above): the Web Playback SDK's getOAuthToken(cb) callback
+  // needs a live token handed to it in JS to open its own DRM-authenticated
+  // connection to Spotify. This hands out the SAME server-held token
+  // already used for every other Spotify call in this file — nothing new
+  // is minted or weakened, it's just this one endpoint's job to let it
+  // leave the server. The SDK calls this again on its own well before the
+  // token expires, so the frontend never needs to cache it beyond a single
+  // getOAuthToken callback closure. GET + no side effects, so no CSRF
+  // check, same as /status and /now-playing above.
+  if (pathname === '/api/spotify/player-token' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+    return sendJson(res, 200, { accessToken: token });
+  }
+
+  // POST /api/spotify/transfer — body: { deviceId, play }. Makes the given
+  // device (in practice, always our own in-page Web Playback SDK instance
+  // — see 'ready' in onSpotifyWebPlaybackSDKReady) the active Spotify
+  // Connect device, optionally starting playback immediately. This is the
+  // one Web API call that specifically has no per-device-targeted variant
+  // (play/pause/next/previous/seek/volume below all accept a deviceId and
+  // target it directly instead), so it gets its own endpoint.
+  if (pathname === '/api/spotify/transfer' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    if (typeof body.deviceId !== 'string' || !/^[A-Za-z0-9]{1,64}$/.test(body.deviceId)) {
+      return sendJson(res, 400, { error: 'Invalid device' });
+    }
+
+    try {
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player', token, {
+        device_ids: [body.deviceId],
+        play: Boolean(body.play),
+      });
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 403) return sendJson(res, 409, { error: 'Playback control needs Spotify Premium.' });
+      if (status >= 400) { logSpotifyIssue('transfer', status, null); return sendJson(res, 502, { error: 'Spotify could not switch to this device.' }); }
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
   // POST /api/spotify/volume — body: { percent: 0-100 }.
   if (pathname === '/api/spotify/volume' && req.method === 'POST') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
@@ -1657,9 +1842,11 @@ async function handleApi(req, res, pathname) {
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
     const percent = Math.round(Number(body.percent));
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) return sendJson(res, 400, { error: 'Invalid volume' });
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
 
     try {
-      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/volume?volume_percent=' + percent, token);
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/volume?volume_percent=' + percent + (devId ? '&device_id=' + devId : ''), token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status === 403) return sendJson(res, 409, { error: 'Volume control needs Spotify Premium.' });
@@ -1686,9 +1873,11 @@ async function handleApi(req, res, pathname) {
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
     const positionMs = Math.round(Number(body.positionMs));
     if (!Number.isFinite(positionMs) || positionMs < 0) return sendJson(res, 400, { error: 'Invalid position' });
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
 
     try {
-      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/seek?position_ms=' + positionMs, token);
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/seek?position_ms=' + positionMs + (devId ? '&device_id=' + devId : ''), token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status === 403) return sendJson(res, 409, { error: 'Seeking needs Spotify Premium.' });
@@ -1923,9 +2112,11 @@ async function handleApi(req, res, pathname) {
     } else if (typeof body.contextUri === 'string' && /^spotify:(playlist|album):[A-Za-z0-9]+$/.test(body.contextUri)) {
       bodyObj = { context_uri: body.contextUri };
     }
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
 
     try {
-      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/play', token, bodyObj);
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/play' + (devId ? '?device_id=' + devId : ''), token, bodyObj);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status === 403) return sendJson(res, 409, { error: 'Playback control needs Spotify Premium.' });
@@ -1947,8 +2138,13 @@ async function handleApi(req, res, pathname) {
     const token = await ensureFreshSpotifyToken(roomState, key);
     if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
 
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
+
     try {
-      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/pause', token);
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/pause' + (devId ? '?device_id=' + devId : ''), token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status >= 400 && status !== 403) { logSpotifyIssue('pause', status, null); return sendJson(res, 502, { error: 'Spotify could not pause that.' }); }
@@ -1969,8 +2165,13 @@ async function handleApi(req, res, pathname) {
     const token = await ensureFreshSpotifyToken(roomState, key);
     if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
 
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
+
     try {
-      const { status } = await spotifyApiRequest('POST', '/v1/me/player/next', token);
+      const { status } = await spotifyApiRequest('POST', '/v1/me/player/next' + (devId ? '?device_id=' + devId : ''), token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status >= 400) { logSpotifyIssue('next', status, null); return sendJson(res, 502, { error: 'Spotify could not skip that.' }); }
@@ -1991,8 +2192,13 @@ async function handleApi(req, res, pathname) {
     const token = await ensureFreshSpotifyToken(roomState, key);
     if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
 
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
+
     try {
-      const { status } = await spotifyApiRequest('POST', '/v1/me/player/previous', token);
+      const { status } = await spotifyApiRequest('POST', '/v1/me/player/previous' + (devId ? '?device_id=' + devId : ''), token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status >= 400) { logSpotifyIssue('previous', status, null); return sendJson(res, 502, { error: 'Spotify could not go back.' }); }

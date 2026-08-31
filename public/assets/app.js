@@ -1279,6 +1279,15 @@
   var spotifyVolumeDebounce = null;
   var spotifyDraggingVolume = false;
 
+  // Web Playback SDK state — see the dedicated section below for the full
+  // explanation. spotifyDeviceId is the one piece every transport call
+  // reads: null means "target whatever device Spotify already has active"
+  // (today's remote-control behavior), set means "target this browser tab."
+  var spotifySdkReady = false;
+  var spotifyPlayer = null;
+  var spotifyDeviceId = null;
+  var spotifyPlayerInitStarted = false;
+
   var spotifyCurrentView = 'home';
   var spotifyPlaylistsLoaded = false;
   var spotifyPlaylistsNextOffset = null;
@@ -1316,12 +1325,14 @@
         spotifyAccountName.textContent = data.displayName ? 'Connected as ' + data.displayName : 'Connected';
         startSpotifyPolling();
         refreshNowPlaying();
+        initSpotifyPlayer();
         // A fresh connection (including reconnecting after a disconnect)
         // starts browsing from scratch — old playlist/search data belonged
         // to whatever was connected before.
         if (!wasConnected) resetSpotifyBrowsing();
       } else {
         stopSpotifyPolling();
+        disconnectSpotifyPlayer();
         if (spotifyWindow.classList.contains('is-maximized')) spotifyRestore();
       }
     } catch (e) { /* transient — tries again next time the games view opens */ }
@@ -1409,6 +1420,115 @@
     } catch (e) { /* transient — next poll picks it back up */ }
   }
 
+  // ---------------------------------------------------------------------
+  // Web Playback SDK — actual in-browser audio, not just remote control of
+  // some other already-running Spotify app. Spotify's own SDK script
+  // (loaded via the <script src="https://sdk.scdn.co/spotify-player.js">
+  // tag in index.html) opens a DRM-authenticated connection straight to
+  // Spotify once handed a live access token, and registers itself as a
+  // normal Spotify Connect device that this tab can then be told to play
+  // on — see /api/spotify/player-token and the CSP comment in server.js's
+  // applySecurityHeaders for why a token reaching the browser at all is
+  // safe and unavoidable here.
+  //
+  // This is purely additive. Every transport control below still goes
+  // through this site's own server-proxied endpoints exactly as before;
+  // the only change is that once spotifyDeviceId is set, those calls
+  // target this tab specifically instead of "whichever device Spotify
+  // considers active." If the SDK never becomes ready — no Premium
+  // account (Spotify's own 'account_error' event, handled below), a
+  // browser without EME support, the script failing to load, or simply
+  // not yet connected — spotifyDeviceId just stays null and every control
+  // keeps working exactly as it did before this feature existed, by
+  // remote-controlling whatever device is already active elsewhere.
+  window.onSpotifyWebPlaybackSDKReady = function () {
+    spotifySdkReady = true;
+    if (spotifyConnected) initSpotifyPlayer();
+  };
+
+  function initSpotifyPlayer() {
+    if (spotifyPlayerInitStarted) return;
+    if (!spotifySdkReady || typeof Spotify === 'undefined' || !Spotify.Player) return;
+    spotifyPlayerInitStarted = true;
+
+    spotifyPlayer = new Spotify.Player({
+      name: 'Soul Studies',
+      getOAuthToken: function (cb) {
+        fetch('/api/spotify/player-token', { credentials: 'same-origin' })
+          .then(function (res) { if (!res.ok) throw new Error('token fetch failed'); return res.json(); })
+          .then(function (data) { cb(data.accessToken); })
+          .catch(function () { /* the SDK calls this again on its own retry cycle */ });
+      },
+      volume: 0.5,
+    });
+
+    spotifyPlayer.addListener('ready', function (data) {
+      spotifyDeviceId = (data && data.device_id) || null;
+    });
+    spotifyPlayer.addListener('not_ready', function () {
+      spotifyDeviceId = null;
+    });
+    spotifyPlayer.addListener('initialization_error', function (data) {
+      console.error('[spotify player] initialization_error', data && data.message);
+    });
+    spotifyPlayer.addListener('authentication_error', function (data) {
+      console.error('[spotify player] authentication_error', data && data.message);
+    });
+    spotifyPlayer.addListener('account_error', function (data) {
+      // Fires for a non-Premium account — Spotify's SDK refuses to stream
+      // to the browser at all in that case. Not a bug in this app:
+      // spotifyDeviceId simply never gets set, so every control below
+      // keeps remote-controlling whatever device is already active
+      // elsewhere, exactly like before this feature existed.
+      console.error('[spotify player] account_error', data && data.message);
+      setSpotifyStatusMsg('In-browser playback needs Spotify Premium — controlling your other active device instead.');
+    });
+    spotifyPlayer.addListener('playback_error', function (data) {
+      console.error('[spotify player] playback_error', data && data.message);
+    });
+    // Low-latency local UI updates driven straight from the SDK, so the
+    // player bar reflects a play/pause/skip immediately instead of
+    // waiting for the next 6-second /api/spotify/now-playing poll. The
+    // poll keeps running regardless (see startSpotifyPolling) and stays
+    // the source of truth for state changes that happen on OTHER devices,
+    // which this event never fires for.
+    spotifyPlayer.addListener('player_state_changed', function (state) {
+      if (!state) return;
+      spotifyPlaying = !state.paused;
+      if (spotifyToggleBtn) {
+        spotifyToggleBtn.textContent = spotifyPlaying ? '⏸' : '▶';
+        spotifyToggleBtn.setAttribute('aria-label', spotifyPlaying ? 'Pause' : 'Play');
+      }
+      spotifyDurationMs = state.duration || 0;
+      spotifyProgressMs = state.position || 0;
+      var track = state.track_window && state.track_window.current_track;
+      if (track && spotifyNowplaying && spotifyNothingPlaying) {
+        spotifyNowplaying.hidden = false;
+        spotifyNothingPlaying.hidden = true;
+        if (spotifyTrackName) spotifyTrackName.textContent = track.name || '';
+        if (spotifyTrackArtists) {
+          spotifyTrackArtists.textContent = Array.isArray(track.artists)
+            ? track.artists.map(function (a) { return a.name; }).join(', ')
+            : '';
+        }
+        var art = track.album && Array.isArray(track.album.images) && track.album.images[0] && track.album.images[0].url;
+        if (spotifyArt) {
+          if (art) { spotifyArt.src = art; spotifyArt.hidden = false; } else { spotifyArt.hidden = true; }
+        }
+      }
+      spotifyRenderProgress();
+    });
+
+    spotifyPlayer.connect();
+  }
+
+  function disconnectSpotifyPlayer() {
+    if (spotifyPlayer) { try { spotifyPlayer.disconnect(); } catch (e) { /* already gone */ } }
+    spotifyPlayer = null;
+    spotifyDeviceId = null;
+    spotifyPlayerInitStarted = false;
+  }
+
   function openSpotifyPopup() {
     var w = 420, h = 720;
     var left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
@@ -1439,6 +1559,7 @@
       } catch (e) { /* falls back to whatever refreshSpotifyStatus() reports next */ }
       spotifyConnected = false;
       stopSpotifyPolling();
+      disconnectSpotifyPlayer();
       refreshSpotifyStatus();
     });
   }
@@ -1509,6 +1630,10 @@
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        // Once the in-page player is ready, target it directly so play/
+        // pause/skip actually control audio in this tab instead of
+        // whatever device Spotify last considered active elsewhere.
+        body: JSON.stringify(spotifyDeviceId ? { deviceId: spotifyDeviceId } : {}),
       });
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) {
@@ -1547,7 +1672,7 @@
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-          body: JSON.stringify({ positionMs: positionMs }),
+          body: JSON.stringify(spotifyDeviceId ? { positionMs: positionMs, deviceId: spotifyDeviceId } : { positionMs: positionMs }),
         });
         var data = await res.json().catch(function () { return {}; });
         if (!res.ok) {
@@ -1575,7 +1700,7 @@
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-            body: JSON.stringify({ percent: percent }),
+            body: JSON.stringify(spotifyDeviceId ? { percent: percent, deviceId: spotifyDeviceId } : { percent: percent }),
           });
           var data = await res.json().catch(function () { return {}; });
           if (!res.ok) {
@@ -1590,6 +1715,16 @@
 
   async function playSpotify(body) {
     setSpotifyStatusMsg('');
+    // Target the in-page player once it's ready, so clicking a track/
+    // playlist actually starts audio in this tab (transferring playback
+    // here in the same call) rather than resuming on whatever device was
+    // last active elsewhere.
+    if (spotifyDeviceId) {
+      var bodyWithDevice = {};
+      for (var k in body) { if (Object.prototype.hasOwnProperty.call(body, k)) bodyWithDevice[k] = body[k]; }
+      bodyWithDevice.deviceId = spotifyDeviceId;
+      body = bodyWithDevice;
+    }
     try {
       var res = await fetch('/api/spotify/play', {
         method: 'POST',

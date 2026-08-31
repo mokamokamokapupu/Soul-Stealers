@@ -81,11 +81,15 @@ If you registered more than one redirect URI (step 3), you don't need to
 tell the server which one — it's derived automatically from whatever
 domain a given request actually came in on.
 
-Playback control (play/pause/skip) requires the connecting account to have
-Spotify Premium and an active device open somewhere (the Spotify app on a
-phone, desktop, or its web player) — that's a Spotify-side requirement, not
-something this app can work around. Search and account linking work either
-way. See `SECURITY.md` for the full security writeup of this integration.
+With a Premium account, this page can play audio itself — clicking a track
+loads it into the player bar right here via Spotify's Web Playback SDK, no
+other device needed. Without Premium (a Spotify-side requirement, not
+something this app can work around), the same controls fall back to
+remote-controlling whatever Spotify device is already active elsewhere
+(the app on a phone, desktop, or Spotify's own web player). Search and
+account linking work either way. See `SECURITY.md` for the full security
+writeup of this integration, including what changed to make in-browser
+playback possible.
 
 ## How the flow works
 
