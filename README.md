@@ -52,10 +52,13 @@ thing this app doesn't do for you (TLS termination) if you go that route.
 
 ### Setting up Spotify (optional)
 
-The games page can link a Spotify account to search for and control music
-from right there — search, play/pause, skip forward and back, staying
-logged in between visits. It's entirely optional and off by default; the
-rest of the app works exactly the same without it.
+The games page can link a Spotify account and browse it from a resizable,
+Spotify-desktop-style window right there — Home, categorized search (songs/
+artists/albums/playlists), full playlist and album pages with pagination,
+artist pages, and a persistent player bar (art, transport, seekable progress
+bar, volume). Drag the window's bottom-right corner to resize it, or use the
+maximize button to expand it over most of the page. It's entirely optional
+and off by default; the rest of the app works exactly the same without it.
 
 To turn it on:
 

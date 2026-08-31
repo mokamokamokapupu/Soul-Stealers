@@ -1993,20 +1993,70 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
 .lb-empty-note[hidden]{ display: none; }
 
 /* ---------------------- Spotify ---------------------- */
+/* Redesigned 2026-08-31 into a resizable, Spotify-desktop-styled window:
+   drag the bottom-right corner (native CSS `resize`) to grow it while it
+   stays docked in the sidebar, or use the maximize button to float it over
+   the whole page. Its own layout (sidebar nav vs. compact top pills, table
+   columns, volume control) responds to the WINDOW's own width via CSS
+   container queries (`@container spotify-window`), not the page's — so it
+   adapts correctly whether it's been dragged bigger or maximized, not just
+   when the browser viewport changes. */
 
-.spotify-panel{
+.spotify-maximize-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(6,7,10,0.6);
+  backdrop-filter: blur(2px);
+  z-index: 999;
+}
+.spotify-maximize-backdrop[hidden]{ display: none; }
+
+.spotify-window{
   position: relative;
+  z-index: 2;
   border: 1px solid rgba(139,115,85,0.35);
   border-radius: 16px;
   background: linear-gradient(180deg, rgba(27,32,44,0.92), rgba(13,16,23,0.94));
-  padding: 1.2rem 1.1rem 1.3rem;
   box-shadow: 0 24px 60px -24px rgba(0,0,0,0.65), 0 0 0 1px rgba(201,161,90,0.06) inset;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0;
+  container-type: inline-size;
+  container-name: spotify-window;
+  /* Resizable: drag the native bottom-right grip. Docked default sizing
+     matches the old static card; capped so a drag can meaningfully grow it
+     without swallowing the whole games column, while still letting it
+     overlap neighboring content on purpose (elevated z-index + shadow)
+     rather than disturbing the page's grid layout. Full "fill the
+     viewport" is what the maximize button is for. Capped above 640px (not
+     right at it) so dragging alone — without maximizing — is actually
+     enough to cross the container-query breakpoint below that switches on
+     the real sidebar+main desktop layout, not just a wider single column. */
+  width: 100%;
+  min-width: 270px;
+  max-width: min(760px, 92vw);
+  height: 560px;
+  min-height: 380px;
+  max-height: 82vh;
+  resize: both;
+  overflow: hidden;
 }
-.spotify-head{ display: flex; align-items: center; gap: 0.5rem; }
+.spotify-window::-webkit-resizer{
+  background: linear-gradient(135deg, transparent 0 40%, rgba(147,184,154,0.55) 40% 55%, transparent 55% 65%, rgba(147,184,154,0.55) 65% 80%, transparent 80%);
+}
+.spotify-window.is-maximized{
+  position: fixed;
+  inset: 3vh 3vw;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  resize: none;
+  z-index: 1000;
+  box-shadow: 0 30px 80px -20px rgba(0,0,0,0.75), 0 0 0 1px rgba(201,161,90,0.1) inset;
+}
+
+.spotify-window-head{ display: flex; align-items: center; gap: 0.5rem; padding: 1.1rem 1.1rem 0.7rem; flex-shrink: 0; }
 .spotify-note-icon{
   font-size: 1.1rem;
   color: var(--verdigris-bright);
@@ -2017,8 +2067,30 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
   font: 500 0.86rem var(--font-mono);
   letter-spacing: 0.25em;
   color: var(--parchment);
+  flex: 1;
 }
-.spotify-body{ display: flex; flex-direction: column; gap: 0.8rem; }
+.spotify-win-btn{
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(139,115,85,0.3);
+  background: rgba(233,225,208,0.04);
+  color: var(--parchment-dim);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0;
+  transition: 0.15s ease;
+}
+.spotify-win-btn:hover{ color: var(--verdigris-bright); border-color: var(--verdigris-bright); background: rgba(111,143,118,0.1); transform: none; box-shadow: none; }
+.spotify-win-btn:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 1px; }
+.spotify-win-btn[aria-pressed="true"]{ color: var(--verdigris-bright); border-color: var(--verdigris-bright); }
+.spotify-win-btn[hidden]{ display: none; }
+
+.spotify-body{ display: flex; flex-direction: column; gap: 0.8rem; padding: 0 1.1rem 1.3rem; overflow-y: auto; }
 .spotify-body[hidden]{ display: none; }
 
 .spotify-empty-note{
@@ -2043,7 +2115,7 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
 }
 .spotify-connect-btn:hover{ background: rgba(111,143,118,0.24); transform: none; box-shadow: none; }
 
-.spotify-account-row{ display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.spotify-account-row{ display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0 0 0.7rem; border-bottom: 1px solid rgba(139,115,85,0.2); margin-bottom: 0.6rem; }
 .spotify-account-name{
   font: 500 0.72rem var(--font-mono);
   color: var(--verdigris-bright);
@@ -2066,61 +2138,13 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
 }
 .spotify-disconnect-btn:hover{ color: var(--danger); transform: none; box-shadow: none; }
 
-.spotify-nowplaying{ display: flex; align-items: center; gap: 0.6rem; }
-.spotify-nowplaying[hidden]{ display: none; }
-.spotify-art{
-  width: 44px;
-  height: 44px;
-  border-radius: 6px;
-  object-fit: cover;
-  border: 1px solid rgba(233,225,208,0.15);
-  background: var(--ink);
-  flex-shrink: 0;
-}
-.spotify-art[hidden]{ display: none; }
-.spotify-track-info{ display: flex; flex-direction: column; gap: 0.1rem; overflow: hidden; }
-.spotify-track-name{
-  font: 500 0.78rem var(--font-mono);
-  color: var(--parchment);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.spotify-track-artists{
-  font-size: 0.7rem;
-  color: var(--parchment-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.spotify-controls{ display: flex; align-items: center; justify-content: center; gap: 0.7rem; }
-.spotify-ctl-btn{
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(139,115,85,0.3);
-  background: rgba(233,225,208,0.04);
-  color: var(--parchment);
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 0.85rem;
-  padding: 0;
-  transition: 0.2s ease;
-}
-.spotify-ctl-btn:hover{ border-color: var(--verdigris-bright); color: var(--verdigris-bright); background: rgba(111,143,118,0.1); transform: none; box-shadow: none; }
-.spotify-ctl-btn.spotify-ctl-main{ width: 42px; height: 42px; font-size: 1rem; border-color: rgba(201,161,90,0.4); }
-.spotify-ctl-btn:disabled{ opacity: 0.4; cursor: default; }
-.spotify-ctl-btn:disabled:hover{ border-color: rgba(139,115,85,0.3); color: var(--parchment); background: rgba(233,225,208,0.04); }
-
 .spotify-status-msg{
   margin: 0;
+  padding: 0.3rem 1.1rem;
   font: 500 0.68rem var(--font-mono);
   color: var(--danger);
   text-align: center;
+  flex-shrink: 0;
 }
 .spotify-status-msg[hidden]{ display: none; }
 
@@ -2136,64 +2160,102 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
   border: 0;
 }
 
-.spotify-search input{
-  width: 100%;
-  background: rgba(8,10,15,0.5);
-  border: 1px solid rgba(139,115,85,0.3);
-  border-radius: 8px;
-  padding: 0.5rem 0.7rem;
-  color: var(--parchment);
-  font: 500 0.78rem var(--font-body);
-}
-.spotify-search input:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 1px; border-color: var(--verdigris-bright); }
+/* ---- App shell: sidebar nav + main content, player bar pinned below ---- */
 
-.spotify-tabs{
+.spotify-app{ flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.spotify-app[hidden]{ display: none; }
+
+.spotify-app-layout{ flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+.spotify-nav{
+  width: 100%;
+  flex-shrink: 0;
   display: flex;
-  gap: 0.4rem;
-  border-bottom: 1px solid rgba(139,115,85,0.25);
-  padding-bottom: 0.55rem;
+  flex-direction: column;
+  padding: 1.1rem 1.1rem 0.8rem;
+  overflow-y: auto;
 }
-.spotify-tab{
+.spotify-nav-list{ list-style: none; margin: 0 0 0.7rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.spotify-nav-item{
   width: auto;
-  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   background: none;
   border: 1px solid transparent;
   border-radius: 999px;
   color: var(--parchment-dim);
-  padding: 0.4rem 0.6rem;
+  padding: 0.4rem 0.7rem;
   font: 500 0.66rem var(--font-mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
   cursor: pointer;
   transition: 0.15s ease;
 }
-.spotify-tab:hover{ color: var(--parchment); transform: none; box-shadow: none; }
-.spotify-tab.is-active{ color: var(--ink); background: var(--verdigris-bright); border-color: var(--verdigris-bright); }
-.spotify-tab:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 2px; }
+.spotify-nav-item:hover{ color: var(--parchment); transform: none; box-shadow: none; }
+.spotify-nav-item.is-active{ color: var(--ink); background: var(--verdigris-bright); border-color: var(--verdigris-bright); }
+.spotify-nav-item:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 2px; }
+.spotify-nav-icon{ font-size: 0.85rem; }
+.spotify-nav-library-toggle[aria-expanded="true"]{ color: var(--parchment); border-color: rgba(147,184,154,0.4); }
 
-.spotify-tabpanel{ display: flex; flex-direction: column; gap: 0.6rem; }
-.spotify-tabpanel[hidden]{ display: none; }
+/* Closed by default in compact mode; JS toggles .is-open when the "Your
+   Library" nav pill is activated. Forced open unconditionally once the
+   window is wide enough for the full desktop sidebar layout (see the
+   640px container-query block below), where library is always visible. */
+.spotify-library-body{ display: none; flex-direction: column; gap: 0.5rem; min-height: 0; flex: 1; }
+.spotify-library-body.is-open{ display: flex; }
+
+.spotify-search-bar{ flex-shrink: 0; margin-bottom: 0.8rem; }
+.spotify-search-bar[hidden]{ display: none; }
+.spotify-search-bar input{
+  width: 100%;
+  background: rgba(8,10,15,0.5);
+  border: 1px solid rgba(139,115,85,0.3);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  color: var(--parchment);
+  font: 500 0.8rem var(--font-body);
+}
+.spotify-search-bar input:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 1px; border-color: var(--verdigris-bright); }
+
+.spotify-main{ flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 1.1rem; }
+
+.spotify-view[hidden]{ display: none; }
+.spotify-view-title{ margin: 0 0 0.8rem; font: 500 1rem var(--font-mono); letter-spacing: 0.03em; color: var(--parchment); }
+
+.spotify-result-section{ margin-bottom: 1.3rem; }
+.spotify-result-section[hidden]{ display: none; }
+.spotify-result-section h3{ margin: 0 0 0.5rem; font: 500 0.7rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--parchment-dim); }
 
 .spotify-list-status{
   font-size: 0.78rem;
   color: var(--parchment-dim);
   font-style: italic;
   margin: 0;
-  padding: 0.1rem 0.1rem 0.2rem;
+  padding: 0.1rem 0.1rem 0.5rem;
 }
 .spotify-list-status[hidden]{ display: none; }
 
-.spotify-track-list{
+.spotify-empty-note{
+  font-size: 0.82rem;
+  color: var(--parchment-dim);
+  font-style: italic;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ---- Playlist nav list (sidebar), reused as a generic small-row list ---- */
+
+.spotify-track-list, .spotify-playlist-nav-list{
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  max-height: 320px;
+  gap: 0.25rem;
   overflow-y: auto;
+  min-height: 0;
 }
-.spotify-track-list[hidden]{ display: none; }
+.spotify-track-list[hidden], .spotify-playlist-nav-list[hidden]{ display: none; }
 
 .spotify-row-btn{
   width: 100%;
@@ -2252,10 +2314,42 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
 .spotify-row-btn:hover .spotify-row-play-icon,
 .spotify-row-btn:focus-visible .spotify-row-play-icon{ opacity: 1; }
 
-.spotify-playlist-crumb{ display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.spotify-playlist-crumb[hidden]{ display: none; }
+/* ---- Card grids: Home, and Albums/Artists/Playlists search results ---- */
+
+.spotify-card-grid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.8rem; }
+.spotify-card{
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: rgba(233,225,208,0.02);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 0.6rem;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: 0.15s ease;
+  position: relative;
+}
+.spotify-card:hover{ border-color: rgba(147,184,154,0.4); background: rgba(111,143,118,0.08); transform: none; box-shadow: none; }
+.spotify-card:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 1px; }
+.spotify-card-art{ width: 100%; aspect-ratio: 1; border-radius: 6px; object-fit: cover; background: var(--ink); }
+.spotify-card-art-placeholder{
+  width: 100%; aspect-ratio: 1; border-radius: 6px; background: rgba(233,225,208,0.05);
+  display: flex; align-items: center; justify-content: center; color: var(--parchment-dim); font-size: 1.6rem;
+}
+.spotify-card-grid-round .spotify-card-art,
+.spotify-card-grid-round .spotify-card-art-placeholder{ border-radius: 50%; }
+.spotify-card-name{ font: 500 0.74rem var(--font-mono); color: var(--parchment); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spotify-card-sub{ font-size: 0.66rem; color: var(--parchment-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Detail pages: playlist / album / artist ---- */
+
+.spotify-detail-view{ display: flex; flex-direction: column; }
 .spotify-back-btn{
   width: auto;
+  align-self: flex-start;
   background: none;
   border: none;
   color: var(--verdigris-bright);
@@ -2263,52 +2357,221 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
   letter-spacing: 0.03em;
   cursor: pointer;
   padding: 0;
+  margin-bottom: 0.9rem;
 }
 .spotify-back-btn:hover{ color: var(--parchment); transform: none; box-shadow: none; }
+
+.spotify-detail-head{ display: flex; align-items: flex-end; gap: 1.1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.spotify-detail-art, .spotify-detail-art-placeholder{
+  width: 120px; height: 120px; border-radius: 8px; object-fit: cover;
+  background: var(--ink); flex-shrink: 0; border: 1px solid rgba(233,225,208,0.12);
+  box-shadow: 0 16px 40px -14px rgba(0,0,0,0.6);
+}
+.spotify-detail-art[hidden]{ display: none; }
+.spotify-detail-art-placeholder{ display: flex; align-items: center; justify-content: center; font-size: 2.2rem; color: var(--parchment-dim); }
+.spotify-detail-art-round, .spotify-detail-art-placeholder-round{ border-radius: 50%; }
+.spotify-detail-info{ display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.spotify-detail-kind{ font: 500 0.62rem var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--verdigris-bright); }
+.spotify-detail-name{ margin: 0; font: 600 1.3rem var(--font-mono); color: var(--parchment); line-height: 1.15; overflow-wrap: anywhere; }
+.spotify-detail-meta{ margin: 0; font-size: 0.76rem; color: var(--parchment-dim); }
+
+.spotify-detail-actions{ margin-bottom: 1rem; }
 .spotify-playall-btn{
   width: auto;
   flex-shrink: 0;
   background: rgba(111,143,118,0.14);
   border: 1px solid var(--verdigris-bright);
   color: var(--parchment);
-  padding: 0.3rem 0.65rem;
+  padding: 0.45rem 1.1rem;
   border-radius: 999px;
-  font: 500 0.62rem var(--font-mono);
+  font: 500 0.72rem var(--font-mono);
   letter-spacing: 0.03em;
   cursor: pointer;
   transition: 0.15s ease;
 }
 .spotify-playall-btn:hover{ background: rgba(111,143,118,0.26); transform: none; box-shadow: none; }
-.spotify-playlist-current-name{
-  margin: -0.3rem 0 0;
-  font: 500 0.76rem var(--font-mono);
-  color: var(--parchment);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+
+/* Track table: index · art+title/artist · album (hidden when narrow) · duration */
+.spotify-track-table{ list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.spotify-track-table[hidden]{ display: none; }
+.spotify-track-row{
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.6rem 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  background: none;
+  border: 1px solid transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  transition: 0.15s ease;
 }
-.spotify-playlist-current-name[hidden]{ display: none; }
+.spotify-track-row:hover{ border-color: rgba(147,184,154,0.35); background: rgba(111,143,118,0.07); transform: none; box-shadow: none; }
+.spotify-track-row:focus-visible{ outline: 2px solid var(--verdigris-bright); outline-offset: 1px; }
+.spotify-track-idx{ font: 500 0.7rem var(--font-mono); color: var(--parchment-dim); text-align: center; }
+.spotify-track-row-main{ display: flex; align-items: center; gap: 0.55rem; min-width: 0; overflow: hidden; }
+.spotify-track-row-art{ width: 32px; height: 32px; border-radius: 5px; object-fit: cover; background: var(--ink); flex-shrink: 0; }
+.spotify-track-row-info{ display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.spotify-track-row-name{ font: 500 0.74rem var(--font-mono); color: var(--parchment); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spotify-track-row-artist{ font-size: 0.66rem; color: var(--parchment-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spotify-track-row-album{ display: none; font-size: 0.68rem; color: var(--parchment-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spotify-track-row-duration{ font: 500 0.68rem var(--font-mono); color: var(--parchment-dim); flex-shrink: 0; }
 
 .spotify-loadmore-btn{
   width: 100%;
   background: rgba(233,225,208,0.03);
   border: 1px dashed rgba(139,115,85,0.35);
   color: var(--parchment-dim);
-  padding: 0.4rem;
+  padding: 0.5rem;
   border-radius: 8px;
   font: 500 0.66rem var(--font-mono);
   letter-spacing: 0.04em;
   cursor: pointer;
+  margin-top: 0.5rem;
   transition: 0.15s ease;
+  flex-shrink: 0;
 }
 .spotify-loadmore-btn:hover{ color: var(--parchment); border-color: var(--verdigris-bright); transform: none; box-shadow: none; }
 .spotify-loadmore-btn[hidden]{ display: none; }
+
+/* ---- Player bar (bottom, persistent) ---- */
+
+.spotify-player-bar{
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.6rem 1.1rem;
+  border-top: 1px solid rgba(139,115,85,0.25);
+  background: rgba(8,10,15,0.35);
+}
+.spotify-player-track{ display: flex; align-items: center; gap: 0.6rem; flex: 1 1 30%; min-width: 0; }
+.spotify-nowplaying{ display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.spotify-nowplaying[hidden]{ display: none; }
+.spotify-art{
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid rgba(233,225,208,0.15);
+  background: var(--ink);
+  flex-shrink: 0;
+}
+.spotify-art[hidden]{ display: none; }
+.spotify-track-info{ display: flex; flex-direction: column; gap: 0.1rem; overflow: hidden; }
+.spotify-track-name{
+  font: 500 0.78rem var(--font-mono);
+  color: var(--parchment);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spotify-track-artists{
+  font-size: 0.7rem;
+  color: var(--parchment-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spotify-player-empty{ margin: 0; }
+.spotify-player-empty[hidden]{ display: none; }
+
+.spotify-player-center{ flex: 1 1 40%; display: flex; flex-direction: column; align-items: center; gap: 0.3rem; min-width: 0; }
+.spotify-controls{ display: flex; align-items: center; justify-content: center; gap: 0.7rem; }
+.spotify-ctl-btn{
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(139,115,85,0.3);
+  background: rgba(233,225,208,0.04);
+  color: var(--parchment);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+  transition: 0.2s ease;
+}
+.spotify-ctl-btn:hover{ border-color: var(--verdigris-bright); color: var(--verdigris-bright); background: rgba(111,143,118,0.1); transform: none; box-shadow: none; }
+.spotify-ctl-btn.spotify-ctl-main{ width: 42px; height: 42px; font-size: 1rem; border-color: rgba(201,161,90,0.4); }
+.spotify-ctl-btn:disabled{ opacity: 0.4; cursor: default; }
+.spotify-ctl-btn:disabled:hover{ border-color: rgba(139,115,85,0.3); color: var(--parchment); background: rgba(233,225,208,0.04); }
+
+.spotify-progress-row{ display: none; align-items: center; gap: 0.5rem; width: 100%; max-width: 360px; }
+.spotify-time{ font: 500 0.62rem var(--font-mono); color: var(--parchment-dim); flex-shrink: 0; width: 2.2em; }
+.spotify-time:last-child{ text-align: right; }
+.spotify-progress-track{ flex: 1; height: 4px; border-radius: 999px; background: rgba(233,225,208,0.12); cursor: pointer; position: relative; }
+.spotify-progress-fill{ position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 999px; background: var(--verdigris-bright); }
+
+.spotify-player-volume{ display: none; align-items: center; gap: 0.4rem; flex: 0 0 auto; width: 120px; }
+.spotify-vol-icon{ font-size: 0.8rem; color: var(--parchment-dim); flex-shrink: 0; }
+.spotify-player-volume input[type="range"]{
+  width: 100%;
+  accent-color: var(--verdigris-bright);
+  height: 4px;
+  cursor: pointer;
+}
+
+/* ---- Container-query responsiveness: reacts to the WINDOW's own width,
+   not the page viewport, so it adapts whether docked+resized or maximized. ---- */
+
+@container spotify-window (min-width: 460px){
+  .spotify-progress-row{ display: flex; }
+}
+@container spotify-window (min-width: 560px){
+  .spotify-player-volume{ display: flex; }
+}
+@container spotify-window (min-width: 640px){
+  .spotify-app-layout{ flex-direction: row; }
+  .spotify-nav{
+    width: 232px;
+    border-right: 1px solid rgba(139,115,85,0.2);
+    flex-shrink: 0;
+  }
+  .spotify-nav-list{ flex-direction: column; }
+  .spotify-nav-item{ width: 100%; border-radius: 8px; }
+  .spotify-nav-library-toggle{ pointer-events: none; opacity: 0.85; }
+  .spotify-library-body{ display: flex !important; }
+  .spotify-track-row{ grid-template-columns: 1.6rem 1fr 1fr auto; }
+  .spotify-track-row-album{ display: block; }
+  .spotify-card-grid{ grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}
+@container spotify-window (min-width: 820px){
+  .spotify-card-grid{ grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; }
+  .spotify-main{ padding: 1.4rem 1.6rem; }
+}
+
+/* Fallback for browsers without container-query support: default to the
+   wide desktop layout once the viewport itself is comfortably large,
+   rather than being stuck compact forever. */
+@supports not (container-type: inline-size){
+  @media (min-width: 900px){
+    .spotify-app-layout{ flex-direction: row; }
+    .spotify-nav{ width: 232px; border-right: 1px solid rgba(139,115,85,0.2); flex-shrink: 0; }
+    .spotify-nav-list{ flex-direction: column; }
+    .spotify-nav-item{ width: 100%; border-radius: 8px; }
+    .spotify-library-body{ display: flex !important; }
+    .spotify-progress-row{ display: flex; }
+    .spotify-player-volume{ display: flex; }
+  }
+}
 
 /* ---------------------------- Responsive ---------------------------- */
 
 @media (max-width: 960px){
   .games-layout{ grid-template-columns: 1fr; }
   .leaderboard{ position: static; }
+  /* .games-sidebar is no longer a narrow fixed column here, so the Spotify
+     window's docked max-width (otherwise capped to avoid overlapping the
+     games column beside it) can relax — there's nothing beside it to
+     overlap once the layout stacks to one column. */
+  .spotify-window{ max-width: min(720px, 96vw); }
 }
 
 @media (max-width: 800px){

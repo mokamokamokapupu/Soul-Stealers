@@ -210,9 +210,10 @@ talks to a real third-party API, so it gets its own threat-model writeup.
   (written with `0o600` permissions, like the room password hashes) and are
   never included in any API response to the browser — the frontend only
   ever learns *whether* a username is connected, and to whom.
-- **Trusting a playlist id as a raw path segment.** `GET
-  /api/spotify/playlists/<id>/tracks` validates the id against Spotify's own
-  id shape (`^[A-Za-z0-9]{1,64}$`) before it's ever interpolated into the
+- **Trusting a playlist/album/artist id as a raw path segment.** `GET
+  /api/spotify/playlists/<id>/tracks`, `/api/spotify/albums/<id>`, and
+  `/api/spotify/artists/<id>` all validate the id against Spotify's own id
+  shape (`^[A-Za-z0-9]{1,64}$`) before it's ever interpolated into the
   outbound request path to `api.spotify.com` — the same "allow-list, not
   block-list" rule as usernames and every other piece of user input in this
   app (section 4).
@@ -224,6 +225,36 @@ authorization time, so an account connected before this scope was added
 needs to reconnect once (disconnect, then "Connect Spotify" again) before
 its playlists will load; search and playback control keep working
 regardless.
+
+**2026-08-31 fix — playlist tracks weren't loading.** `GET
+/api/spotify/playlists/<id>/tracks` was calling Spotify's now-deprecated
+`GET /v1/playlists/{id}/tracks` with a `fields` filter written for an older
+response shape (`track(...)`). Spotify's current schema nests the actual
+track under `item`, not `track` (a playlist item can also be a podcast
+episode, hence the more generic field name), so the filter was selecting a
+field that no longer exists. Fixed by switching to the current,
+non-deprecated `GET /v1/playlists/{id}/items` endpoint and the current field
+name — no scope, auth, or trust-boundary change, this was a response-shape
+bug, not a security issue. The same audit turned up a second bug: `GET
+/api/spotify/search` was requesting `limit=12`, which is out of Spotify's
+current documented 0–10 range for `/v1/search`, causing every search to be
+rejected; fixed by requesting a value inside that range (and, since this
+touched search anyway, it now returns categorized tracks/artists/albums/
+playlists in one call instead of tracks only). Every Spotify API call that
+comes back with an unexpected status now also logs the status and a short
+response snippet server-side (`logSpotifyIssue` in `server.js`, never the
+access token itself), so a future regression like this shows up in the
+server logs immediately instead of only as a generic error message in the
+UI.
+
+**New endpoints, same trust model.** `POST /api/spotify/volume` and `POST
+/api/spotify/seek` follow the exact same pattern as the existing playback
+endpoints (`play`/`pause`/`next`/`previous`): CSRF-protected, throttled via
+`spotifyTooFast`, and proxy a single Spotify Web API call with no new state
+stored anywhere. `GET /api/spotify/artists/<id>` and `GET
+/api/spotify/albums/<id>` are read-only catalog lookups (no additional scope
+required beyond what's already requested) added for the redesigned window's
+artist/album pages.
 
 **What happens if Spotify itself revokes access** (the user disconnects the
 app from their Spotify account settings, rather than clicking "disconnect"

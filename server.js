@@ -913,6 +913,20 @@ function spotifyApiRequest(method, urlPath, accessToken, bodyObj) {
   return httpsRequestJson({ hostname: 'api.spotify.com', path: urlPath, method, headers }, body);
 }
 
+/** Logs the real status + response body snippet behind a Spotify API call
+ * that didn't come back the way we expected, so failures are visible in the
+ * server logs instead of only ever reaching the client as a generic
+ * "Search failed." / "Could not load that playlist." message. Never logs
+ * the access token itself. Keeps the snippet short since playlist/search
+ * responses can be large. */
+function logSpotifyIssue(context, status, json) {
+  let snippet = '(no body)';
+  try {
+    if (json !== null && json !== undefined) snippet = JSON.stringify(json).slice(0, 500);
+  } catch (e) { snippet = '(body not serializable)'; }
+  console.error('[spotify] ' + context + ' -> HTTP ' + status + ' ' + snippet);
+}
+
 /** Returns a valid access token for this room/username, refreshing it first
  * if it's expired or close to it — or null if there's no connection, or the
  * refresh itself fails (the stale connection is dropped in that case, same
@@ -929,6 +943,7 @@ async function ensureFreshSpotifyToken(roomState, key) {
       refresh_token: rec.refreshToken,
     });
     if (status !== 200 || !json || !json.access_token) {
+      logSpotifyIssue('token refresh for ' + key, status, json);
       delete roomState.spotifyTokens[key];
       roomState.spotifyDirty = true;
       return null;
@@ -996,13 +1011,51 @@ function simplifyPlaylist(p) {
   };
 }
 
-// A playlist "track" item from GET /v1/playlists/{id}/tracks wraps the
-// actual track one level deeper (`item.track`), and can be null for a
-// track that's since been removed from Spotify's catalog entirely —
-// filtered out by the caller rather than rendered as a blank row.
-function simplifyPlaylistItem(item) {
-  if (!item || !item.track || item.is_local) return null;
-  return simplifyTrack(item.track);
+function simplifyArtist(a) {
+  if (!a) return null;
+  const images = Array.isArray(a.images) ? a.images : [];
+  const art = images.length ? (images[Math.min(1, images.length - 1)] || images[0]).url : null;
+  return {
+    id: a.id,
+    uri: a.uri,
+    name: a.name,
+    genres: Array.isArray(a.genres) ? a.genres.slice(0, 3) : [],
+    image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
+  };
+}
+
+function simplifyAlbum(al) {
+  if (!al) return null;
+  const images = Array.isArray(al.images) ? al.images : [];
+  const art = images.length ? (images[Math.min(1, images.length - 1)] || images[0]).url : null;
+  return {
+    id: al.id,
+    uri: al.uri,
+    name: al.name,
+    artists: Array.isArray(al.artists) ? al.artists.map((a) => a.name).join(', ') : '',
+    year: al.release_date ? String(al.release_date).slice(0, 4) : '',
+    totalTracks: al.total_tracks || 0,
+    image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
+  };
+}
+
+// A playlist item from GET /v1/playlists/{id}/items (the endpoint Spotify's
+// own docs now point to — the older /v1/playlists/{id}/tracks path it
+// replaces is marked deprecated there, and its current response schema
+// already uses the same field name below) wraps the actual track one level
+// deeper. Older Spotify docs/snapshots called that nested field `track`;
+// the current schema calls it `item` (since a playlist item can also be a
+// podcast episode) — this checks both so it keeps working either way.
+// It's null for a track that's since been removed from Spotify's catalog
+// entirely, and is_local flags a locally-uploaded file with no streamable
+// audio — both are filtered out by the caller rather than rendered as a
+// blank/broken row. A podcast episode (type !== 'track') is skipped too,
+// since this app only plays tracks.
+function simplifyPlaylistItem(entry) {
+  if (!entry || entry.is_local) return null;
+  const t = entry.item || entry.track;
+  if (!t || (t.type && t.type !== 'track')) return null;
+  return simplifyTrack(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,9 +1521,11 @@ async function handleApi(req, res, pathname) {
         redirect_uri: spotifyRedirectUri(req),
       });
     } catch (e) {
+      console.error('[spotify] callback token exchange threw', e && e.message);
       return redirectHome('error');
     }
     if (tokenRes.status !== 200 || !tokenRes.json || !tokenRes.json.access_token) {
+      logSpotifyIssue('callback token exchange', tokenRes.status, tokenRes.json);
       return redirectHome('error');
     }
 
@@ -1556,7 +1611,10 @@ async function handleApi(req, res, pathname) {
     }
   }
 
-  // GET /api/spotify/now-playing
+  // GET /api/spotify/now-playing — uses /v1/me/player (the full playback
+  // state) rather than /v1/me/player/currently-playing, specifically
+  // because the latter omits `device`, and the player bar's volume slider
+  // needs the active device's current volume_percent to render correctly.
   if (pathname === '/api/spotify/now-playing' && req.method === 'GET') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
@@ -1566,21 +1624,169 @@ async function handleApi(req, res, pathname) {
     if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
 
     try {
-      const { status, json } = await spotifyApiRequest('GET', '/v1/me/player/currently-playing', token);
+      const { status, json } = await spotifyApiRequest('GET', '/v1/me/player', token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
-      if (status === 204 || !json) return sendJson(res, 200, { connected: true, playing: false, track: null });
+      if (status === 204 || !json) return sendJson(res, 200, { connected: true, playing: false, track: null, volumePercent: null, shuffle: false, repeat: 'off' });
       return sendJson(res, 200, {
         connected: true,
         playing: Boolean(json.is_playing),
         progressMs: json.progress_ms || 0,
         track: simplifyTrack(json.item),
+        volumePercent: (json.device && typeof json.device.volume_percent === 'number') ? json.device.volume_percent : null,
+        shuffle: Boolean(json.shuffle_state),
+        repeat: typeof json.repeat_state === 'string' ? json.repeat_state : 'off',
       });
+    } catch (e) {
+      console.error('[spotify] now-playing threw', e && e.message);
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/volume — body: { percent: 0-100 }.
+  if (pathname === '/api/spotify/volume' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const percent = Math.round(Number(body.percent));
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) return sendJson(res, 400, { error: 'Invalid volume' });
+
+    try {
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/volume?volume_percent=' + percent, token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status === 403) return sendJson(res, 409, { error: 'Volume control needs Spotify Premium.' });
+      if (status >= 400) { logSpotifyIssue('volume', status, null); return sendJson(res, 502, { error: 'Spotify could not change the volume.' }); }
+      return sendJson(res, 200, { ok: true });
     } catch (e) {
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
     }
   }
 
+  // POST /api/spotify/seek — body: { positionMs: 0-... }. Lets the player
+  // bar's progress track be click-to-seek, like the real Spotify player.
+  if (pathname === '/api/spotify/seek' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const positionMs = Math.round(Number(body.positionMs));
+    if (!Number.isFinite(positionMs) || positionMs < 0) return sendJson(res, 400, { error: 'Invalid position' });
+
+    try {
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/seek?position_ms=' + positionMs, token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status === 403) return sendJson(res, 409, { error: 'Seeking needs Spotify Premium.' });
+      if (status >= 400) { logSpotifyIssue('seek', status, null); return sendJson(res, 502, { error: 'Spotify could not seek that.' }); }
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // GET /api/spotify/artists/<id> — artist header info + their top tracks,
+  // for the Artist page in the redesigned window. `market=from_token` asks
+  // Spotify to use the connected account's own market, which top-tracks
+  // requires and which we don't otherwise track ourselves.
+  if (pathname.startsWith('/api/spotify/artists/') && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    const artistId = pathname.slice('/api/spotify/artists/'.length);
+    if (!/^[A-Za-z0-9]{1,64}$/.test(artistId)) return sendJson(res, 400, { error: 'Invalid artist id' });
+
+    try {
+      const [artistRes, topRes, albumsRes] = await Promise.all([
+        spotifyApiRequest('GET', '/v1/artists/' + artistId, token),
+        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/top-tracks?market=from_token', token),
+        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?include_groups=album,single&limit=20', token),
+      ]);
+      if (artistRes.status === 401 || topRes.status === 401 || albumsRes.status === 401) {
+        dropSpotifyConnection(roomState, key);
+        return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+      }
+      if (artistRes.status === 404) return sendJson(res, 404, { error: 'Artist not found.' });
+      if (artistRes.status !== 200 || !artistRes.json) {
+        logSpotifyIssue('artist ' + artistId, artistRes.status, artistRes.json);
+        return sendJson(res, 502, { error: 'Could not load that artist.' });
+      }
+      return sendJson(res, 200, {
+        artist: simplifyArtist(artistRes.json),
+        topTracks: topRes.status === 200 && topRes.json ? (topRes.json.tracks || []).map(simplifyTrack).filter(Boolean) : [],
+        albums: albumsRes.status === 200 && albumsRes.json ? (albumsRes.json.items || []).map(simplifyAlbum).filter(Boolean) : [],
+      });
+    } catch (e) {
+      console.error('[spotify] artist ' + artistId + ' threw', e && e.message);
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // GET /api/spotify/albums/<id> — album header info + full track list, for
+  // the Album page. Unlike playlist tracks, /v1/albums/{id} returns the
+  // complete track list inline (paginated only past 50 tracks, which is
+  // rare for an album), and those track objects don't carry their own
+  // `album` field back (it's implied), so simplifyTrack is fed a synthetic
+  // one built from the album header — otherwise every row would render
+  // with a blank album name/art.
+  if (pathname.startsWith('/api/spotify/albums/') && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    const albumId = pathname.slice('/api/spotify/albums/'.length);
+    if (!/^[A-Za-z0-9]{1,64}$/.test(albumId)) return sendJson(res, 400, { error: 'Invalid album id' });
+
+    try {
+      const { status, json } = await spotifyApiRequest('GET', '/v1/albums/' + albumId, token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 404, { error: 'Album not found.' });
+      if (status !== 200 || !json) {
+        logSpotifyIssue('album ' + albumId, status, json);
+        return sendJson(res, 502, { error: 'Could not load that album.' });
+      }
+      const albumStub = { name: json.name, images: json.images };
+      const tracks = (json.tracks && Array.isArray(json.tracks.items) ? json.tracks.items : [])
+        .map((t) => (t ? simplifyTrack(Object.assign({}, t, { album: t.album || albumStub })) : null))
+        .filter(Boolean);
+      return sendJson(res, 200, { album: simplifyAlbum(json), tracks });
+    } catch (e) {
+      console.error('[spotify] album ' + albumId + ' threw', e && e.message);
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
   // GET /api/spotify/search?q=...
+  //
+  // Root-caused 2026-08-31: this used to request `limit=12` with a single
+  // `type=track`. Spotify's *current* /v1/search docs cap `limit` at 0-10
+  // per item type (default 5) — 12 is out of range, so Spotify was
+  // rejecting the request outright and every search attempt fell straight
+  // into the generic "Search failed." branch below, regardless of query.
+  // Fixed by clamping to a safe in-range limit, and while touching this,
+  // expanded to a real categorized search (tracks/artists/albums/playlists
+  // in one call) instead of tracks only, per Spotify's own search UI model.
   if (pathname === '/api/spotify/search' && req.method === 'GET') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
@@ -1591,15 +1797,22 @@ async function handleApi(req, res, pathname) {
 
     const url = new URL(req.url, 'http://internal');
     const q = sanitizeText(url.searchParams.get('q') || '', 200);
-    if (!q) return sendJson(res, 200, { results: [] });
+    if (!q) return sendJson(res, 200, { tracks: [], artists: [], albums: [], playlists: [] });
 
     try {
-      const qs = new URLSearchParams({ q, type: 'track', limit: '12' }).toString();
+      const qs = new URLSearchParams({ q, type: 'track,artist,album,playlist', limit: '8' }).toString();
       const { status, json } = await spotifyApiRequest('GET', '/v1/search?' + qs, token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
-      if (status !== 200 || !json || !json.tracks) return sendJson(res, 502, { error: 'Search failed.' });
-      return sendJson(res, 200, { results: (json.tracks.items || []).map(simplifyTrack) });
+      if (status === 429) return sendJson(res, 429, { error: 'Spotify is rate-limiting this connection — try again in a moment.' });
+      if (status !== 200 || !json) { logSpotifyIssue('search q="' + q + '"', status, json); return sendJson(res, 502, { error: 'Search failed.' }); }
+      return sendJson(res, 200, {
+        tracks: json.tracks ? (json.tracks.items || []).map(simplifyTrack).filter(Boolean) : [],
+        artists: json.artists ? (json.artists.items || []).map(simplifyArtist).filter(Boolean) : [],
+        albums: json.albums ? (json.albums.items || []).map(simplifyAlbum).filter(Boolean) : [],
+        playlists: json.playlists ? (json.playlists.items || []).map(simplifyPlaylist).filter(Boolean) : [],
+      });
     } catch (e) {
+      console.error('[spotify] search q="' + q + '" threw', e && e.message);
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
     }
   }
@@ -1625,7 +1838,7 @@ async function handleApi(req, res, pathname) {
       const qs = new URLSearchParams({ limit: '20', offset: String(offset) }).toString();
       const { status, json } = await spotifyApiRequest('GET', '/v1/me/playlists?' + qs, token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
-      if (status !== 200 || !json || !Array.isArray(json.items)) return sendJson(res, 502, { error: 'Could not load playlists.' });
+      if (status !== 200 || !json || !Array.isArray(json.items)) { logSpotifyIssue('playlists offset=' + offset, status, json); return sendJson(res, 502, { error: 'Could not load playlists.' }); }
       return sendJson(res, 200, {
         playlists: json.items.map(simplifyPlaylist).filter(Boolean),
         nextOffset: json.next ? offset + json.items.length : null,
@@ -1638,7 +1851,22 @@ async function handleApi(req, res, pathname) {
   // GET /api/spotify/playlists/<id>/tracks?offset=0 — 50 tracks at a time
   // from one playlist. The id is validated against Spotify's own id shape
   // (base-62, 22 chars) before it's ever interpolated into the outbound
-  // API path.
+  // API path. (Our own route path keeps saying "/tracks" — that's just our
+  // API, unchanged for the frontend — but the outbound call to Spotify
+  // below now targets their current endpoint, see note.)
+  //
+  // Root-caused 2026-08-31: this was calling the now-deprecated
+  // GET /v1/playlists/{id}/tracks with a `fields` filter written for an
+  // older response shape (`track(...)`). Spotify's current schema for a
+  // playlist item — confirmed straight from their live API reference docs,
+  // including on the deprecated endpoint's own current page — nests the
+  // actual track under `item`, not `track` (a playlist item can also be a
+  // podcast episode, hence the more generic name). Filtering by a field
+  // name (`track`) that no longer exists in the schema is why this call was
+  // coming back malformed/failing while /v1/me/playlists (which doesn't use
+  // that field at all) kept working fine. Fixed by switching to the
+  // current, non-deprecated GET /v1/playlists/{id}/items endpoint and
+  // requesting `item(...)` instead of `track(...)`.
   if (pathname.startsWith('/api/spotify/playlists/') && pathname.endsWith('/tracks') && req.method === 'GET') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
@@ -1652,19 +1880,24 @@ async function handleApi(req, res, pathname) {
 
     const url = new URL(req.url, 'http://internal');
     const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-    const fields = 'items(is_local,track(id,uri,name,duration_ms,artists(name),album(name,images))),next';
+    const fields = 'items(is_local,item(id,uri,name,type,duration_ms,artists(name),album(name,images))),next';
 
     try {
       const qs = new URLSearchParams({ limit: '50', offset: String(offset), fields }).toString();
-      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/tracks?' + qs, token);
+      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/items?' + qs, token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 404, { error: 'Playlist not found.' });
-      if (status !== 200 || !json || !Array.isArray(json.items)) return sendJson(res, 502, { error: 'Could not load that playlist.' });
+      if (status === 429) return sendJson(res, 429, { error: 'Spotify is rate-limiting this connection — try again in a moment.' });
+      if (status !== 200 || !json || !Array.isArray(json.items)) {
+        logSpotifyIssue('playlist ' + playlistId + ' items offset=' + offset, status, json);
+        return sendJson(res, 502, { error: 'Could not load that playlist.' });
+      }
       return sendJson(res, 200, {
         tracks: json.items.map(simplifyPlaylistItem).filter(Boolean),
         nextOffset: json.next ? offset + json.items.length : null,
       });
     } catch (e) {
+      console.error('[spotify] playlist ' + playlistId + ' items offset=' + offset + ' threw', e && e.message);
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
     }
   }
@@ -1696,7 +1929,7 @@ async function handleApi(req, res, pathname) {
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status === 403) return sendJson(res, 409, { error: 'Playback control needs Spotify Premium.' });
-      if (status >= 400) return sendJson(res, 502, { error: 'Spotify could not play that.' });
+      if (status >= 400) { logSpotifyIssue('play', status, null); return sendJson(res, 502, { error: 'Spotify could not play that.' }); }
       return sendJson(res, 200, { ok: true });
     } catch (e) {
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
@@ -1718,7 +1951,7 @@ async function handleApi(req, res, pathname) {
       const { status } = await spotifyApiRequest('PUT', '/v1/me/player/pause', token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
-      if (status >= 400 && status !== 403) return sendJson(res, 502, { error: 'Spotify could not pause that.' });
+      if (status >= 400 && status !== 403) { logSpotifyIssue('pause', status, null); return sendJson(res, 502, { error: 'Spotify could not pause that.' }); }
       return sendJson(res, 200, { ok: true });
     } catch (e) {
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
@@ -1740,7 +1973,7 @@ async function handleApi(req, res, pathname) {
       const { status } = await spotifyApiRequest('POST', '/v1/me/player/next', token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
-      if (status >= 400) return sendJson(res, 502, { error: 'Spotify could not skip that.' });
+      if (status >= 400) { logSpotifyIssue('next', status, null); return sendJson(res, 502, { error: 'Spotify could not skip that.' }); }
       return sendJson(res, 200, { ok: true });
     } catch (e) {
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
@@ -1762,7 +1995,7 @@ async function handleApi(req, res, pathname) {
       const { status } = await spotifyApiRequest('POST', '/v1/me/player/previous', token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
-      if (status >= 400) return sendJson(res, 502, { error: 'Spotify could not go back.' });
+      if (status >= 400) { logSpotifyIssue('previous', status, null); return sendJson(res, 502, { error: 'Spotify could not go back.' }); }
       return sendJson(res, 200, { ok: true });
     } catch (e) {
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });
