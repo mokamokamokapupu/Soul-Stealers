@@ -2092,8 +2092,14 @@ async function handleApi(req, res, pathname) {
   }
 
   // POST /api/spotify/play — body may include { uri } to start one
-  // specific track, { contextUri } to start a whole playlist/album, or be
-  // empty to resume whatever was last playing.
+  // specific standalone track (search results, artist top tracks — no
+  // queue/auto-advance beyond it), { contextUri } to start a whole
+  // playlist/album from the top, { contextUri, offsetUri } to start that
+  // same playlist/album but from one specific track onward — this is what
+  // lets clicking a song inside a playlist queue up and auto-advance
+  // through the rest of it, exactly like the real Spotify app, instead of
+  // stopping dead after that one track. Or the body can be empty to resume
+  // whatever was last playing.
   if (pathname === '/api/spotify/play' && req.method === 'POST') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
@@ -2107,10 +2113,13 @@ async function handleApi(req, res, pathname) {
     let body;
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
     let bodyObj;
-    if (typeof body.uri === 'string' && body.uri.startsWith('spotify:track:')) {
-      bodyObj = { uris: [body.uri] };
-    } else if (typeof body.contextUri === 'string' && /^spotify:(playlist|album):[A-Za-z0-9]+$/.test(body.contextUri)) {
+    if (typeof body.contextUri === 'string' && /^spotify:(playlist|album):[A-Za-z0-9]+$/.test(body.contextUri)) {
       bodyObj = { context_uri: body.contextUri };
+      if (typeof body.offsetUri === 'string' && /^spotify:track:[A-Za-z0-9]+$/.test(body.offsetUri)) {
+        bodyObj.offset = { uri: body.offsetUri };
+      }
+    } else if (typeof body.uri === 'string' && body.uri.startsWith('spotify:track:')) {
+      bodyObj = { uris: [body.uri] };
     }
     const devId = spotifyDeviceIdOrFalse(body.deviceId);
     if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
@@ -2202,6 +2211,71 @@ async function handleApi(req, res, pathname) {
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
       if (status >= 400) { logSpotifyIssue('previous', status, null); return sendJson(res, 502, { error: 'Spotify could not go back.' }); }
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/shuffle — body: { state: boolean }. Toggles Spotify's
+  // own shuffle mode for the active context (playlist/album), same as the
+  // shuffle control in the real app — this app doesn't reimplement
+  // shuffling itself, it just flips Spotify's own flag.
+  if (pathname === '/api/spotify/shuffle' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const state = Boolean(body.state);
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
+
+    try {
+      const { status } = await spotifyApiRequest('PUT', '/v1/me/player/shuffle?state=' + state + (devId ? '&device_id=' + devId : ''), token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status === 403) return sendJson(res, 409, { error: 'Shuffle needs Spotify Premium.' });
+      if (status >= 400) { logSpotifyIssue('shuffle', status, null); return sendJson(res, 502, { error: 'Spotify could not change shuffle.' }); }
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/queue — body: { uri }. Adds one track to the end of
+  // Spotify's own play queue for the active device, without interrupting
+  // whatever's currently playing.
+  if (pathname === '/api/spotify/queue' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    if (typeof body.uri !== 'string' || !/^spotify:track:[A-Za-z0-9]+$/.test(body.uri)) {
+      return sendJson(res, 400, { error: 'Invalid track' });
+    }
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
+
+    try {
+      const { status } = await spotifyApiRequest('POST', '/v1/me/player/queue?uri=' + encodeURIComponent(body.uri) + (devId ? '&device_id=' + devId : ''), token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status === 403) return sendJson(res, 409, { error: 'Queueing needs Spotify Premium.' });
+      if (status >= 400) { logSpotifyIssue('queue', status, null); return sendJson(res, 502, { error: 'Spotify could not queue that.' }); }
       return sendJson(res, 200, { ok: true });
     } catch (e) {
       return sendJson(res, 502, { error: 'Could not reach Spotify.' });

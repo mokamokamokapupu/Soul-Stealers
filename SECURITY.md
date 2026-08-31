@@ -355,6 +355,24 @@ EME/DRM handshake, actual sound). If the browser console shows a CSP
 "Refused to connect" violation once this is live, it will name the exact
 host to add.
 
+**2026-08-31 addition — playlist/album auto-advance, shuffle, and queue.**
+Clicking a track inside a playlist or album previously sent Spotify a bare
+`{ uris: [trackUri] }` play request — a single track with no context, so
+Spotify had nothing queued up once it ended. `POST /api/spotify/play` now
+also accepts an `offsetUri` alongside `contextUri`, forwarded as Spotify's
+own `offset: { uri }` on top of `context_uri`; Spotify then queues and
+auto-advances through the rest of that playlist/album on its own, the same
+way the real app works. This intentionally does not apply to standalone
+plays (search results, an artist's top tracks) — those still send a bare
+track with no context, matching the request that asked for this. `POST
+/api/spotify/shuffle` and `POST /api/spotify/queue` are two small new
+endpoints that follow the exact same pattern as every other playback route
+in this section (session-gated, CSRF-protected, throttled via
+`spotifyTooFast`, optional `deviceId` targeting, no new state stored
+anywhere) — they just flip Spotify's own shuffle flag and append to
+Spotify's own queue; neither is reimplemented locally. No new scope is
+required — `user-modify-playback-state` (already requested) covers both.
+
 ## Network privacy / "untraceability"
 
 This app follows standard privacy hygiene rather than anything built to

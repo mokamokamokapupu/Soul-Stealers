@@ -1258,6 +1258,7 @@
   var spotifyTrackName = document.getElementById('spotify-track-name');
   var spotifyTrackArtists = document.getElementById('spotify-track-artists');
   var spotifyNothingPlaying = document.getElementById('spotify-nothing-playing');
+  var spotifyShuffleBtn = document.getElementById('spotify-shuffle');
   var spotifyPrevBtn = document.getElementById('spotify-prev');
   var spotifyToggleBtn = document.getElementById('spotify-toggle');
   var spotifyNextBtn = document.getElementById('spotify-next');
@@ -1270,6 +1271,8 @@
 
   var spotifyConnected = false;
   var spotifyPlaying = false;
+  var spotifyShuffleOn = false;
+  var spotifyShuffleToggling = false;
   var spotifyPollTimer = null;
   var spotifyProgressTimer = null;
   var spotifyProgressMs = 0;
@@ -1345,6 +1348,8 @@
     spotifyTracksNextOffset = null;
     spotifyCurrentAlbumId = null;
     spotifyCurrentArtistId = null;
+    spotifyShuffleOn = false;
+    if (spotifyShuffleBtn) spotifyShuffleBtn.setAttribute('aria-pressed', 'false');
     if (spotifyPlaylistsListEl) { spotifyPlaylistsListEl.innerHTML = ''; spotifyPlaylistsListEl.hidden = true; }
     if (spotifyHomeGrid) spotifyHomeGrid.innerHTML = '';
     if (spotifySearchInput) spotifySearchInput.value = '';
@@ -1416,6 +1421,13 @@
       if (typeof data.volumePercent === 'number' && !spotifyDraggingVolume && spotifyVolumeSlider) {
         spotifyVolumeSlider.value = String(data.volumePercent);
         spotifyUpdateVolumeIcon(data.volumePercent);
+      }
+      // Mirrors Spotify's own shuffle state (it can be turned on/off from
+      // any of the user's devices, not just this tab), unless a click here
+      // just changed it and that request hasn't resolved yet.
+      if (typeof data.shuffle === 'boolean' && !spotifyShuffleToggling && spotifyShuffleBtn) {
+        spotifyShuffleOn = data.shuffle;
+        spotifyShuffleBtn.setAttribute('aria-pressed', spotifyShuffleOn ? 'true' : 'false');
       }
     } catch (e) { /* transient — next poll picks it back up */ }
   }
@@ -1659,6 +1671,37 @@
     spotifyNextBtn.addEventListener('click', function () { spotifyTransport('next', 'Could not skip.'); });
   }
 
+  if (spotifyShuffleBtn) {
+    spotifyShuffleBtn.addEventListener('click', async function () {
+      var next = !spotifyShuffleOn;
+      spotifyShuffleOn = next;
+      spotifyShuffleToggling = true;
+      spotifyShuffleBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+      setSpotifyStatusMsg('');
+      try {
+        var res = await fetch('/api/spotify/shuffle', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify(spotifyDeviceId ? { state: next, deviceId: spotifyDeviceId } : { state: next }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+          // Revert the optimistic toggle — Spotify didn't actually apply it.
+          spotifyShuffleOn = !next;
+          spotifyShuffleBtn.setAttribute('aria-pressed', spotifyShuffleOn ? 'true' : 'false');
+          setSpotifyStatusMsg(data.error || 'Could not change shuffle.');
+          if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        }
+      } catch (e) {
+        spotifyShuffleOn = !next;
+        spotifyShuffleBtn.setAttribute('aria-pressed', spotifyShuffleOn ? 'true' : 'false');
+        setSpotifyStatusMsg('Could not reach Spotify.');
+      }
+      spotifyShuffleToggling = false;
+    });
+  }
+
   if (spotifyProgressTrack) {
     spotifyProgressTrack.addEventListener('click', async function (e) {
       if (!spotifyDurationMs || !spotifyPlaying) return;
@@ -1745,6 +1788,36 @@
   }
   function playSpotifyTrack(uri) { playSpotify({ uri: uri }); }
   function playSpotifyContext(contextUri) { playSpotify({ contextUri: contextUri }); }
+  // Plays one track from within a playlist/album context (contextUri) —
+  // Spotify then queues and auto-advances through the rest of that
+  // context on its own, exactly like clicking a song in the real app.
+  // Standalone plays (search results, artist top tracks) intentionally
+  // keep using playSpotifyTrack above instead, with no context at all.
+  function playSpotifyContextTrack(contextUri, offsetUri) { playSpotify({ contextUri: contextUri, offsetUri: offsetUri }); }
+
+  var spotifyQueueMsgTimer = null;
+  async function spotifyQueueTrack(uri) {
+    setSpotifyStatusMsg('');
+    if (spotifyQueueMsgTimer) { clearTimeout(spotifyQueueMsgTimer); spotifyQueueMsgTimer = null; }
+    try {
+      var res = await fetch('/api/spotify/queue', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify(spotifyDeviceId ? { uri: uri, deviceId: spotifyDeviceId } : { uri: uri }),
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        setSpotifyStatusMsg(data.error || 'Could not add that to the queue.');
+        if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        return;
+      }
+      setSpotifyStatusMsg('Added to queue.');
+      spotifyQueueMsgTimer = setTimeout(function () { setSpotifyStatusMsg(''); }, 2500);
+    } catch (e) {
+      setSpotifyStatusMsg('Could not reach Spotify.');
+    }
+  }
 
   // ---------------------------------------------------------------------
   // Row/card builders. Every interactive row/card is a real <button> (never
@@ -1756,7 +1829,7 @@
 
   // A numbered track row for a table (playlist/album/artist top tracks/
   // search songs): index, small art, name+artist, optional album, duration.
-  function buildTrackTableRow(track, index, onPlay) {
+  function buildTrackTableRow(track, index, onPlay, onQueue) {
     var li = document.createElement('li');
     var btn = document.createElement('button');
     btn.type = 'button';
@@ -1801,6 +1874,20 @@
     btn.appendChild(duration);
     btn.addEventListener('click', function () { onPlay(track); });
     li.appendChild(btn);
+
+    if (onQueue) {
+      var queueBtn = document.createElement('button');
+      queueBtn.type = 'button';
+      queueBtn.className = 'spotify-track-queue-btn';
+      queueBtn.setAttribute('aria-label', 'Add ' + (track.name || 'track') + ' to queue');
+      queueBtn.title = 'Add to queue';
+      queueBtn.textContent = '+';
+      queueBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        onQueue(track);
+      });
+      li.appendChild(queueBtn);
+    }
     return li;
   }
 
@@ -2017,7 +2104,7 @@
       }
       setSpotifySearchStatus('');
       if (tracks.length) {
-        tracks.forEach(function (t, i) { spotifySearchTracksEl.appendChild(buildTrackTableRow(t, i + 1, function (tt) { playSpotifyTrack(tt.uri); })); });
+        tracks.forEach(function (t, i) { spotifySearchTracksEl.appendChild(buildTrackTableRow(t, i + 1, function (tt) { playSpotifyTrack(tt.uri); }, function (tt) { spotifyQueueTrack(tt.uri); })); });
         spotifySearchTracksSection.hidden = false;
       }
       if (artists.length) {
@@ -2097,7 +2184,14 @@
       setSpotifyPlaylistTracksStatus('');
       var startIdx = spotifyPlaylistTracksEl.children.length;
       tracks.forEach(function (track, i) {
-        spotifyPlaylistTracksEl.appendChild(buildTrackTableRow(track, startIdx + i + 1, function (t) { playSpotifyTrack(t.uri); }));
+        spotifyPlaylistTracksEl.appendChild(buildTrackTableRow(track, startIdx + i + 1, function (t) {
+          // Play within the playlist's own context so Spotify queues and
+          // auto-advances through the rest of the playlist afterward,
+          // instead of stopping once this one track ends.
+          var contextUri = spotifyCurrentPlaylist && spotifyCurrentPlaylist.uri;
+          if (contextUri) playSpotifyContextTrack(contextUri, t.uri);
+          else playSpotifyTrack(t.uri);
+        }, function (t) { spotifyQueueTrack(t.uri); }));
       });
       spotifyPlaylistTracksEl.hidden = false;
       spotifyTracksNextOffset = data.nextOffset;
@@ -2155,7 +2249,13 @@
       }
       setSpotifyAlbumTracksStatus('');
       tracks.forEach(function (track, i) {
-        spotifyAlbumTracksEl.appendChild(buildTrackTableRow(track, i + 1, function (t) { playSpotifyTrack(t.uri); }));
+        spotifyAlbumTracksEl.appendChild(buildTrackTableRow(track, i + 1, function (t) {
+          // Same reasoning as the playlist rows above: play within the
+          // album's own context so it auto-advances through the rest of
+          // the album afterward.
+          if (album.uri) playSpotifyContextTrack(album.uri, t.uri);
+          else playSpotifyTrack(t.uri);
+        }, function (t) { spotifyQueueTrack(t.uri); }));
       });
       spotifyAlbumTracksEl.hidden = false;
     } catch (e) {
@@ -2203,7 +2303,7 @@
       var topTracks = data.topTracks || [];
       if (topTracks.length) {
         topTracks.slice(0, 10).forEach(function (track, i) {
-          spotifyArtistTopTracksEl.appendChild(buildTrackTableRow(track, i + 1, function (t) { playSpotifyTrack(t.uri); }));
+          spotifyArtistTopTracksEl.appendChild(buildTrackTableRow(track, i + 1, function (t) { playSpotifyTrack(t.uri); }, function (t) { spotifyQueueTrack(t.uri); }));
         });
         spotifyArtistTopSection.hidden = false;
       }

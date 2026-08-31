@@ -56,9 +56,18 @@ The games page can link a Spotify account and browse it from a resizable,
 Spotify-desktop-style window right there — Home, categorized search (songs/
 artists/albums/playlists), full playlist and album pages with pagination,
 artist pages, and a persistent player bar (art, transport, seekable progress
-bar, volume). Drag the window's bottom-right corner to resize it, or use the
-maximize button to expand it over most of the page. It's entirely optional
-and off by default; the rest of the app works exactly the same without it.
+bar, volume, shuffle). Drag the window's bottom-right corner to resize it, or
+use the maximize button to expand it over most of the page. It's entirely
+optional and off by default; the rest of the app works exactly the same
+without it.
+
+Playing a song from inside a playlist or album queues up and auto-advances
+through the rest of it afterward, same as the real Spotify app — the shuffle
+button next to the transport controls randomizes that order. Playing a
+standalone track from search results or an artist's top tracks doesn't
+carry a queue with it, by design. Every track row also has a small "+"
+button (shown on hover, or when focused) to add that track to the queue
+without interrupting whatever's currently playing.
 
 To turn it on:
 
