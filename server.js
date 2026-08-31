@@ -37,6 +37,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const zlib = require('zlib');
 const { URL } = require('url');
 
 const ROOT = __dirname;
@@ -88,6 +89,8 @@ const SPOTIFY_SCOPES = [
   'user-read-playback-state',
   'user-read-currently-playing',
   'user-modify-playback-state',
+  'playlist-read-private',
+  'playlist-read-collaborative',
 ].join(' ');
 // Signs the short-lived OAuth `state` param so the callback can be verified
 // (and know which room/username it belongs to) WITHOUT relying on the
@@ -811,14 +814,37 @@ function verifyState(state) {
 
 /** Generic HTTPS JSON request helper (Node built-ins only, no dependency).
  * Resolves { status, json } — `json` is null for an empty (e.g. 204) body
- * or a body that wasn't valid JSON. */
+ * or a body that wasn't valid JSON.
+ *
+ * Explicitly requests (and transparently decodes) gzip/deflate/br: Spotify's
+ * edge compresses larger JSON responses (search results, playlist listings)
+ * even though the small ones (a 204, or the handful of fields from /v1/me)
+ * come back small enough to skip compression — so this bug hid behind
+ * "everything except search/playlists is broken." Without decoding it here,
+ * the compressed bytes fail JSON.parse silently and every caller just sees
+ * `json: null`, which reads as "no results" rather than "wrong bytes." */
 function httpsRequestJson(options, body) {
   return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
+    const reqOptions = Object.assign({}, options, {
+      headers: Object.assign({ 'Accept-Encoding': 'gzip, deflate, br' }, options.headers || {}),
+    });
+    const req = https.request(reqOptions, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
+        const buf = Buffer.concat(chunks);
+        const encoding = (res.headers['content-encoding'] || '').toLowerCase();
+        let decoded;
+        try {
+          if (!buf.length) decoded = buf;
+          else if (encoding === 'gzip') decoded = zlib.gunzipSync(buf);
+          else if (encoding === 'deflate') decoded = zlib.inflateSync(buf);
+          else if (encoding === 'br') decoded = zlib.brotliDecompressSync(buf);
+          else decoded = buf;
+        } catch (e) {
+          decoded = buf; // decoding failed — fall through and let JSON.parse fail cleanly below
+        }
+        const raw = decoded.toString('utf8');
         if (!raw) return resolve({ status: res.statusCode, json: null });
         try {
           resolve({ status: res.statusCode, json: JSON.parse(raw) });
@@ -954,6 +980,29 @@ function simplifyTrack(t) {
     durationMs: t.duration_ms || 0,
     albumArt: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
   };
+}
+
+function simplifyPlaylist(p) {
+  if (!p) return null;
+  const images = Array.isArray(p.images) ? p.images : [];
+  const art = images.length ? (images[Math.min(1, images.length - 1)] || images[0]).url : null;
+  return {
+    id: p.id,
+    uri: p.uri,
+    name: p.name,
+    owner: p.owner ? (p.owner.display_name || p.owner.id || '') : '',
+    trackCount: p.tracks ? (p.tracks.total || 0) : 0,
+    image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
+  };
+}
+
+// A playlist "track" item from GET /v1/playlists/{id}/tracks wraps the
+// actual track one level deeper (`item.track`), and can be null for a
+// track that's since been removed from Spotify's catalog entirely —
+// filtered out by the caller rather than rendered as a blank row.
+function simplifyPlaylistItem(item) {
+  if (!item || !item.track || item.is_local) return null;
+  return simplifyTrack(item.track);
 }
 
 // ---------------------------------------------------------------------------
@@ -1555,8 +1604,74 @@ async function handleApi(req, res, pathname) {
     }
   }
 
-  // POST /api/spotify/play — body may include { uri } to start a specific
-  // track, or be empty to resume whatever was last playing.
+  // GET /api/spotify/playlists?offset=0 — the connected account's own
+  // playlists (owned or followed), 20 at a time. Needs the
+  // playlist-read-private scope, which was added alongside this endpoint —
+  // an account connected before this update needs to reconnect once to
+  // pick up the new scope (Spotify only grants what was actually asked for
+  // at authorization time).
+  if (pathname === '/api/spotify/playlists' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    const url = new URL(req.url, 'http://internal');
+    const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+
+    try {
+      const qs = new URLSearchParams({ limit: '20', offset: String(offset) }).toString();
+      const { status, json } = await spotifyApiRequest('GET', '/v1/me/playlists?' + qs, token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status !== 200 || !json || !Array.isArray(json.items)) return sendJson(res, 502, { error: 'Could not load playlists.' });
+      return sendJson(res, 200, {
+        playlists: json.items.map(simplifyPlaylist).filter(Boolean),
+        nextOffset: json.next ? offset + json.items.length : null,
+      });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // GET /api/spotify/playlists/<id>/tracks?offset=0 — 50 tracks at a time
+  // from one playlist. The id is validated against Spotify's own id shape
+  // (base-62, 22 chars) before it's ever interpolated into the outbound
+  // API path.
+  if (pathname.startsWith('/api/spotify/playlists/') && pathname.endsWith('/tracks') && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    const playlistId = pathname.slice('/api/spotify/playlists/'.length, -'/tracks'.length);
+    if (!/^[A-Za-z0-9]{1,64}$/.test(playlistId)) return sendJson(res, 400, { error: 'Invalid playlist id' });
+
+    const url = new URL(req.url, 'http://internal');
+    const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+    const fields = 'items(is_local,track(id,uri,name,duration_ms,artists(name),album(name,images))),next';
+
+    try {
+      const qs = new URLSearchParams({ limit: '50', offset: String(offset), fields }).toString();
+      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/tracks?' + qs, token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 404, { error: 'Playlist not found.' });
+      if (status !== 200 || !json || !Array.isArray(json.items)) return sendJson(res, 502, { error: 'Could not load that playlist.' });
+      return sendJson(res, 200, {
+        tracks: json.items.map(simplifyPlaylistItem).filter(Boolean),
+        nextOffset: json.next ? offset + json.items.length : null,
+      });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // POST /api/spotify/play — body may include { uri } to start one
+  // specific track, { contextUri } to start a whole playlist/album, or be
+  // empty to resume whatever was last playing.
   if (pathname === '/api/spotify/play' && req.method === 'POST') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
@@ -1569,7 +1684,12 @@ async function handleApi(req, res, pathname) {
 
     let body;
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
-    const bodyObj = typeof body.uri === 'string' && body.uri.startsWith('spotify:track:') ? { uris: [body.uri] } : undefined;
+    let bodyObj;
+    if (typeof body.uri === 'string' && body.uri.startsWith('spotify:track:')) {
+      bodyObj = { uris: [body.uri] };
+    } else if (typeof body.contextUri === 'string' && /^spotify:(playlist|album):[A-Za-z0-9]+$/.test(body.contextUri)) {
+      bodyObj = { context_uri: body.contextUri };
+    }
 
     try {
       const { status } = await spotifyApiRequest('PUT', '/v1/me/player/play', token, bodyObj);

@@ -210,6 +210,20 @@ talks to a real third-party API, so it gets its own threat-model writeup.
   (written with `0o600` permissions, like the room password hashes) and are
   never included in any API response to the browser — the frontend only
   ever learns *whether* a username is connected, and to whom.
+- **Trusting a playlist id as a raw path segment.** `GET
+  /api/spotify/playlists/<id>/tracks` validates the id against Spotify's own
+  id shape (`^[A-Za-z0-9]{1,64}$`) before it's ever interpolated into the
+  outbound request path to `api.spotify.com` — the same "allow-list, not
+  block-list" rule as usernames and every other piece of user input in this
+  app (section 4).
+
+Playlist browsing (search was there from the start) needs two additional
+scopes — `playlist-read-private` and `playlist-read-collaborative` — on top
+of the original set. Spotify only grants what was actually requested at
+authorization time, so an account connected before this scope was added
+needs to reconnect once (disconnect, then "Connect Spotify" again) before
+its playlists will load; search and playback control keep working
+regardless.
 
 **What happens if Spotify itself revokes access** (the user disconnects the
 app from their Spotify account settings, rather than clicking "disconnect"

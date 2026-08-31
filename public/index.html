@@ -898,7 +898,7 @@
           </div>
 
           <div class="spotify-body" id="spotify-body-disconnected" hidden>
-            <p class="spotify-empty-note">Connect your Spotify account to search and control playback from here.</p>
+            <p class="spotify-empty-note">Connect your Spotify account to search for songs, browse playlists, and control playback from here.</p>
             <button type="button" class="spotify-connect-btn" id="spotify-connect-btn">Connect Spotify</button>
           </div>
 
@@ -915,7 +915,7 @@
                 <span class="spotify-track-artists" id="spotify-track-artists"></span>
               </div>
             </div>
-            <p class="spotify-empty-note" id="spotify-nothing-playing">Nothing playing right now — open Spotify on a device, or search below.</p>
+            <p class="spotify-empty-note" id="spotify-nothing-playing">Nothing playing right now — open Spotify on a device, or find something below.</p>
 
             <div class="spotify-controls">
               <button type="button" class="spotify-ctl-btn" id="spotify-prev" title="Previous" aria-label="Previous track">⏮</button>
@@ -923,12 +923,33 @@
               <button type="button" class="spotify-ctl-btn" id="spotify-next" title="Next" aria-label="Next track">⏭</button>
             </div>
 
-            <p class="spotify-status-msg" id="spotify-status-msg" hidden></p>
+            <p class="spotify-status-msg" id="spotify-status-msg" hidden aria-live="polite"></p>
 
-            <form class="spotify-search" id="spotify-search-form">
-              <input type="text" id="spotify-search-input" placeholder="Search a song…" autocomplete="off" maxlength="200">
-            </form>
-            <ul class="spotify-results" id="spotify-results" hidden></ul>
+            <div class="spotify-tabs" role="tablist" aria-label="Browse Spotify">
+              <button type="button" class="spotify-tab is-active" id="spotify-tab-search" role="tab" aria-selected="true" aria-controls="spotify-panel-search" data-tab="search">Search</button>
+              <button type="button" class="spotify-tab" id="spotify-tab-playlists" role="tab" aria-selected="false" aria-controls="spotify-panel-playlists" data-tab="playlists">Playlists</button>
+            </div>
+
+            <div class="spotify-tabpanel" id="spotify-panel-search" role="tabpanel" aria-labelledby="spotify-tab-search">
+              <form class="spotify-search" id="spotify-search-form">
+                <label class="sr-only" for="spotify-search-input">Search Spotify for a song</label>
+                <input type="text" id="spotify-search-input" placeholder="Search a song…" autocomplete="off" maxlength="200">
+              </form>
+              <p class="spotify-list-status" id="spotify-search-status" aria-live="polite">Type to search.</p>
+              <ul class="spotify-track-list" id="spotify-results" hidden></ul>
+            </div>
+
+            <div class="spotify-tabpanel" id="spotify-panel-playlists" role="tabpanel" aria-labelledby="spotify-tab-playlists" hidden>
+              <div class="spotify-playlist-crumb" id="spotify-playlist-crumb" hidden>
+                <button type="button" class="spotify-back-btn" id="spotify-playlist-back">‹ Playlists</button>
+                <button type="button" class="spotify-playall-btn" id="spotify-playlist-playall">Play all</button>
+              </div>
+              <p class="spotify-playlist-current-name" id="spotify-playlist-current-name" hidden></p>
+              <p class="spotify-list-status" id="spotify-playlists-status" aria-live="polite">Loading playlists…</p>
+              <ul class="spotify-track-list" id="spotify-playlists-list" hidden></ul>
+              <ul class="spotify-track-list" id="spotify-playlist-tracks-list" hidden></ul>
+              <button type="button" class="spotify-loadmore-btn" id="spotify-loadmore-btn" hidden>Load more</button>
+            </div>
           </div>
         </aside>
       </div>

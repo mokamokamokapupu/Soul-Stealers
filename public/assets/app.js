@@ -1182,14 +1182,32 @@
   var spotifyToggleBtn = document.getElementById('spotify-toggle');
   var spotifyNextBtn = document.getElementById('spotify-next');
   var spotifyStatusMsg = document.getElementById('spotify-status-msg');
+  var spotifyTabSearch = document.getElementById('spotify-tab-search');
+  var spotifyTabPlaylists = document.getElementById('spotify-tab-playlists');
+  var spotifyPanelSearch = document.getElementById('spotify-panel-search');
+  var spotifyPanelPlaylists = document.getElementById('spotify-panel-playlists');
   var spotifySearchForm = document.getElementById('spotify-search-form');
   var spotifySearchInput = document.getElementById('spotify-search-input');
+  var spotifySearchStatus = document.getElementById('spotify-search-status');
   var spotifyResultsEl = document.getElementById('spotify-results');
+  var spotifyPlaylistCrumb = document.getElementById('spotify-playlist-crumb');
+  var spotifyPlaylistBackBtn = document.getElementById('spotify-playlist-back');
+  var spotifyPlaylistPlayAllBtn = document.getElementById('spotify-playlist-playall');
+  var spotifyPlaylistCurrentName = document.getElementById('spotify-playlist-current-name');
+  var spotifyPlaylistsStatus = document.getElementById('spotify-playlists-status');
+  var spotifyPlaylistsListEl = document.getElementById('spotify-playlists-list');
+  var spotifyPlaylistTracksListEl = document.getElementById('spotify-playlist-tracks-list');
+  var spotifyLoadMoreBtn = document.getElementById('spotify-loadmore-btn');
 
   var spotifyConnected = false;
   var spotifyPlaying = false;
   var spotifyPollTimer = null;
   var spotifySearchDebounce = null;
+  var spotifyActiveTab = 'search';
+  var spotifyPlaylistsLoaded = false;
+  var spotifyPlaylistsNextOffset = null;
+  var spotifyCurrentPlaylist = null; // null = browsing the playlist list itself
+  var spotifyTracksNextOffset = null;
 
   function setSpotifyStatusMsg(msg) {
     if (!spotifyStatusMsg) return;
@@ -1203,6 +1221,7 @@
       var res = await fetch('/api/spotify/status', { credentials: 'same-origin' });
       if (!res.ok) return;
       var data = await res.json();
+      var wasConnected = spotifyConnected;
       spotifyConnected = !!data.connected;
       spotifyBodyDisabled.hidden = !!data.enabled;
       spotifyBodyDisconnected.hidden = !data.enabled || spotifyConnected;
@@ -1211,10 +1230,26 @@
         spotifyAccountName.textContent = data.displayName ? 'Connected as ' + data.displayName : 'Connected';
         startSpotifyPolling();
         refreshNowPlaying();
+        // A fresh connection (including reconnecting after a disconnect)
+        // starts browsing from scratch — old playlist data belonged to
+        // whatever was connected before.
+        if (!wasConnected) resetSpotifyBrowsing();
       } else {
         stopSpotifyPolling();
       }
     } catch (e) { /* transient — tries again next time the games view opens */ }
+  }
+
+  function resetSpotifyBrowsing() {
+    spotifyPlaylistsLoaded = false;
+    spotifyPlaylistsNextOffset = null;
+    spotifyCurrentPlaylist = null;
+    spotifyTracksNextOffset = null;
+    if (spotifyPlaylistsListEl) { spotifyPlaylistsListEl.innerHTML = ''; spotifyPlaylistsListEl.hidden = true; }
+    if (spotifyPlaylistTracksListEl) { spotifyPlaylistTracksListEl.innerHTML = ''; spotifyPlaylistTracksListEl.hidden = true; }
+    if (spotifyResultsEl) { spotifyResultsEl.innerHTML = ''; spotifyResultsEl.hidden = true; }
+    if (spotifySearchInput) spotifySearchInput.value = '';
+    setSpotifySearchStatus('Type to search.');
   }
 
   function startSpotifyPolling() {
@@ -1339,46 +1374,124 @@
     }
   }
 
-  function renderSpotifyResults(results) {
-    spotifyResultsEl.innerHTML = '';
-    if (!results || !results.length) {
-      spotifyResultsEl.hidden = true;
-      return;
-    }
-    results.forEach(function (track) {
-      var li = document.createElement('li');
-      li.className = 'spotify-result-row';
-      var img = document.createElement('img');
-      img.className = 'spotify-result-art';
-      img.alt = '';
-      img.loading = 'lazy';
-      if (track.albumArt) img.src = track.albumArt;
-      var info = document.createElement('div');
-      info.className = 'spotify-result-info';
-      var name = document.createElement('span');
-      name.className = 'spotify-result-name';
-      name.textContent = track.name || ''; // textContent — never innerHTML
-      var artists = document.createElement('span');
-      artists.className = 'spotify-result-artists';
-      artists.textContent = track.artists || '';
-      info.appendChild(name);
-      info.appendChild(artists);
-      li.appendChild(img);
-      li.appendChild(info);
-      li.addEventListener('click', function () { playSpotifyTrack(track.uri); });
-      spotifyResultsEl.appendChild(li);
-    });
-    spotifyResultsEl.hidden = false;
+  // Builds one accessible, keyboard-usable row for a track: a single real
+  // <button> (never a bare clickable <li>, so Tab/Enter/Space work exactly
+  // like a mouse click) with the album art, name, and artists as inert
+  // content, plus a small play glyph that only *looks* like a separate
+  // control — nesting a real button inside a button isn't valid HTML.
+  function buildTrackRow(track, onPlay) {
+    var li = document.createElement('li');
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'spotify-row-btn';
+    btn.setAttribute('aria-label', 'Play ' + (track.name || 'track') + (track.artists ? ' by ' + track.artists : ''));
+    var img = document.createElement('img');
+    img.className = 'spotify-row-art';
+    img.alt = '';
+    img.loading = 'lazy';
+    if (track.albumArt) img.src = track.albumArt;
+    var info = document.createElement('div');
+    info.className = 'spotify-row-info';
+    var name = document.createElement('span');
+    name.className = 'spotify-row-name';
+    name.textContent = track.name || ''; // textContent — never innerHTML
+    var sub = document.createElement('span');
+    sub.className = 'spotify-row-sub';
+    sub.textContent = track.artists || '';
+    info.appendChild(name);
+    info.appendChild(sub);
+    var play = document.createElement('span');
+    play.className = 'spotify-row-play-icon';
+    play.setAttribute('aria-hidden', 'true');
+    play.textContent = '▶';
+    btn.appendChild(img);
+    btn.appendChild(info);
+    btn.appendChild(play);
+    btn.addEventListener('click', function () { onPlay(track); });
+    li.appendChild(btn);
+    return li;
+  }
+
+  // Same row shape, but for a playlist: subtitle is "by X · N songs"
+  // instead of artists, and clicking browses into it rather than playing
+  // it immediately (playing a whole playlist is the explicit "Play all"
+  // button once you're inside it).
+  function buildPlaylistRow(playlist, onOpen) {
+    var li = document.createElement('li');
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'spotify-row-btn';
+    btn.setAttribute('aria-label', 'Open playlist ' + (playlist.name || ''));
+    var img = document.createElement('img');
+    img.className = 'spotify-row-art';
+    img.alt = '';
+    img.loading = 'lazy';
+    if (playlist.image) img.src = playlist.image;
+    var info = document.createElement('div');
+    info.className = 'spotify-row-info';
+    var name = document.createElement('span');
+    name.className = 'spotify-row-name';
+    name.textContent = playlist.name || '';
+    var sub = document.createElement('span');
+    sub.className = 'spotify-row-sub';
+    var count = playlist.trackCount === 1 ? '1 song' : playlist.trackCount + ' songs';
+    sub.textContent = playlist.owner ? playlist.owner + ' · ' + count : count;
+    info.appendChild(name);
+    info.appendChild(sub);
+    var chevron = document.createElement('span');
+    chevron.className = 'spotify-row-play-icon';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '›';
+    btn.appendChild(img);
+    btn.appendChild(info);
+    btn.appendChild(chevron);
+    btn.addEventListener('click', function () { onOpen(playlist); });
+    li.appendChild(btn);
+    return li;
+  }
+
+  function setSpotifySearchStatus(msg) {
+    if (!spotifySearchStatus) return;
+    spotifySearchStatus.textContent = msg || '';
+    spotifySearchStatus.hidden = !msg;
+  }
+
+  function setSpotifyPlaylistsStatus(msg) {
+    if (!spotifyPlaylistsStatus) return;
+    spotifyPlaylistsStatus.textContent = msg || '';
+    spotifyPlaylistsStatus.hidden = !msg;
   }
 
   async function runSpotifySearch(q) {
-    if (!q) { renderSpotifyResults([]); return; }
+    spotifyResultsEl.innerHTML = '';
+    if (!q) {
+      spotifyResultsEl.hidden = true;
+      setSpotifySearchStatus('Type to search.');
+      return;
+    }
+    setSpotifySearchStatus('Searching…');
+    spotifyResultsEl.hidden = true;
     try {
       var res = await fetch('/api/spotify/search?q=' + encodeURIComponent(q), { credentials: 'same-origin' });
-      if (!res.ok) return;
-      var data = await res.json();
-      renderSpotifyResults(data.results);
-    } catch (e) { /* transient */ }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        setSpotifySearchStatus(data.error || 'Search failed — try again.');
+        if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        return;
+      }
+      var results = data.results || [];
+      if (!results.length) {
+        setSpotifySearchStatus('No matches for "' + q + '".');
+        return;
+      }
+      setSpotifySearchStatus('');
+      results.forEach(function (track) {
+        spotifyResultsEl.appendChild(buildTrackRow(track, function (t) { playSpotifyTrack(t.uri); }));
+      });
+      spotifyResultsEl.hidden = false;
+    } catch (e) {
+      setSpotifySearchStatus('Could not reach Spotify — try again.');
+    }
   }
 
   if (spotifySearchForm) {
@@ -1389,6 +1502,162 @@
       var q = spotifySearchInput.value.trim();
       if (spotifySearchDebounce) clearTimeout(spotifySearchDebounce);
       spotifySearchDebounce = setTimeout(function () { runSpotifySearch(q); }, 350);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Spotify tabs (Search / Playlists) — a standard button-based tablist:
+  // roving aria-selected/tabindex isn't implemented (both tabs stay
+  // reachable by Tab key, which is the simpler and still fully accessible
+  // option for a two-tab set), but selection state, panel visibility, and
+  // labelling are all wired per the ARIA tabs pattern.
+  // ---------------------------------------------------------------------
+
+  function setSpotifyTab(name) {
+    spotifyActiveTab = name;
+    var isSearch = name === 'search';
+    spotifyTabSearch.classList.toggle('is-active', isSearch);
+    spotifyTabSearch.setAttribute('aria-selected', String(isSearch));
+    spotifyTabPlaylists.classList.toggle('is-active', !isSearch);
+    spotifyTabPlaylists.setAttribute('aria-selected', String(!isSearch));
+    spotifyPanelSearch.hidden = !isSearch;
+    spotifyPanelPlaylists.hidden = isSearch;
+    if (!isSearch && !spotifyPlaylistsLoaded) loadSpotifyPlaylists(true);
+  }
+
+  if (spotifyTabSearch) spotifyTabSearch.addEventListener('click', function () { setSpotifyTab('search'); });
+  if (spotifyTabPlaylists) spotifyTabPlaylists.addEventListener('click', function () { setSpotifyTab('playlists'); });
+
+  // ---------------------------------------------------------------------
+  // Playlists — browse the connected account's own playlists, then drill
+  // into one to see (and play) its tracks. 20 playlists / 50 tracks per
+  // page, with a "Load more" button rather than infinite scroll, so it's
+  // obvious when there's more and easy to stop.
+  // ---------------------------------------------------------------------
+
+  async function loadSpotifyPlaylists(reset) {
+    if (reset) {
+      spotifyPlaylistsListEl.innerHTML = '';
+      spotifyPlaylistsNextOffset = null;
+    }
+    setSpotifyPlaylistsStatus('Loading playlists…');
+    spotifyLoadMoreBtn.hidden = true;
+    try {
+      var offset = reset ? 0 : (spotifyPlaylistsNextOffset || 0);
+      var res = await fetch('/api/spotify/playlists?offset=' + offset, { credentials: 'same-origin' });
+      var data = await res.json().catch(function () { return {}; });
+      spotifyPlaylistsLoaded = true;
+      if (!res.ok) {
+        setSpotifyPlaylistsStatus(data.error || 'Could not load playlists.');
+        if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        return;
+      }
+      var playlists = data.playlists || [];
+      if (!playlists.length && reset) {
+        setSpotifyPlaylistsStatus('No playlists found on this account.');
+        spotifyPlaylistsListEl.hidden = true;
+        return;
+      }
+      setSpotifyPlaylistsStatus('');
+      playlists.forEach(function (pl) {
+        spotifyPlaylistsListEl.appendChild(buildPlaylistRow(pl, openSpotifyPlaylist));
+      });
+      spotifyPlaylistsListEl.hidden = false;
+      spotifyPlaylistsNextOffset = data.nextOffset;
+      spotifyLoadMoreBtn.hidden = spotifyPlaylistsNextOffset == null;
+    } catch (e) {
+      setSpotifyPlaylistsStatus('Could not reach Spotify — try again.');
+    }
+  }
+
+  async function openSpotifyPlaylist(playlist) {
+    spotifyCurrentPlaylist = playlist;
+    spotifyTracksNextOffset = null;
+    spotifyPlaylistsListEl.hidden = true;
+    spotifyPlaylistCrumb.hidden = false;
+    spotifyPlaylistCurrentName.hidden = false;
+    spotifyPlaylistCurrentName.textContent = playlist.name || '';
+    spotifyPlaylistTracksListEl.innerHTML = '';
+    spotifyPlaylistTracksListEl.hidden = true;
+    await loadSpotifyPlaylistTracks(true);
+  }
+
+  function backToSpotifyPlaylists() {
+    spotifyCurrentPlaylist = null;
+    spotifyPlaylistCrumb.hidden = true;
+    spotifyPlaylistCurrentName.hidden = true;
+    spotifyPlaylistTracksListEl.hidden = true;
+    spotifyPlaylistTracksListEl.innerHTML = '';
+    spotifyPlaylistsListEl.hidden = false;
+    spotifyLoadMoreBtn.hidden = spotifyPlaylistsNextOffset == null;
+    setSpotifyPlaylistsStatus(spotifyPlaylistsListEl.children.length ? '' : 'No playlists found on this account.');
+  }
+
+  async function loadSpotifyPlaylistTracks(reset) {
+    if (!spotifyCurrentPlaylist) return;
+    if (reset) {
+      spotifyPlaylistTracksListEl.innerHTML = '';
+      spotifyTracksNextOffset = null;
+    }
+    setSpotifyPlaylistsStatus('Loading tracks…');
+    spotifyLoadMoreBtn.hidden = true;
+    try {
+      var offset = reset ? 0 : (spotifyTracksNextOffset || 0);
+      var res = await fetch('/api/spotify/playlists/' + encodeURIComponent(spotifyCurrentPlaylist.id) + '/tracks?offset=' + offset, { credentials: 'same-origin' });
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        setSpotifyPlaylistsStatus(data.error || 'Could not load that playlist.');
+        if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        return;
+      }
+      var tracks = data.tracks || [];
+      if (!tracks.length && reset) {
+        setSpotifyPlaylistsStatus('This playlist is empty.');
+        spotifyPlaylistTracksListEl.hidden = true;
+        return;
+      }
+      setSpotifyPlaylistsStatus('');
+      tracks.forEach(function (track) {
+        spotifyPlaylistTracksListEl.appendChild(buildTrackRow(track, function (t) { playSpotifyTrack(t.uri); }));
+      });
+      spotifyPlaylistTracksListEl.hidden = false;
+      spotifyTracksNextOffset = data.nextOffset;
+      spotifyLoadMoreBtn.hidden = spotifyTracksNextOffset == null;
+    } catch (e) {
+      setSpotifyPlaylistsStatus('Could not reach Spotify — try again.');
+    }
+  }
+
+  if (spotifyPlaylistBackBtn) spotifyPlaylistBackBtn.addEventListener('click', backToSpotifyPlaylists);
+
+  if (spotifyPlaylistPlayAllBtn) {
+    spotifyPlaylistPlayAllBtn.addEventListener('click', async function () {
+      if (!spotifyCurrentPlaylist) return;
+      setSpotifyStatusMsg('');
+      try {
+        var res = await fetch('/api/spotify/play', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify({ contextUri: spotifyCurrentPlaylist.uri }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+          setSpotifyStatusMsg(data.error || 'Could not play that playlist.');
+          if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+          return;
+        }
+        setTimeout(refreshNowPlaying, 400);
+      } catch (e) {
+        setSpotifyStatusMsg('Could not reach Spotify.');
+      }
+    });
+  }
+
+  if (spotifyLoadMoreBtn) {
+    spotifyLoadMoreBtn.addEventListener('click', function () {
+      if (spotifyActiveTab === 'playlists' && spotifyCurrentPlaylist) loadSpotifyPlaylistTracks(false);
+      else loadSpotifyPlaylists(false);
     });
   }
 
