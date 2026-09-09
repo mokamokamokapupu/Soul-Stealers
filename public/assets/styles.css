@@ -1266,6 +1266,22 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
 }
 .active-user-row.is-me .active-user-name{ color: var(--verdigris-bright); }
 .active-user-row.is-me .active-user-name::after{ content: ' (you)'; color: var(--parchment-dim); font-size: 0.78rem; }
+/* What that person is currently up to. Sits right after the name, dimmer
+   than it, and gets out of the way first when the panel is narrow — the
+   name is the thing you're scanning for, the activity is context. */
+.active-user-row .active-user-activity{
+  font-size: 0.76rem;
+  color: var(--parchment-dim);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.active-user-row .active-user-activity::before{ content: '· '; font-style: normal; }
+.active-user-row .active-user-activity.is-idle{ opacity: 0.65; }
+.active-user-row .active-user-name{ flex: 0 1 auto; }
 .active-users-empty{
   font-size: 0.82rem;
   color: var(--parchment-dim);
@@ -2630,4 +2646,18 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
   #composer .composer-btn{ width: 36px; height: 36px; }
   .composer button[type="submit"]{ padding: 0 1rem; }
   .emoji-popover{ width: 208px; grid-template-columns: repeat(5, 1fr); left: -20px; }
+}
+
+/* An encrypted chat image while its bytes are being fetched and decrypted
+   in the page. Holds a little space so the message doesn't jump when the
+   real picture lands. */
+.msg-image.is-decrypting{
+  min-width: 120px;
+  min-height: 90px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(111,143,118,0.10) 0 10px,
+    rgba(111,143,118,0.04) 10px 20px
+  );
+  border-radius: 8px;
 }

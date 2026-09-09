@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "Leaderboard records that survive a redeploy.",
+    "",
+    "This app runs on a Render free instance, which has NO persistent disk:",
+    "every deploy rebuilds the container from a fresh git checkout, so",
+    "everything in data/ (including scores-<room>.json) is wiped. Anything",
+    "listed here is merged back in at boot by loadScores() in server.js.",
+    "",
+    "Rules: an entry here only ever RAISES a score, never lowers one. If the",
+    "same player has a higher live score, theirs wins; if they later score",
+    "lower, the record below still stands. Keys are room ids ('meowmeow',",
+    "'overwatch'), then game ids ('snake', 'tetris', 'mines', 'poker',",
+    "'cookie'). To add a record, copy the shape below.",
+    "",
+    "Entries are records people actually set. Don't invent them.",
+    "",
+    "Not seeded, because the standings they came from listed no score:",
+    "snake/fatty (6th), tetris/x (10th), cookie/Dr goon (10th). Add a",
+    "score for any of them here and they'll appear."
+  ],
+  "meowmeow": {
+    "snake": [
+      { "username": "sparks", "score": 500 },
+      { "username": "x", "score": 230 },
+      { "username": "doom", "score": 210 },
+      { "username": "spraks", "score": 150 },
+      { "username": "copper", "score": 140 }
+    ],
+    "tetris": [
+      { "username": "Dr goon", "score": 2400000 },
+      { "username": "sss", "score": 247000 },
+      { "username": "Kaban", "score": 168000 },
+      { "username": "sigmchan", "score": 137000 },
+      { "username": "sigmachan", "score": 93000 },
+      { "username": "Tkana", "score": 68000 },
+      { "username": "Jumpyboy20", "score": 45000 },
+      { "username": "fly", "score": 34000 },
+      { "username": "Takan", "score": 30000 }
+    ],
+    "poker": [
+      { "username": "copper", "score": 12000 },
+      { "username": "jamorant", "score": 1540 },
+      { "username": "sss", "score": 1000 }
+    ],
+    "cookie": [
+      { "username": "copper", "score": 48700000 },
+      { "username": "fatty", "score": 18100000 },
+      { "username": "Kaban", "score": 1500000 },
+      { "username": "doom", "score": 633000 },
+      { "username": "sparks", "score": 319000 },
+      { "username": "sss", "score": 98000 },
+      { "username": "Jamorant", "score": 84000 },
+      { "username": "x", "score": 10000 },
+      { "username": "sigmachan", "score": 415 }
+    ]
+  }
+}

@@ -1,12 +1,6 @@
 (function () {
   'use strict';
 
-  // ---------------------------------------------------------------------
-  // View routing — six views live in the DOM; only one is visible. All
-  // authorization decisions happen server-side on every API call; this
-  // file only mirrors what the server says (see server.js).
-  // ---------------------------------------------------------------------
-
   var VIEWS = ['essay', 'gate', 'setup', 'chat', 'games'];
   var currentView = 'essay';
 
@@ -42,11 +36,42 @@
     }
   }
 
+  // Activity shown next to each name. Rides along on requests already being made;
+  // the server only accepts a fixed set of codes and this file re-labels them.
+
+  var IDLE_AFTER_MS = 3 * 60 * 1000;
+  var lastInteractionAt = Date.now();
+  ['mousedown', 'keydown', 'touchstart', 'wheel', 'mousemove'].forEach(function (evt) {
+    document.addEventListener(evt, function () { lastInteractionAt = Date.now(); }, { passive: true });
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) lastInteractionAt = Date.now();
+  });
+
+  function currentActivityCode() {
+    // A hidden tab or one nobody has touched in a while is idle, whatever
+    // view happens to be on screen behind it.
+    if (document.hidden || Date.now() - lastInteractionAt > IDLE_AFTER_MS) return 'idle';
+    if (currentView === 'chat') return 'chat';
+    if (currentView === 'games') {
+      // Music playing takes the spotlight over a game board that's just
+      // sitting there; a game that's actually being played wins otherwise.
+      if (spotifyPlaying) return 'spotify';
+      return activeGame ? 'game:' + activeGame : 'arcade';
+    }
+    if (currentView === 'essay') return 'essay';
+    return 'idle';
+  }
+
+  function withActivity(url) {
+    return url + (url.indexOf('?') === -1 ? '?' : '&') + 'activity=' + encodeURIComponent(currentActivityCode());
+  }
+
   var keepaliveTimer = null;
   function setKeepalive(on) {
     if (on && !keepaliveTimer) {
       keepaliveTimer = setInterval(function () {
-        fetch('/api/session', { credentials: 'same-origin' }).catch(function () { /* transient */ });
+        fetch(withActivity('/api/session'), { credentials: 'same-origin' }).catch(function () { /* transient */ });
       }, 45000);
     } else if (!on && keepaliveTimer) {
       clearInterval(keepaliveTimer);
@@ -75,12 +100,8 @@
     roomTagEl.textContent = myRoom ? (ROOM_LABELS[myRoom] || myRoom) : '';
   }
 
-  // ---------------------------------------------------------------------
-  // Chat content encryption. The server stores and relays chat text as an
-  // opaque blob — it never sees plaintext. The AES-GCM key is derived
-  // (PBKDF2) from the site password, which every room member already
-  // knows; the fixed salt is fine because all secrecy is in the password.
-  // ---------------------------------------------------------------------
+  // Chat content encryption. The server only ever sees an opaque blob. The AES-GCM
+  // key is derived (PBKDF2) from the site password every room member already knows.
 
   var ROOM_KEY_STORAGE = 'ss_room_key_v1';
   var PBKDF2_SALT = new TextEncoder().encode('soul-studies-chat-room-v1');
@@ -144,6 +165,64 @@
     return bytesToBase64(combined);
   }
 
+  // Same key and layout as encryptText, on raw bytes instead of base64.
+  async function encryptBytes(bytes) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var cipherBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, roomKey, bytes);
+    var combined = new Uint8Array(iv.length + cipherBuf.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(cipherBuf), iv.length);
+    return combined;
+  }
+
+  async function decryptBytes(bytes) {
+    if (!roomKey || !bytes || bytes.length < 13) return null;
+    try {
+      var iv = bytes.slice(0, 12);
+      var data = bytes.slice(12);
+      var plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, roomKey, data);
+      return new Uint8Array(plainBuf);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The server only sees ciphertext, so magic bytes are checked here instead —
+  // before encrypting, and again after decrypting. Mirrors detectImageType.
+  function sniffImageMime(bytes) {
+    if (!bytes || bytes.length < 12) return null;
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+        bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return 'image/png';
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+    return null;
+  }
+
+  // Every object URL minted for a decrypted image, so they can be released
+  // when the message list is torn down instead of pinning the decrypted
+  // bytes in memory for the life of the tab.
+  var decryptedImageUrls = [];
+  function releaseDecryptedImageUrls() {
+    for (var i = 0; i < decryptedImageUrls.length; i++) {
+      try { URL.revokeObjectURL(decryptedImageUrls[i]); } catch (e) { /* already gone */ }
+    }
+    decryptedImageUrls = [];
+  }
+
+  async function decryptChatImage(imageId) {
+    var res = await fetch(chatImageUrl(imageId), { credentials: 'same-origin' });
+    if (!res.ok) return null;
+    var raw = new Uint8Array(await res.arrayBuffer());
+    var plain = await decryptBytes(raw);
+    if (!plain) return null;
+    var mime = sniffImageMime(plain);
+    if (!mime) return null; // decrypted to something that isn't an image — refuse it
+    var url = URL.createObjectURL(new Blob([plain], { type: mime }));
+    decryptedImageUrls.push(url);
+    return url;
+  }
+
   async function decryptText(b64) {
     if (!roomKey || typeof b64 !== 'string') return null;
     try {
@@ -157,12 +236,6 @@
       return null;
     }
   }
-
-  // ---------------------------------------------------------------------
-  // Initial routing — the landed-on path is a hint, never a grant: it is
-  // clamped to whatever stage the server reports, then the URL is
-  // normalized back to "/".
-  // ---------------------------------------------------------------------
 
   var PATH_HINT = { '/': 'essay', '/portal': 'gate', '/setup': 'setup', '/chat': 'chat' };
   var STAGE_MAX = { none: 'gate', password_ok: 'setup', active: 'chat' };
@@ -487,6 +560,7 @@
       unlockInput.value = '';
       unlockInput.disabled = false;
       setUnlockVisible(false);
+      releaseDecryptedImageUrls();
       messagesEl.innerHTML = '';
       renderedIds = Object.create(null);
       lastAuthor = null;
@@ -581,9 +655,28 @@
       img.className = 'msg-image';
       img.alt = m.username + ' sent an image';
       img.loading = 'lazy';
-      img.src = chatImageUrl(m.imageId);
+      if (m.encrypted) {
+        // Ciphertext: fetch it, decrypt it here, and only then hand the
+        // bytes to <img> as a blob URL. Images sent before this feature
+        // existed have no `encrypted` flag and still load the old way.
+        img.classList.add('is-decrypting');
+        decryptChatImage(m.imageId).then(function (objUrl) {
+          img.classList.remove('is-decrypting');
+          if (objUrl) {
+            img.src = objUrl;
+          } else {
+            img.remove();
+            var locked = document.createElement('div');
+            locked.className = 'text is-locked';
+            locked.textContent = '🔒 Unable to decrypt this image';
+            figure.appendChild(locked);
+          }
+        });
+      } else {
+        img.src = chatImageUrl(m.imageId);
+      }
       figure.appendChild(img);
-      figure.addEventListener('click', function () { openLightbox(img.src); });
+      figure.addEventListener('click', function () { if (img.src) openLightbox(img.src); });
       body.appendChild(figure);
       previewForReply = '📷 Photo';
     } else {
@@ -660,7 +753,7 @@
     if (pollInFlight) return;
     pollInFlight = true;
     try {
-      var res = await fetch('/api/chat/messages?since=' + since, { credentials: 'same-origin' });
+      var res = await fetch(withActivity('/api/chat/messages?since=' + since), { credentials: 'same-origin' });
       if (res.status === 403) {
         stopChatPolling();
         showView('gate');
@@ -768,18 +861,22 @@
     }
   });
 
-  imageBtnInput.addEventListener('change', async function () {
-    var file = imageBtnInput.files && imageBtnInput.files[0];
-    if (!file) return;
-    var allowed = ['image/jpeg', 'image/png', 'image/webp'];
-    if (allowed.indexOf(file.type) === -1) {
+  // Shared by the file picker and by pasting. The server sniffs the real bytes.
+  var CHAT_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+  var MAX_CHAT_IMAGE_CLIENT_BYTES = 5 * 1024 * 1024;
+
+  async function sendChatImageBlob(blob) {
+    if (!blob) return;
+    if (CHAT_IMAGE_TYPES.indexOf(blob.type) === -1) {
       setChatStatus('Use a JPEG, PNG, or WebP image.', true);
-      imageBtnInput.value = '';
+      setTimeout(function () { setChatStatus(''); }, 3000);
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
+    // 28 bytes of IV+tag get added by encryption, so stop a little short
+    // of the server's hard cap rather than failing after the upload.
+    if (blob.size > MAX_CHAT_IMAGE_CLIENT_BYTES - 1024) {
       setChatStatus('Image is too large (5MB max).', true);
-      imageBtnInput.value = '';
+      setTimeout(function () { setChatStatus(''); }, 3000);
       return;
     }
 
@@ -787,12 +884,29 @@
     cancelReply();
     setChatStatus('Sending image…');
     try {
-      var url = '/api/chat/image' + (pendingReplyTo ? '?replyTo=' + encodeURIComponent(pendingReplyTo) : '');
+      // Encrypt before upload so the server only ever holds ciphertext. Falls back to
+      // plaintext only where Web Crypto is unavailable, same as message text does.
+      var body = blob;
+      var contentType = blob.type;
+      var enc = false;
+      if (cryptoAvailable && roomKey) {
+        var rawBytes = new Uint8Array(await blob.arrayBuffer());
+        if (!sniffImageMime(rawBytes)) {
+          setChatStatus('That file isn\u2019t a JPEG, PNG, or WebP image.', true);
+          setTimeout(function () { setChatStatus(''); }, 3000);
+          return;
+        }
+        body = await encryptBytes(rawBytes);
+        contentType = 'application/octet-stream';
+        enc = true;
+      }
+      var url = '/api/chat/image?enc=' + (enc ? '1' : '0') +
+        (pendingReplyTo ? '&replyTo=' + encodeURIComponent(pendingReplyTo) : '');
       var res = await fetch(url, {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrfToken },
-        body: file,
+        headers: { 'Content-Type': contentType, 'X-CSRF-Token': csrfToken },
+        body: body,
       });
       if (res.status === 403) { showView('gate'); return; }
       var data = await res.json();
@@ -806,9 +920,34 @@
       }
     } catch (e2) {
       setChatStatus('Something went wrong. Try again.', true);
-    } finally {
-      imageBtnInput.value = '';
     }
+  }
+
+  imageBtnInput.addEventListener('change', function () {
+    var file = imageBtnInput.files && imageBtnInput.files[0];
+    // Clear the input up front, not in a finally: picking the *same* file
+    // twice in a row otherwise fires no change event at all the second
+    // time. The File object stays valid after this.
+    imageBtnInput.value = '';
+    if (file) sendChatImageBlob(file);
+  });
+
+  // Paste an image into the chat. Only acts when the clipboard really carries an
+  // image file, so plain text pastes are untouched.
+  document.addEventListener('paste', function (e) {
+    if (currentView !== 'chat') return;
+    if (!e.clipboardData || !e.clipboardData.items) return;
+    var items = e.clipboardData.items;
+    var blob = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' && items[i].type && items[i].type.indexOf('image/') === 0) {
+        blob = items[i].getAsFile();
+        if (blob) break;
+      }
+    }
+    if (!blob) return;
+    e.preventDefault();
+    sendChatImageBlob(blob);
   });
 
   function setAvatarStatus(msg, isError) {
@@ -866,6 +1005,7 @@
     myRoom = null;
     csrfToken = null;
     clearRoomKey();
+    releaseDecryptedImageUrls();
     cancelReply();
     updateRoomTag();
     var res = await fetch('/api/session', { credentials: 'same-origin' }).catch(function () { return null; });
@@ -875,11 +1015,6 @@
     lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
     showView('essay');
   });
-
-  // ---------------------------------------------------------------------
-  // Appearance settings: interface scale + color skins, persisted locally
-  // and applied only in the private views.
-  // ---------------------------------------------------------------------
 
   var SCALE_KEY = 'ss_ui_scale';
   var SKIN_KEY = 'ss_chat_skin';
@@ -940,14 +1075,6 @@
   });
   applySkin();
 
-  // ---------------------------------------------------------------------
-  // Active users — who currently holds a claimed username in this room,
-  // per the server's activeUsers list on every /api/chat/messages poll
-  // (see server.js: activeUsernamesInRoom). Visibility is a simple toggle,
-  // persisted locally like the appearance settings above, so it stays
-  // shown/hidden across visits per the same "optional to hide" pattern.
-  // ---------------------------------------------------------------------
-
   var ACTIVE_PANEL_KEY = 'ss_active_users_open';
   var activeUsersBtn = document.getElementById('active-users-btn');
   var activeUsersPanel = document.getElementById('active-users-panel');
@@ -971,6 +1098,22 @@
   try { startPanelOpen = localStorage.getItem(ACTIVE_PANEL_KEY) === '1'; } catch (e) { /* private mode */ }
   setActiveUsersPanelOpen(startPanelOpen);
 
+  // Codes come from the server's fixed ACTIVITY_CODES list; anything not
+  // in this map (including null) just shows no label at all.
+  var ACTIVITY_LABELS = {
+    'chat': 'looking at chat',
+    'essay': 'reading the essay',
+    'arcade': 'in the arcade',
+    'spotify': 'listening to Spotify',
+    'idle': 'idle',
+    'game:snake': 'playing Snake',
+    'game:tetris': 'playing Tetris',
+    'game:mines': 'playing Mines',
+    'game:poker': 'playing Poker',
+    'game:cookie': 'playing Cookie Clicker',
+    'game:doom': 'playing Doom',
+  };
+
   function updateActiveUsers(list) {
     list = list || [];
     var count = String(list.length);
@@ -981,7 +1124,12 @@
     }
     activeUsersList.innerHTML = '';
     activeUsersEmpty.hidden = list.length !== 0;
-    list.forEach(function (name) {
+    list.forEach(function (entry) {
+      // Older servers sent a bare string here; accept both shapes so a
+      // stale cached page doesn't render "[object Object]".
+      var name = typeof entry === 'string' ? entry : (entry && entry.name);
+      if (!name) return;
+      var activity = typeof entry === 'string' ? null : (entry && entry.activity);
       var li = document.createElement('li');
       li.className = 'active-user-row' + (name === myUsername ? ' is-me' : '');
       var img = document.createElement('img');
@@ -994,6 +1142,13 @@
       span.textContent = name; // textContent — never innerHTML
       li.appendChild(img);
       li.appendChild(span);
+      var label = ACTIVITY_LABELS[activity];
+      if (label) {
+        var act = document.createElement('span');
+        act.className = 'active-user-activity' + (activity === 'idle' ? ' is-idle' : '');
+        act.textContent = label; // textContent, and only ever from the map above
+        li.appendChild(act);
+      }
       activeUsersList.appendChild(li);
     });
   }
@@ -1158,21 +1313,6 @@
     stopSpotifyPolling();
   }
 
-  // ---------------------------------------------------------------------
-  // Spotify — games-page only. Every call to Spotify's own servers happens
-  // on the backend (see server.js); this file only ever talks to our own
-  // /api/spotify/* endpoints, exactly like every other feature in this app.
-  // Login happens in a popup so the main site never navigates away — see
-  // openSpotifyPopup() and handleSpotifyRedirectParam() below.
-  //
-  // Redesigned 2026-08-31 into a Spotify-desktop-style app: a left nav
-  // (Home / Search / Your Library), a main content area that switches
-  // between views (home, search, playlist/album/artist detail), and a
-  // persistent bottom player bar. The window itself is resizable (native
-  // CSS `resize`, see styles.css) and can be maximized to float over the
-  // whole page — see spotifyMaximize()/spotifyRestore() below.
-  // ---------------------------------------------------------------------
-
   var spotifyWindow = document.getElementById('spotify-window');
   var spotifyWindowHead = document.getElementById('spotify-window-head');
   var spotifyMaximizeBackdrop = document.getElementById('spotify-maximize-backdrop');
@@ -1282,10 +1422,6 @@
   var spotifyVolumeDebounce = null;
   var spotifyDraggingVolume = false;
 
-  // Web Playback SDK state — see the dedicated section below for the full
-  // explanation. spotifyDeviceId is the one piece every transport call
-  // reads: null means "target whatever device Spotify already has active"
-  // (today's remote-control behavior), set means "target this browser tab."
   var spotifySdkReady = false;
   var spotifyPlayer = null;
   var spotifyDeviceId = null;
@@ -1370,10 +1506,6 @@
     if (spotifyProgressTimer) { clearInterval(spotifyProgressTimer); spotifyProgressTimer = null; }
   }
 
-  // Ticks the displayed progress bar forward by a second between the real
-  // 6-second polls, so it reads as smooth motion rather than jumping every
-  // six seconds. refreshNowPlaying() re-syncs it to the real position each
-  // time it polls, so this drift never accumulates for long.
   function spotifyTickProgress() {
     if (!spotifyPlaying || !spotifyDurationMs) return;
     spotifyProgressMs = Math.min(spotifyDurationMs, spotifyProgressMs + 1000);
@@ -1432,27 +1564,6 @@
     } catch (e) { /* transient — next poll picks it back up */ }
   }
 
-  // ---------------------------------------------------------------------
-  // Web Playback SDK — actual in-browser audio, not just remote control of
-  // some other already-running Spotify app. Spotify's own SDK script
-  // (loaded via the <script src="https://sdk.scdn.co/spotify-player.js">
-  // tag in index.html) opens a DRM-authenticated connection straight to
-  // Spotify once handed a live access token, and registers itself as a
-  // normal Spotify Connect device that this tab can then be told to play
-  // on — see /api/spotify/player-token and the CSP comment in server.js's
-  // applySecurityHeaders for why a token reaching the browser at all is
-  // safe and unavoidable here.
-  //
-  // This is purely additive. Every transport control below still goes
-  // through this site's own server-proxied endpoints exactly as before;
-  // the only change is that once spotifyDeviceId is set, those calls
-  // target this tab specifically instead of "whichever device Spotify
-  // considers active." If the SDK never becomes ready — no Premium
-  // account (Spotify's own 'account_error' event, handled below), a
-  // browser without EME support, the script failing to load, or simply
-  // not yet connected — spotifyDeviceId just stays null and every control
-  // keeps working exactly as it did before this feature existed, by
-  // remote-controlling whatever device is already active elsewhere.
   window.onSpotifyWebPlaybackSDKReady = function () {
     spotifySdkReady = true;
     if (spotifyConnected) initSpotifyPlayer();
@@ -1487,23 +1598,13 @@
       console.error('[spotify player] authentication_error', data && data.message);
     });
     spotifyPlayer.addListener('account_error', function (data) {
-      // Fires for a non-Premium account — Spotify's SDK refuses to stream
-      // to the browser at all in that case. Not a bug in this app:
-      // spotifyDeviceId simply never gets set, so every control below
-      // keeps remote-controlling whatever device is already active
-      // elsewhere, exactly like before this feature existed.
+      // The SDK reports both 'not Premium' and 'not approved for this app' here.
       console.error('[spotify player] account_error', data && data.message);
-      setSpotifyStatusMsg('In-browser playback needs Spotify Premium — controlling your other active device instead.');
+      setSpotifyStatusMsg('In-browser playback unavailable for this account (needs Spotify Premium, and the account must be approved for this app) — controlling your other active device instead.');
     });
     spotifyPlayer.addListener('playback_error', function (data) {
       console.error('[spotify player] playback_error', data && data.message);
     });
-    // Low-latency local UI updates driven straight from the SDK, so the
-    // player bar reflects a play/pause/skip immediately instead of
-    // waiting for the next 6-second /api/spotify/now-playing poll. The
-    // poll keeps running regardless (see startSpotifyPolling) and stays
-    // the source of truth for state changes that happen on OTHER devices,
-    // which this event never fires for.
     spotifyPlayer.addListener('player_state_changed', function (state) {
       if (!state) return;
       spotifyPlaying = !state.paused;
@@ -1575,14 +1676,6 @@
       refreshSpotifyStatus();
     });
   }
-
-  // ---------------------------------------------------------------------
-  // Maximize / restore — floats the window to fill most of the viewport
-  // by moving it (and the backdrop) to be a direct child of <body> (a
-  // "portal"), which sidesteps any ancestor stacking-context/overflow
-  // quirks that position:fixed can otherwise run into. Restoring puts it
-  // back exactly where it came from.
-  // ---------------------------------------------------------------------
 
   var spotifyDockParent = null;
   var spotifyDockNextSibling = null;
@@ -1758,10 +1851,6 @@
 
   async function playSpotify(body) {
     setSpotifyStatusMsg('');
-    // Target the in-page player once it's ready, so clicking a track/
-    // playlist actually starts audio in this tab (transferring playback
-    // here in the same call) rather than resuming on whatever device was
-    // last active elsewhere.
     if (spotifyDeviceId) {
       var bodyWithDevice = {};
       for (var k in body) { if (Object.prototype.hasOwnProperty.call(body, k)) bodyWithDevice[k] = body[k]; }
@@ -1788,11 +1877,6 @@
   }
   function playSpotifyTrack(uri) { playSpotify({ uri: uri }); }
   function playSpotifyContext(contextUri) { playSpotify({ contextUri: contextUri }); }
-  // Plays one track from within a playlist/album context (contextUri) —
-  // Spotify then queues and auto-advances through the rest of that
-  // context on its own, exactly like clicking a song in the real app.
-  // Standalone plays (search results, artist top tracks) intentionally
-  // keep using playSpotifyTrack above instead, with no context at all.
   function playSpotifyContextTrack(contextUri, offsetUri) { playSpotify({ contextUri: contextUri, offsetUri: offsetUri }); }
 
   var spotifyQueueMsgTimer = null;
@@ -1818,14 +1902,6 @@
       setSpotifyStatusMsg('Could not reach Spotify.');
     }
   }
-
-  // ---------------------------------------------------------------------
-  // Row/card builders. Every interactive row/card is a real <button> (never
-  // a bare clickable <li> or <div>), so Tab/Enter/Space work exactly like a
-  // mouse click — the one existing accessibility convention this redesign
-  // keeps throughout. All track/artist/album/playlist text comes from
-  // Spotify and is rendered via textContent only, never innerHTML.
-  // ---------------------------------------------------------------------
 
   // A numbered track row for a table (playlist/album/artist top tracks/
   // search songs): index, small art, name+artist, optional album, duration.
@@ -1978,12 +2054,6 @@
   // View navigation — one view visible at a time inside .spotify-main.
   // ---------------------------------------------------------------------
 
-  // spotifyViewHistory is a real back-stack, not just a single "previous
-  // view" slot — a single slot breaks on chains more than one level deep
-  // (e.g. search -> artist -> album -> back -> back should land on
-  // 'search', but a single slot gets overwritten by the first "back" step
-  // and returns to 'album' instead). Every switch pushes the view it's
-  // leaving, except a switch caused by Back itself, which only pops.
   var spotifyViewHistory = [];
   function spotifySwitchView(name, isBack) {
     if (!isBack && name !== spotifyCurrentView) {
@@ -1999,10 +2069,6 @@
     spotifyNavSearch.classList.toggle('is-active', name === 'search');
     if (spotifyMain) spotifyMain.scrollTop = 0;
   }
-  // Detail views (playlist/album/artist) never clear their own content
-  // when hidden, only when re-populated by opening something new — so
-  // popping back to whatever's on top of the history stack is always safe
-  // to render as-is, no re-fetch needed.
   function spotifyGoBack() { spotifySwitchView(spotifyViewHistory.pop() || 'home', true); }
   var spotifyMain = document.getElementById('spotify-main');
 
@@ -2019,12 +2085,6 @@
       spotifyNavLibraryToggle.setAttribute('aria-expanded', String(open));
     });
   }
-
-  // ---------------------------------------------------------------------
-  // Home — the connected account's playlists as a card grid (the same data
-  // backs the sidebar's "Your Library" list, loaded once and rendered into
-  // both places, rather than fetched twice).
-  // ---------------------------------------------------------------------
 
   async function loadSpotifyPlaylists(reset) {
     if (reset) {
@@ -2070,11 +2130,6 @@
   }
 
   if (spotifyLoadMorePlaylistsBtn) spotifyLoadMorePlaylistsBtn.addEventListener('click', function () { loadSpotifyPlaylists(false); });
-
-  // ---------------------------------------------------------------------
-  // Search — categorized (tracks/artists/albums/playlists), debounced,
-  // with distinct loading/empty/error states.
-  // ---------------------------------------------------------------------
 
   function spotifyClearSearchResults() {
     [spotifySearchTracksEl, spotifySearchArtistsEl, spotifySearchAlbumsEl, spotifySearchPlaylistsEl].forEach(function (el) { if (el) el.innerHTML = ''; });
@@ -2136,14 +2191,6 @@
       spotifySearchDebounce = setTimeout(function () { runSpotifySearch(q); }, 300);
     });
   }
-
-  // ---------------------------------------------------------------------
-  // Playlist detail — 50 tracks per page, "Load more" rather than infinite
-  // scroll so it stays obvious there's more and is easy to stop; handles
-  // playlists with hundreds/thousands of tracks the same way, just with
-  // more clicks of the same button. Unavailable/local/removed tracks are
-  // already filtered out server-side (see server.js simplifyPlaylistItem).
-  // ---------------------------------------------------------------------
 
   async function openSpotifyPlaylist(playlist) {
     spotifyCurrentPlaylist = playlist;
@@ -2326,14 +2373,6 @@
 
   if (spotifyArtistBackBtn) spotifyArtistBackBtn.addEventListener('click', spotifyGoBack);
 
-  // Handles the popup's return trip from Spotify. The server already did
-  // all the real work (token exchange) before redirecting here with
-  // ?spotify=connected|denied|error — this just tells the ORIGINAL window
-  // (via postMessage — window.opener is reachable across origins for that
-  // one purpose) that it's done, then closes this popup. If there's no
-  // opener (the popup was blocked, so this ran as a normal top-level
-  // navigation in the same tab instead), it lands back on the games page
-  // itself rather than the default landing page.
   function handleSpotifyRedirectParam() {
     var params = new URLSearchParams(window.location.search);
     var flag = params.get('spotify');
@@ -2351,6 +2390,7 @@
     if (currentView !== 'chat' && currentView !== 'games') showView('games');
     refreshSpotifyStatus();
     if (flag === 'denied') setSpotifyStatusMsg('Spotify connection was cancelled.');
+    else if (flag === 'notallowed') setSpotifyStatusMsg('This Spotify account is not approved for this app yet. Whoever set up the Spotify app has to add it under User Management in the Spotify developer dashboard — Spotify only lets a handful of accounts use an app until then. (Nothing to do with Premium.)');
     else if (flag === 'error') setSpotifyStatusMsg('Could not connect to Spotify — try again.');
   }
 
@@ -2361,6 +2401,8 @@
       refreshSpotifyStatus();
     } else if (event.data.status === 'denied') {
       setSpotifyStatusMsg('Spotify connection was cancelled.');
+    } else if (event.data.status === 'notallowed') {
+      setSpotifyStatusMsg('This Spotify account is not approved for this app yet. Whoever set up the Spotify app has to add it under User Management in the Spotify developer dashboard — Spotify only lets a handful of accounts use an app until then. (Nothing to do with Premium.)');
     } else {
       setSpotifyStatusMsg('Could not connect to Spotify — try again.');
     }
@@ -2534,12 +2576,6 @@
     arrowleft: { x: -1, y: 0 }, a: { x: -1, y: 0 },
     arrowright: { x: 1, y: 0 }, d: { x: 1, y: 0 },
   };
-
-  // ---------------------------------------------------------------------
-  // Tetris — guideline-style: SRS kicks, 7-bag with 5-piece preview, hold,
-  // ghost piece, DAS/ARR handling, lock delay with move resets, T-spins,
-  // back-to-back and combo scoring. Keybinds are per-username.
-  // ---------------------------------------------------------------------
 
   var tetrisCanvas = document.getElementById('tetris-canvas');
   var tetrisCtx = tetrisCanvas.getContext('2d');
@@ -3360,12 +3396,6 @@
 
   minesAgainBtn.addEventListener('click', newMines);
 
-  // ---------------------------------------------------------------------
-  // Doom — the 1993 shareware episode compiled to WebAssembly (from the
-  // diekmann/wasm-fizzbuzz port, self-hosted). Loaded on first play and
-  // kept warm after that; leaving the tab pauses the loop, the run stays.
-  // ---------------------------------------------------------------------
-
   var doomCanvas = document.getElementById('doom-canvas');
   var doomCtx = doomCanvas.getContext('2d');
   var doomOverlay = document.getElementById('doom-overlay');
@@ -3464,12 +3494,6 @@
   }
 
   doomStartBtn.addEventListener('click', startDoom);
-
-  // ---------------------------------------------------------------------
-  // Poker — no-limit Texas Hold'em against three bots, with real side-pot
-  // handling. Your chips persist per username; the leaderboard tracks
-  // your biggest stack.
-  // ---------------------------------------------------------------------
 
   var pokerChipsEl = document.getElementById('poker-chips');
   var pokerPotEl = document.getElementById('poker-pot');
@@ -4075,12 +4099,6 @@
     saveCookieState();
   }
 
-  // ---------------------------------------------------------------------
-  // Arcade keyboard dispatch — snake uses simple directions, tetris uses
-  // the per-user binds (matched on e.code). Keybind capture eats the next
-  // keydown while listening.
-  // ---------------------------------------------------------------------
-
   document.addEventListener('keydown', function (e) {
     if (currentView !== 'games') return;
 
@@ -4191,12 +4209,6 @@
     }
   });
 
-  // ---------------------------------------------------------------------
-  // Hidden keyboard combos. Q+W+O+P (held together on the essay) opens the
-  // gate; G+A+M+E (from chat) opens the arcade. Tab is the panic key: from
-  // anywhere past the essay it snaps straight back, even mid-typing.
-  // ---------------------------------------------------------------------
-
   var COMBOS = [
     { keys: ['q', 'w', 'o', 'p'], from: ['essay'], fired: false, go: function () { showView('gate'); } },
     { keys: ['g', 'a', 'm', 'e'], from: ['chat'], fired: false, go: function () { showView('games'); } },
@@ -4222,6 +4234,10 @@
       if (currentView !== 'essay') {
         e.preventDefault();
         showView('essay');
+        // The panic key should leave nothing audible behind — stop any
+        // Spotify playback (in-browser SDK or a remote-controlled device)
+        // the instant it fires, same as clicking pause.
+        if (spotifyConnected && spotifyPlaying) spotifyTransport('pause', '');
       }
       return;
     }
