@@ -106,6 +106,11 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
         body: JSON.stringify({ activity: activity, track: listening, feedSince: feedSince }),
       });
+      if (res.status === 403) {
+        var why = await res.json().catch(function () { return {}; });
+        if (why.banned) handleBanned();
+        return;
+      }
       if (!res.ok) return;
       var data = await res.json();
       if (data.activeUsers) updateActiveUsers(data.activeUsers);
@@ -140,6 +145,7 @@
   var csrfToken = null;
   var myUsername = null;
   var myRoom = null;
+  var iAmAdmin = false;
 
   var ROOM_LABELS = { overwatch: 'Overwatch', meowmeow: 'meowmeow' };
 
@@ -147,6 +153,10 @@
     csrfToken = data.csrfToken || csrfToken;
     if (data.username) myUsername = data.username;
     if (data.room) myRoom = data.room;
+    if (typeof data.isAdmin === 'boolean') iAmAdmin = data.isAdmin;
+    document.body.classList.toggle('is-admin', iAmAdmin);
+    var banlistBtn = document.getElementById('banlist-btn');
+    if (banlistBtn) banlistBtn.hidden = !iAmAdmin;
   }
 
   function updateRoomTag() {
@@ -298,9 +308,11 @@
     var hinted = PATH_HINT[window.location.pathname] || 'essay';
 
     var data;
+    var bannedOnLoad = false;
     try {
       var res = await fetch('/api/session', { credentials: 'same-origin' });
       data = await res.json();
+      if (res.status === 403 && data && data.banned) { bannedOnLoad = true; data = { stage: 'none' }; }
     } catch (e) {
       data = { stage: 'none' };
     }
@@ -324,7 +336,8 @@
       setUnlockVisible(cryptoAvailable && !roomKey);
     }
 
-    showView(startView);
+    showView(bannedOnLoad ? 'gate' : startView);
+    if (bannedOnLoad) setGateError('This device has been blocked from that room.');
     ready();
   }
 
@@ -356,6 +369,7 @@
       });
       var data = await res.json();
       if (res.ok) {
+        wasBanned = false;
         applySessionData(data);
         // Derive the room encryption key while the password is in memory —
         // it is never sent anywhere for this purpose.
@@ -393,6 +407,7 @@
   var setupError = document.getElementById('setup-error');
   var setupSubmit = document.getElementById('setup-submit');
   var setupCard = document.getElementById('setup-card');
+  var adminKeyInput = document.getElementById('admin-key');
 
   function setSetupError(msg) { setupError.textContent = msg || ''; }
 
@@ -405,10 +420,23 @@
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({ username: setupInput.value.trim() }),
+        body: JSON.stringify({
+          username: setupInput.value.trim(),
+          adminKey: adminKeyInput && !adminKeyInput.hidden ? adminKeyInput.value : undefined,
+        }),
       });
       var data = await res.json();
+      if (!res.ok && data.needsAdminKey && adminKeyInput) {
+        // A protected name: ask for its key and let them try again.
+        adminKeyInput.hidden = false;
+        adminKeyInput.value = '';
+        adminKeyInput.focus();
+        setSetupError('That name needs its key.');
+        setupSubmit.disabled = false;
+        return;
+      }
       if (res.ok) {
+        if (adminKeyInput) { adminKeyInput.hidden = true; adminKeyInput.value = ''; }
         applySessionData(data);
         myUsername = data.username;
         setupSubmit.textContent = 'Entering…';
@@ -1067,8 +1095,10 @@
     try {
       var res = await fetch(withActivity('/api/chat/messages?since=' + since + '&feedSince=' + feedSince), { credentials: 'same-origin' });
       if (res.status === 403) {
+        var why = await res.json().catch(function () { return {}; });
+        if (why.banned) { handleBanned(); return; }
         stopChatPolling();
-        showView('gate');
+        if (!wasBanned) showView('gate');
         return;
       }
       var data = await res.json();
@@ -1344,6 +1374,9 @@
     updateActiveUsers([]);
     myUsername = null;
     myRoom = null;
+    iAmAdmin = false;
+    document.body.classList.remove('is-admin');
+    if (banlistBtnEl) banlistBtnEl.hidden = true;
     csrfToken = null;
     clearRoomKey();
     releaseDecryptedImageUrls();
@@ -1495,8 +1528,21 @@
     info.appendChild(name);
     info.appendChild(act);
     info.appendChild(song);
+
+    var ban = document.createElement('button');
+    ban.type = 'button';
+    ban.className = 'user-ban-btn';
+    ban.textContent = 'ban';
+    ban.title = 'Remove from this room and block the device';
+    ban.setAttribute('aria-label', 'Ban ' + who.name);
+    ban.addEventListener('click', function (e) {
+      e.stopPropagation();
+      confirmBan(li.dataset.user);
+    });
+
     li.appendChild(img);
     li.appendChild(info);
+    li.appendChild(ban);
     fillUserRow(li, who);
     return li;
   }
@@ -1516,6 +1562,8 @@
     song.hidden = !text;
 
     li.classList.toggle('is-me', who.name === myUsername);
+    var ban = li.querySelector('.user-ban-btn');
+    if (ban) ban.hidden = !iAmAdmin || who.name === myUsername;
   }
 
   // Rows are reconciled in place rather than rebuilt. Replacing the list every
@@ -1585,6 +1633,241 @@
     if (!sidebarNowEl) return;
     syncUserList(sidebarNowEl, people, 'sidebar-user-row');
     if (sidebarNowEmpty) sidebarNowEmpty.hidden = people.length !== 0;
+  }
+
+  // -------------------------------------------------------------------
+  // Moderation — only the admin sees any of this
+  // -------------------------------------------------------------------
+
+  function confirmBan(name) {
+    if (!iAmAdmin || !name || name === myUsername) return;
+
+    var overlay = document.createElement('div');
+    overlay.className = 'history-overlay';
+    var card = document.createElement('div');
+    card.className = 'history-card ban-card';
+
+    var head = document.createElement('div');
+    head.className = 'history-head';
+    var title = document.createElement('h3');
+    title.textContent = 'Ban';
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'history-close';
+    closeBtn.setAttribute('aria-label', 'Cancel');
+    closeBtn.textContent = '×';
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+
+    var body = document.createElement('div');
+    body.className = 'ban-body';
+    var lead = document.createElement('p');
+    lead.className = 'ban-lead';
+    var strong = document.createElement('strong');
+    strong.textContent = name;
+    lead.appendChild(document.createTextNode('Remove '));
+    lead.appendChild(strong);
+    lead.appendChild(document.createTextNode(' from this room?'));
+    var note = document.createElement('p');
+    note.className = 'ban-note';
+    note.textContent = 'They are dropped straight away, the name is blocked, and the browser they are using cannot get back into this room. You can lift it again from the ban list.';
+
+    var ipRow = document.createElement('label');
+    ipRow.className = 'ban-option';
+    var ipBox = document.createElement('input');
+    ipBox.type = 'checkbox';
+    var ipText = document.createElement('span');
+    ipText.textContent = 'Also block their network address. Harder to get around, but everyone on their connection is blocked too — a whole household shares one address.';
+    ipRow.appendChild(ipBox);
+    ipRow.appendChild(ipText);
+
+    var err = document.createElement('p');
+    err.className = 'ban-error';
+    err.hidden = true;
+
+    var actions = document.createElement('div');
+    actions.className = 'ban-actions';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'msg-edit-cancel';
+    cancel.textContent = 'Cancel';
+    var go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'ban-confirm-btn';
+    go.textContent = 'Ban ' + name;
+    actions.appendChild(cancel);
+    actions.appendChild(go);
+
+    body.appendChild(lead);
+    body.appendChild(note);
+    body.appendChild(ipRow);
+    body.appendChild(err);
+    body.appendChild(actions);
+    card.appendChild(head);
+    card.appendChild(body);
+    overlay.appendChild(card);
+
+    function close() {
+      overlay.remove();
+      document.removeEventListener('keydown', esc);
+    }
+    function esc(e) { if (e.key === 'Escape') close(); }
+    closeBtn.addEventListener('click', close);
+    cancel.addEventListener('click', close);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', esc);
+
+    go.addEventListener('click', async function () {
+      go.disabled = true;
+      go.textContent = 'Banning…';
+      err.hidden = true;
+      try {
+        var res = await fetch('/api/admin/ban', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify({ username: name, blockIp: ipBox.checked }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+          err.textContent = data.error || 'Could not ban that user.';
+          err.hidden = false;
+          go.disabled = false;
+          go.textContent = 'Ban ' + name;
+          return;
+        }
+        close();
+        setChatStatus(data.noDevice
+          ? name + ' was banned by name — they were already offline, so no device was blocked.'
+          : name + ' was banned and blocked.');
+        setTimeout(function () { setChatStatus(''); }, 4000);
+        poll();
+      } catch (e2) {
+        err.textContent = 'Could not reach the server.';
+        err.hidden = false;
+        go.disabled = false;
+        go.textContent = 'Ban ' + name;
+      }
+    });
+
+    document.body.appendChild(overlay);
+    requestAnimationFrame(function () { overlay.classList.add('is-open'); });
+    go.focus();
+  }
+
+  async function openBanList() {
+    if (!iAmAdmin) return;
+    var overlay = document.createElement('div');
+    overlay.className = 'history-overlay';
+    var card = document.createElement('div');
+    card.className = 'history-card';
+    var head = document.createElement('div');
+    head.className = 'history-head';
+    var title = document.createElement('h3');
+    title.textContent = 'Banned';
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'history-close';
+    closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.textContent = '×';
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    var list = document.createElement('ol');
+    list.className = 'history-list';
+    card.appendChild(head);
+    card.appendChild(list);
+    overlay.appendChild(card);
+
+    function close() { overlay.remove(); document.removeEventListener('keydown', esc); }
+    function esc(e) { if (e.key === 'Escape') close(); }
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', esc);
+    document.body.appendChild(overlay);
+    requestAnimationFrame(function () { overlay.classList.add('is-open'); });
+
+    async function refresh() {
+      list.innerHTML = '';
+      var data;
+      try {
+        var res = await fetch('/api/admin/bans', { credentials: 'same-origin' });
+        data = await res.json();
+        if (!res.ok) throw new Error();
+      } catch (e) {
+        var oops = document.createElement('li');
+        oops.className = 'history-item';
+        oops.textContent = 'Could not load the ban list.';
+        list.appendChild(oops);
+        return;
+      }
+      if (!data.bans.length) {
+        var none = document.createElement('li');
+        none.className = 'history-item';
+        none.textContent = 'Nobody is banned from this room.';
+        list.appendChild(none);
+        return;
+      }
+      data.bans.forEach(function (b) {
+        var li = document.createElement('li');
+        li.className = 'history-item ban-row';
+        var meta = document.createElement('div');
+        meta.className = 'history-meta';
+        meta.textContent = (b.by ? 'by ' + b.by : 'from config') + (b.at ? ' · ' + fmtTime(b.at) : '');
+        var who = document.createElement('div');
+        who.className = 'ban-row-name';
+        who.textContent = b.username;
+        var detail = document.createElement('div');
+        detail.className = 'ban-row-detail';
+        detail.textContent = b.devices + (b.devices === 1 ? ' device' : ' devices') +
+          ', ' + b.ips + (b.ips === 1 ? ' address' : ' addresses');
+        var lift = document.createElement('button');
+        lift.type = 'button';
+        lift.className = 'msg-edit-cancel ban-lift-btn';
+        lift.textContent = 'Lift';
+        lift.addEventListener('click', async function () {
+          lift.disabled = true;
+          try {
+            await fetch('/api/admin/unban', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+              body: JSON.stringify({ username: b.username }),
+            });
+          } catch (e) { /* the refresh below will show it is still there */ }
+          refresh();
+        });
+        li.appendChild(meta);
+        li.appendChild(who);
+        li.appendChild(detail);
+        li.appendChild(lift);
+        list.appendChild(li);
+      });
+    }
+    refresh();
+  }
+
+  // The room says no. Stop everything and say so plainly. The notice has to be
+  // written after showView, which clears the gate's error line on the way in.
+  var wasBanned = false;
+  function handleBanned() {
+    if (wasBanned) return;
+    wasBanned = true;
+    stopChatPolling();
+    stopPresence();
+    myUsername = null;
+    myRoom = null;
+    iAmAdmin = false;
+    document.body.classList.remove('is-admin');
+    var banlist = document.getElementById('banlist-btn');
+    if (banlist) banlist.hidden = true;
+    clearRoomKey();
+    releaseDecryptedImageUrls();
+    latestFeed.length = 0;
+    feedSince = 0;
+    updateActiveUsers([]);
+    updateRoomTag();
+    showView('gate');
+    setGateError('This device has been blocked from that room.');
   }
 
   function mergeFeed(entries) {
@@ -1680,6 +1963,9 @@
 
     Object.keys(existing).forEach(function (id) { existing[id].remove(); });
   }
+
+  var banlistBtnEl = document.getElementById('banlist-btn');
+  if (banlistBtnEl) banlistBtnEl.addEventListener('click', openBanList);
 
   if (sidebarToggle) {
     sidebarToggle.addEventListener('click', function () {
@@ -5078,7 +5364,7 @@
   });
 
   var COMBOS = [
-    { keys: ['q', 'w', 'o', 'p'], from: ['essay'], fired: false, go: function () { showView('gate'); } },
+    { keys: ['q', 'w', 'e', 'i', 'o', 'p'], from: ['essay'], fired: false, go: function () { showView('gate'); } },
     { keys: ['g', 'a', 'm', 'e'], from: ['chat'], fired: false, go: function () { showView('games'); } },
   ];
   var COMBO_KEYS = Object.create(null);

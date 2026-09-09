@@ -714,6 +714,7 @@ body.sidebar-collapsed .room-sidebar{ display: none; }
   font-size: 0.7rem;
   color: var(--verdigris-bright);
 }
+.active-user-song[hidden]{ display: none; }
 .active-user-note{ flex-shrink: 0; opacity: 0.8; }
 .active-user-song-text{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .active-user-row .active-user-song{ font-size: 0.72rem; }
@@ -3041,3 +3042,83 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
   font-size: 0.85rem;
   line-height: 1;
 }
+
+/* Moderation ----------------------------------------------------------- */
+.user-ban-btn{
+  flex-shrink: 0;
+  align-self: center;
+  background: none;
+  border: 1px solid rgba(166,91,75,0.45);
+  color: var(--danger);
+  font: 500 0.58rem var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.42rem;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.user-ban-btn[hidden]{ display: none; }
+.sidebar-user-row:hover .user-ban-btn,
+.sidebar-user-row:focus-within .user-ban-btn,
+.active-user-row:hover .user-ban-btn,
+.active-user-row:focus-within .user-ban-btn{ opacity: 1; }
+.user-ban-btn:hover{
+  background: rgba(166,91,75,0.16);
+  border-color: var(--danger);
+  color: var(--danger);
+  transform: none;
+  box-shadow: none;
+}
+.sidebar-user-row, .active-user-row{ position: relative; }
+
+#banlist-btn[hidden]{ display: none; }
+body.is-admin #banlist-btn{ color: var(--danger); }
+
+.ban-card{ width: min(460px, 100%); }
+.ban-body{ padding: 0.9rem 1.1rem 1.1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.ban-lead{ margin: 0; font-size: 0.98rem; color: var(--parchment); }
+.ban-lead strong{ color: var(--danger); }
+.ban-note{ margin: 0; font-size: 0.8rem; line-height: 1.5; color: var(--parchment-dim); }
+.ban-option{
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--parchment-dim);
+  cursor: pointer;
+}
+.ban-option input{ margin-top: 0.2rem; accent-color: var(--danger); flex-shrink: 0; }
+.ban-error{ margin: 0; font-size: 0.8rem; color: var(--danger); }
+.ban-error[hidden]{ display: none; }
+.ban-actions{ display: flex; justify-content: flex-end; gap: 0.6rem; }
+.ban-confirm-btn{
+  font: 500 0.66rem var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.8rem;
+  border-radius: 7px;
+  border: 1px solid var(--danger);
+  background: var(--danger);
+  color: var(--ink);
+}
+.ban-confirm-btn:hover{ background: #b9695a; border-color: #b9695a; transform: none; box-shadow: none; }
+.ban-confirm-btn:disabled{ opacity: 0.6; }
+
+.ban-row{ position: relative; padding-right: 4rem; }
+.ban-row-name{ font: 500 0.9rem var(--font-mono); color: var(--parchment); }
+.ban-row-detail{ font-size: 0.76rem; color: var(--parchment-dim); }
+.ban-lift-btn{ position: absolute; right: 0; top: 0.9rem; }
+
+#admin-key[hidden]{ display: none; }
+
+/* The base button rule is width:100%; these are all inline controls. */
+.user-ban-btn,
+.ban-confirm-btn,
+.ban-lift-btn,
+.msg-edit-save,
+.msg-edit-cancel,
+.history-close,
+.spotify-artist-link,
+.spotify-reconnect-btn{ width: auto; }

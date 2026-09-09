@@ -26,6 +26,19 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const USERNAME_RE = /^[^\x00-\x1F\x7F]{1,20}$/;
 const LEGACY_USERNAME_RE = /^[a-z0-9_]{1,20}$/;
 const RESERVED_USERNAMES = new Set(['admin', 'system', 'moderator', 'root', 'soulstudies']);
+// Who may kick and block people. Names, lowercased.
+const ADMIN_USERNAMES = new Set(
+  (process.env.SOUL_STUDIES_ADMINS || 'x')
+    .split(',').map((n) => n.trim().toLowerCase()).filter(Boolean)
+);
+// Optional. When set, claiming an admin name requires it, so nobody can grab
+// the name while its owner is offline and inherit the ban powers with it.
+const ADMIN_KEY = process.env.SOUL_STUDIES_ADMIN_KEY || '';
+// A per-browser id in a long-lived cookie: the closest thing to "this device"
+// available to a site with no accounts.
+const DEVICE_ID_RE = /^[0-9a-f]{32}$/;
+const DEVICE_COOKIE_MAX_AGE = 10 * 365 * 24 * 60 * 60; // seconds
+const MAX_BANS_KEPT = 500;
 const MAX_MESSAGE_LEN = 4000;
 const MAX_EDIT_HISTORY = 20;
 const MAX_MESSAGES_KEPT = 300;
@@ -180,6 +193,40 @@ function loadJsonArray(filePath) {
   }
 }
 
+function bansPathFor(roomId) {
+  return path.join(DATA_DIR, 'bans-' + roomId + '.json');
+}
+
+// Render's free plan wipes the disk on every deploy, so a ban that has to
+// outlive a deploy is listed in this env var as well as saved to disk.
+function seededBanDevices() {
+  return (process.env.SOUL_STUDIES_BANNED_DEVICES || '')
+    .split(',').map((d) => d.trim().toLowerCase()).filter((d) => DEVICE_ID_RE.test(d));
+}
+
+function loadBans(roomId) {
+  const empty = { devices: Object.create(null), ips: Object.create(null), usernames: Object.create(null) };
+  let stored;
+  try {
+    stored = JSON.parse(fs.readFileSync(bansPathFor(roomId), 'utf8'));
+  } catch (e) {
+    stored = null;
+  }
+  if (stored && typeof stored === 'object') {
+    for (const bucket of ['devices', 'ips', 'usernames']) {
+      const from = stored[bucket];
+      if (!from || typeof from !== 'object') continue;
+      for (const key of Object.keys(from)) {
+        if (typeof key === 'string' && key.length <= 200) empty[bucket][key] = from[bucket] || from[key];
+      }
+    }
+  }
+  for (const device of seededBanDevices()) {
+    if (!empty.devices[device]) empty.devices[device] = { by: 'config', at: 0, username: null };
+  }
+  return empty;
+}
+
 function messagesPathFor(roomId) {
   return path.join(DATA_DIR, 'messages-' + roomId + '.json');
 }
@@ -318,6 +365,7 @@ function loadSessions() {
       expires: s.expires,
       lastSeen: typeof s.lastSeen === 'number' ? s.lastSeen : now,
       ip: typeof s.ip === 'string' ? s.ip : 'unknown',
+      deviceId: DEVICE_ID_RE.test(s.deviceId || '') ? s.deviceId : null,
     };
     sessions.set(sid, session);
     // Re-claim the username slot in its room so a second person can't grab
@@ -414,6 +462,8 @@ for (const room of ROOMS) {
     usernameOwners: new Map(),
     spotifyDropped: new Set(),
     feed: [],
+    bans: loadBans(room.id),
+    bansDirty: false,
   };
 }
 
@@ -474,6 +524,10 @@ setInterval(() => {
       r.spotifyDirty = false;
       fs.writeFile(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens), { mode: 0o600 }, () => {});
     }
+    if (r.bansDirty) {
+      r.bansDirty = false;
+      fs.writeFile(bansPathFor(roomId), JSON.stringify(r.bans), { mode: 0o600 }, () => {});
+    }
   }
   fs.writeFile(sessionsPath(), JSON.stringify(Array.from(sessions.entries())), { mode: 0o600 }, () => {});
 }, 2000).unref();
@@ -484,6 +538,7 @@ function flushSaveSync() {
       fs.writeFileSync(messagesPathFor(roomId), JSON.stringify(rooms[roomId].messages));
       fs.writeFileSync(scoresPathFor(roomId), JSON.stringify(rooms[roomId].scores));
       fs.writeFileSync(spotifyTokensPathFor(roomId), JSON.stringify(rooms[roomId].spotifyTokens), { mode: 0o600 });
+      fs.writeFileSync(bansPathFor(roomId), JSON.stringify(rooms[roomId].bans), { mode: 0o600 });
     } catch (e) { /* best effort on shutdown */ }
   }
   try {
@@ -713,8 +768,19 @@ function applySecurityHeaders(res) {
   );
 }
 
+// Appends rather than replaces: a response can carry both the session and the
+// device cookie, and setHeader would drop whichever was written first.
+function appendCookie(res, cookie) {
+  const existing = res.getHeader('Set-Cookie');
+  if (!existing) res.setHeader('Set-Cookie', [cookie]);
+  else res.setHeader('Set-Cookie', (Array.isArray(existing) ? existing : [existing]).concat(cookie));
+}
+
+function isSecureRequest(req) {
+  return Boolean(req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https');
+}
+
 function setSessionCookie(res, sid, req) {
-  const secure = req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
   const parts = [
     `sid=${sid}`,
     'HttpOnly',
@@ -722,9 +788,52 @@ function setSessionCookie(res, sid, req) {
     'SameSite=Strict',
     `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   ];
-  if (secure) parts.push('Secure');
-  res.setHeader('Set-Cookie', parts.join('; '));
+  if (isSecureRequest(req)) parts.push('Secure');
+  appendCookie(res, parts.join('; '));
 }
+
+/** The browser's own id, minted on first sight and kept for years. It is what
+ *  a device ban is actually pinned to. */
+function ensureDeviceId(req, res) {
+  const cookies = parseCookies(req.headers.cookie || '');
+  const existing = typeof cookies.did === 'string' ? cookies.did.toLowerCase() : '';
+  if (DEVICE_ID_RE.test(existing)) return existing;
+
+  const did = crypto.randomBytes(16).toString('hex');
+  const parts = [
+    `did=${did}`,
+    'HttpOnly',
+    'Path=/',
+    'SameSite=Strict',
+    `Max-Age=${DEVICE_COOKIE_MAX_AGE}`,
+  ];
+  if (isSecureRequest(req)) parts.push('Secure');
+  appendCookie(res, parts.join('; '));
+  return did;
+}
+
+function isAdminName(username) {
+  return Boolean(username) && ADMIN_USERNAMES.has(username.toLowerCase());
+}
+
+function trimBans(bucket) {
+  const keys = Object.keys(bucket);
+  if (keys.length <= MAX_BANS_KEPT) return;
+  keys.sort((a, b) => (bucket[a].at || 0) - (bucket[b].at || 0));
+  for (const key of keys.slice(0, keys.length - MAX_BANS_KEPT)) delete bucket[key];
+}
+
+/** Why this visitor is not allowed into this room, or null. */
+function banReasonFor(roomState, deviceId, ip, usernameKey) {
+  if (!roomState || !roomState.bans) return null;
+  const bans = roomState.bans;
+  if (deviceId && bans.devices[deviceId]) return 'device';
+  if (ip && bans.ips[ip]) return 'ip';
+  if (usernameKey && bans.usernames[usernameKey]) return 'name';
+  return null;
+}
+
+const BANNED_MESSAGE = 'This device has been blocked from that room.';
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -1266,6 +1375,31 @@ async function handleApi(req, res, pathname) {
   }
   session.lastSeen = Date.now();
 
+  const deviceId = ensureDeviceId(req, res);
+  session.deviceId = deviceId;
+  session.ip = clientIp(req);
+
+  // A ban lands mid-session: the session is stripped back on its next request
+  // and marked, so every later call keeps saying why rather than degrading to
+  // a bare "not authorized" the moment the room is gone from the session.
+  const roomToCheck = session.room || session.bannedFrom || null;
+  if (roomToCheck) {
+    const reason = banReasonFor(
+      rooms[roomToCheck], deviceId, session.ip,
+      session.username ? session.username.toLowerCase() : null
+    );
+    if (reason) {
+      releaseUsername(sid, session);
+      session.username = null;
+      session.stage = 'none';
+      session.room = null;
+      session.bannedFrom = roomToCheck;
+      return sendJson(res, 403, { error: BANNED_MESSAGE, banned: true });
+    }
+    // Ban lifted — stop holding it against them.
+    if (session.bannedFrom) session.bannedFrom = null;
+  }
+
   // Any API call may carry ?activity=. Unknown values are dropped.
   if (session.stage === 'active') {
     const qi = req.url.indexOf('?');
@@ -1298,6 +1432,7 @@ async function handleApi(req, res, pathname) {
       username: session.username,
       room: session.room,
       csrfToken: session.csrfToken,
+      isAdmin: session.stage === 'active' && isAdminName(session.username),
     });
   }
 
@@ -1316,6 +1451,12 @@ async function handleApi(req, res, pathname) {
 
     const matchedRoom = verifyPasswordForRoom(body.password);
     if (matchedRoom) {
+      // Checked after the password so a blocked device learns nothing about
+      // which passwords are valid that it did not already know.
+      if (banReasonFor(rooms[matchedRoom], deviceId, ip, null)) {
+        recordLoginSuccess(ip);
+        return sendJson(res, 403, { error: BANNED_MESSAGE, banned: true });
+      }
       recordLoginSuccess(ip);
       session.stage = 'password_ok';
       session.room = matchedRoom;
@@ -1343,6 +1484,19 @@ async function handleApi(req, res, pathname) {
     if (RESERVED_USERNAMES.has(key)) {
       return sendJson(res, 409, { error: 'That name is taken. Try another.' });
     }
+    if (banReasonFor(roomState, deviceId, session.ip, key)) {
+      return sendJson(res, 403, { error: BANNED_MESSAGE, banned: true });
+    }
+    // Without a key configured the admin name is claimable like any other,
+    // which is fine for a private room but worth knowing.
+    if (ADMIN_KEY && ADMIN_USERNAMES.has(key)) {
+      const offered = typeof body.adminKey === 'string' ? body.adminKey : '';
+      const a = Buffer.from(offered);
+      const b = Buffer.from(ADMIN_KEY);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        return sendJson(res, 403, { error: 'That name needs its key.', needsAdminKey: true });
+      }
+    }
     // A name is only held while its session is alive and recently seen.
     const owner = roomState.usernameOwners.get(key);
     if (owner && owner !== sid) {
@@ -1364,7 +1518,10 @@ async function handleApi(req, res, pathname) {
     session.username = username;
     session.stage = 'active';
     session.csrfToken = crypto.randomBytes(16).toString('hex'); // rotate on privilege change
-    return sendJson(res, 200, { ok: true, username, room: session.room, csrfToken: session.csrfToken });
+    return sendJson(res, 200, {
+      ok: true, username, room: session.room, csrfToken: session.csrfToken,
+      isAdmin: isAdminName(username),
+    });
   }
 
   // GET /api/chat/messages — requires an active (username-created) session
@@ -1559,6 +1716,132 @@ async function handleApi(req, res, pathname) {
       res.end(data);
     });
     return;
+  }
+
+  // POST /api/admin/ban — remove someone from this room and block the device
+  // they were last seen on. Admin only.
+  if (pathname === '/api/admin/ban' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!isAdminName(session.username)) return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const target = typeof body.username === 'string' ? body.username.trim() : '';
+    if (!USERNAME_RE.test(target)) return sendJson(res, 400, { error: 'Invalid username' });
+
+    const targetKey = target.toLowerCase();
+    if (targetKey === session.username.toLowerCase()) {
+      return sendJson(res, 400, { error: 'You cannot ban yourself.' });
+    }
+    if (isAdminName(targetKey)) return sendJson(res, 400, { error: 'That account cannot be banned.' });
+
+    const roomState = rooms[session.room];
+    const now = Date.now();
+    const record = { username: target, by: session.username, at: now };
+    // Opt-in: an address is shared by everyone behind the same connection, so
+    // blocking one can lock out a whole household — including the admin.
+    const blockIp = body.blockIp === true;
+
+    // Every live session under that name in this room, so a second tab does
+    // not survive the ban.
+    let devices = 0, ips = 0, kicked = 0;
+    for (const [otherSid, other] of sessions) {
+      if (other.room !== session.room) continue;
+      if (!other.username || other.username.toLowerCase() !== targetKey) continue;
+      if (other.deviceId && !roomState.bans.devices[other.deviceId]) {
+        roomState.bans.devices[other.deviceId] = record;
+        devices++;
+      }
+      if (blockIp && other.ip && other.ip !== 'unknown' && other.ip !== session.ip &&
+          !roomState.bans.ips[other.ip]) {
+        roomState.bans.ips[other.ip] = record;
+        ips++;
+      }
+      // The name is freed now, but the session object stays so the banned
+      // person's next request answers with the ban rather than a bare 401.
+      releaseUsername(otherSid, other);
+      other.username = null;
+      other.stage = 'password_ok';
+      other.activity = null;
+      other.nowPlaying = null;
+      kicked++;
+    }
+
+    roomState.bans.usernames[targetKey] = record;
+    trimBans(roomState.bans.devices);
+    trimBans(roomState.bans.ips);
+    trimBans(roomState.bans.usernames);
+    roomState.bansDirty = true;
+
+    return sendJson(res, 200, {
+      ok: true, username: target, kicked, devices, ips,
+      // Nothing to pin a device ban to if they were already gone.
+      noDevice: devices === 0,
+    });
+  }
+
+  // POST /api/admin/unban — lift a ban by name, device, or address.
+  if (pathname === '/api/admin/unban' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!isAdminName(session.username)) return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const roomState = rooms[session.room];
+    let removed = 0;
+
+    if (typeof body.username === 'string' && body.username) {
+      const key = body.username.trim().toLowerCase();
+      if (roomState.bans.usernames[key]) { delete roomState.bans.usernames[key]; removed++; }
+      // Drop the devices and addresses recorded under that name too, or the
+      // person stays locked out with no visible reason.
+      for (const bucket of ['devices', 'ips']) {
+        for (const id of Object.keys(roomState.bans[bucket])) {
+          const rec = roomState.bans[bucket][id];
+          if (rec && typeof rec.username === 'string' && rec.username.toLowerCase() === key) {
+            delete roomState.bans[bucket][id];
+            removed++;
+          }
+        }
+      }
+    }
+    if (typeof body.deviceId === 'string' && roomState.bans.devices[body.deviceId]) {
+      delete roomState.bans.devices[body.deviceId]; removed++;
+    }
+    if (typeof body.ip === 'string' && roomState.bans.ips[body.ip]) {
+      delete roomState.bans.ips[body.ip]; removed++;
+    }
+    if (removed) roomState.bansDirty = true;
+    return sendJson(res, 200, { ok: true, removed });
+  }
+
+  // GET /api/admin/bans — who is currently blocked from this room.
+  if (pathname === '/api/admin/bans' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!isAdminName(session.username)) return sendJson(res, 403, { error: 'Not authorized' });
+    const bans = rooms[session.room].bans;
+    const byName = Object.create(null);
+    for (const key of Object.keys(bans.usernames)) {
+      const rec = bans.usernames[key];
+      byName[key] = { username: rec.username || key, by: rec.by || null, at: rec.at || 0, devices: 0, ips: 0 };
+    }
+    for (const bucket of ['devices', 'ips']) {
+      for (const id of Object.keys(bans[bucket])) {
+        const rec = bans[bucket][id];
+        const key = rec && typeof rec.username === 'string' ? rec.username.toLowerCase() : null;
+        if (key && byName[key]) byName[key][bucket]++;
+      }
+    }
+    return sendJson(res, 200, {
+      bans: Object.keys(byName).map((k) => byName[k]).sort((a, b) => b.at - a.at),
+      orphanDevices: Object.keys(bans.devices).filter((id) => {
+        const rec = bans.devices[id];
+        const key = rec && typeof rec.username === 'string' ? rec.username.toLowerCase() : null;
+        return !key || !byName[key];
+      }).length,
+    });
   }
 
   // POST /api/logout
