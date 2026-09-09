@@ -934,13 +934,37 @@ input:focus{
 
 .composer{
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.6rem;
   padding-top: 0.9rem;
   border-top: 1px solid rgba(139,115,85,0.3);
   flex-shrink: 0;
 }
 .composer input{ margin-bottom: 0; flex: 1; }
+.composer textarea{
+  margin-bottom: 0;
+  flex: 1;
+  width: 100%;
+  background: var(--ink);
+  border: 1px solid rgba(139,115,85,0.4);
+  color: var(--parchment);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 6px;
+  line-height: 1.35;
+  resize: none;
+  overflow-y: auto;
+  max-height: 8.5rem;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
+}
+.composer textarea:hover{ border-color: rgba(139,115,85,0.65); }
+.composer textarea:focus{
+  border-color: var(--verdigris);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(111,143,118,0.18), 0 0 18px rgba(111,143,118,0.12);
+  background: #0d1017;
+}
 .composer button{ width: auto; padding: 0 1.5rem; height: 46px; }
 
 .empty-state{

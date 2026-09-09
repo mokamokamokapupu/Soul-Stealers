@@ -488,6 +488,7 @@
       btn.textContent = emoji;
       btn.addEventListener('click', function () {
         insertAtCursor(msgInput, emoji);
+        autoGrowComposer();
       });
       emojiPopover.appendChild(btn);
     });
@@ -700,7 +701,7 @@
     replyBtn.type = 'button';
     replyBtn.className = 'msg-action-btn';
     replyBtn.textContent = '↩ Reply';
-    replyBtn.addEventListener('click', function () { startReply(m.id, m.username, truncate(previewForReply, 80)); });
+    replyBtn.addEventListener('click', function () { startReply(m.id, m.username, truncate(String(previewForReply).replace(/\s+/g, ' '), 80)); });
     actions.appendChild(replyBtn);
     body.appendChild(actions);
 
@@ -795,13 +796,31 @@
     chatStatusEl.classList.toggle('is-error', !!isError);
   }
 
+  // A textarea doesn't submit on Enter by itself, so wire it up: Enter
+  // sends, Shift+Enter (or Ctrl/Cmd+Enter) drops to a new line. isComposing
+  // guards IME input, where Enter is picking a candidate, not sending.
+  function autoGrowComposer() {
+    msgInput.style.height = 'auto';
+    msgInput.style.height = Math.min(msgInput.scrollHeight, 136) + 'px';
+  }
+
+  msgInput.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    if (composer.requestSubmit) composer.requestSubmit();
+    else composer.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+  });
+  msgInput.addEventListener('input', autoGrowComposer);
+
   composer.addEventListener('submit', async function (e) {
     e.preventDefault();
     var text = msgInput.value.trim();
     if (!text) return;
 
     if (text.toLowerCase() === '/clearchat') {
-      msgInput.value = '';
+      msgInput.value = ''; autoGrowComposer();
       try {
         var clearRes = await fetch('/api/chat/clear', {
           method: 'POST',
@@ -828,7 +847,7 @@
 
     if (cryptoAvailable && !roomKey) { setUnlockVisible(true); return; }
 
-    msgInput.value = '';
+    msgInput.value = ''; autoGrowComposer();
     sendBtn.disabled = true;
     sendBtn.classList.add('is-sending');
     var pendingReplyTo = replyingTo ? replyingTo.id : undefined;
@@ -854,7 +873,7 @@
         setTimeout(function () { setChatStatus(''); }, 3000);
       }
     } catch (err) {
-      msgInput.value = text;
+      msgInput.value = text; autoGrowComposer();
     } finally {
       sendBtn.disabled = false;
       sendBtn.classList.remove('is-sending');
