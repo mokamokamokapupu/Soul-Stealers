@@ -1455,69 +1455,104 @@
     'game:doom': 'playing Doom',
   };
 
-  function buildUserRow(entry, className) {
+  function presenceOf(entry) {
     // Older servers sent a bare string here; accept both shapes so a stale
     // cached page doesn't render "[object Object]".
-    var name = typeof entry === 'string' ? entry : (entry && entry.name);
-    if (!name) return null;
-    var activity = typeof entry === 'string' ? null : (entry && entry.activity);
-    var listening = typeof entry === 'string' ? null : (entry && entry.listening);
+    if (typeof entry === 'string') return { name: entry, activity: null, listening: null };
+    if (!entry || !entry.name) return null;
+    return { name: entry.name, activity: entry.activity || null, listening: entry.listening || null };
+  }
 
+  function buildUserRow(who, className) {
     var li = document.createElement('li');
-    li.className = className + (name === myUsername ? ' is-me' : '');
+    li.className = className + (who.name === myUsername ? ' is-me' : '');
+    li.dataset.user = who.name;
+
     var img = document.createElement('img');
     img.className = 'avatar';
     img.alt = '';
     img.loading = 'lazy';
-    img.src = avatarUrl(name);
+    img.src = avatarUrl(who.name);
+
     var info = document.createElement('span');
     info.className = 'active-user-info';
-    var span = document.createElement('span');
-    span.className = 'active-user-name';
-    span.textContent = name; // textContent — never innerHTML
-    info.appendChild(span);
+    var name = document.createElement('span');
+    name.className = 'active-user-name';
+    name.textContent = who.name; // textContent — never innerHTML
+    var act = document.createElement('span');
+    act.className = 'active-user-activity';
+    var song = document.createElement('span');
+    song.className = 'active-user-song';
+    var note = document.createElement('span');
+    note.className = 'active-user-note';
+    note.setAttribute('aria-hidden', 'true');
+    note.textContent = '\u266a';
+    var songText = document.createElement('span');
+    songText.className = 'active-user-song-text';
+    song.appendChild(note);
+    song.appendChild(songText);
 
-    var label = ACTIVITY_LABELS[activity];
-    if (label) {
-      var act = document.createElement('span');
-      act.className = 'active-user-activity' + (activity === 'idle' ? ' is-idle' : '');
-      act.textContent = label; // textContent — and only ever from the map above
-      info.appendChild(act);
-    }
-    if (listening && listening.name) {
-      var song = document.createElement('span');
-      song.className = 'active-user-song';
-      var note = document.createElement('span');
-      note.className = 'active-user-note';
-      note.setAttribute('aria-hidden', 'true');
-      note.textContent = '\u266a';
-      var songText = document.createElement('span');
-      songText.className = 'active-user-song-text';
-      songText.textContent = listening.artists
-        ? listening.name + ' \u2014 ' + listening.artists
-        : listening.name;
-      song.appendChild(note);
-      song.appendChild(songText);
-      info.appendChild(song);
-    }
-
+    info.appendChild(name);
+    info.appendChild(act);
+    info.appendChild(song);
     li.appendChild(img);
     li.appendChild(info);
+    fillUserRow(li, who);
     return li;
   }
 
+  function fillUserRow(li, who) {
+    var act = li.querySelector('.active-user-activity');
+    var label = ACTIVITY_LABELS[who.activity]; // only ever from the fixed map
+    act.textContent = label || '';
+    act.hidden = !label;
+    act.classList.toggle('is-idle', who.activity === 'idle');
+
+    var song = li.querySelector('.active-user-song');
+    var text = who.listening && who.listening.name
+      ? (who.listening.artists ? who.listening.name + ' \u2014 ' + who.listening.artists : who.listening.name)
+      : '';
+    li.querySelector('.active-user-song-text').textContent = text;
+    song.hidden = !text;
+
+    li.classList.toggle('is-me', who.name === myUsername);
+  }
+
+  // Rows are reconciled in place rather than rebuilt. Replacing the list every
+  // poll gave each <img> a fresh element to load into, which is what made
+  // avatars blink black a couple of times a second.
+  function syncUserList(listEl, people, className) {
+    if (!listEl) return;
+    var existing = Object.create(null);
+    Array.prototype.forEach.call(listEl.children, function (li) {
+      if (li.dataset.user) existing[li.dataset.user] = li;
+    });
+
+    var previous = null;
+    people.forEach(function (who) {
+      var li = existing[who.name];
+      if (li) {
+        delete existing[who.name];
+        fillUserRow(li, who);
+      } else {
+        li = buildUserRow(who, className);
+      }
+      // Put it back in order without touching rows that are already correct.
+      var shouldFollow = previous ? previous.nextSibling : listEl.firstChild;
+      if (li !== shouldFollow) listEl.insertBefore(li, shouldFollow);
+      previous = li;
+    });
+
+    Object.keys(existing).forEach(function (name) { existing[name].remove(); });
+  }
+
   function updateActiveUsers(list) {
-    list = list || [];
-    var count = String(list.length);
-    activeUsersCount.textContent = count;
-    if (activeCountBadge) {
-      activeCountBadge.textContent = count;
-      activeCountBadge.hidden = list.length === 0;
-    }
+    var people = (list || []).map(presenceOf).filter(Boolean);
+
     // Presence beats carry versions too, so an avatar change still lands on
     // people sitting in the arcade with chat polling stopped.
     var versions = null;
-    list.forEach(function (entry) {
+    (list || []).forEach(function (entry) {
       if (entry && entry.name && entry.avatarVersion) {
         if (!versions) versions = Object.create(null);
         versions[entry.name.toLowerCase()] = entry.avatarVersion;
@@ -1525,13 +1560,15 @@
     });
     applyAvatarVersions(versions);
 
-    activeUsersList.innerHTML = '';
-    activeUsersEmpty.hidden = list.length !== 0;
-    list.forEach(function (entry) {
-      var row = buildUserRow(entry, 'active-user-row');
-      if (row) activeUsersList.appendChild(row);
-    });
-    renderSidebarPresence(list);
+    var count = String(people.length);
+    activeUsersCount.textContent = count;
+    if (activeCountBadge) {
+      activeCountBadge.textContent = count;
+      activeCountBadge.hidden = people.length === 0;
+    }
+    activeUsersEmpty.hidden = people.length !== 0;
+    syncUserList(activeUsersList, people, 'active-user-row');
+    renderSidebarPresence(people);
   }
 
   // ---------------------------------------------------------------------
@@ -1544,15 +1581,10 @@
   var sidebarFeedEmpty = document.getElementById('sidebar-feed-empty');
   var sidebarToggle = document.getElementById('sidebar-toggle');
 
-  function renderSidebarPresence(list) {
+  function renderSidebarPresence(people) {
     if (!sidebarNowEl) return;
-    sidebarNowEl.innerHTML = '';
-    var any = 0;
-    list.forEach(function (entry) {
-      var row = buildUserRow(entry, 'sidebar-user-row');
-      if (row) { sidebarNowEl.appendChild(row); any++; }
-    });
-    if (sidebarNowEmpty) sidebarNowEmpty.hidden = any !== 0;
+    syncUserList(sidebarNowEl, people, 'sidebar-user-row');
+    if (sidebarNowEmpty) sidebarNowEmpty.hidden = people.length !== 0;
   }
 
   function mergeFeed(entries) {
@@ -1581,49 +1613,72 @@
     return Math.round(mins / 60) + 'h ago';
   }
 
+  function buildFeedRow(e) {
+    var li = document.createElement('li');
+    li.className = 'sidebar-feed-row';
+    li.dataset.feedId = e.id;
+
+    var img = document.createElement('img');
+    img.className = 'avatar';
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = avatarUrl(e.username);
+
+    var body = document.createElement('span');
+    body.className = 'sidebar-feed-body';
+    var line = document.createElement('span');
+    line.className = 'sidebar-feed-line';
+    var who = document.createElement('strong');
+    who.textContent = e.username;
+    line.appendChild(who);
+
+    if (e.kind === 'track') {
+      line.appendChild(document.createTextNode(' listened to '));
+      var song = document.createElement('em');
+      song.textContent = e.artists ? e.detail + ' \u2014 ' + e.artists : e.detail;
+      line.appendChild(song);
+    } else {
+      line.appendChild(document.createTextNode(' started ' + (ACTIVITY_LABELS[e.detail] || 'in the arcade')));
+    }
+
+    var when = document.createElement('span');
+    when.className = 'sidebar-feed-time';
+    when.textContent = relativeTime(e.ts);
+
+    body.appendChild(line);
+    body.appendChild(when);
+    li.appendChild(img);
+    li.appendChild(body);
+    return li;
+  }
+
+  // Same reasoning as syncUserList: only the timestamp usually changes, and
+  // rebuilding the row would reload the avatar and make it blink.
   function renderFeed() {
     if (!sidebarFeedEl) return;
-    sidebarFeedEl.innerHTML = '';
     if (sidebarFeedEmpty) sidebarFeedEmpty.hidden = latestFeed.length !== 0;
+
+    var existing = Object.create(null);
+    Array.prototype.forEach.call(sidebarFeedEl.children, function (li) {
+      if (li.dataset.feedId) existing[li.dataset.feedId] = li;
+    });
+
+    var previous = null;
     for (var i = latestFeed.length - 1; i >= 0; i--) {
       var e = latestFeed[i];
-      var li = document.createElement('li');
-      li.className = 'sidebar-feed-row';
-
-      var img = document.createElement('img');
-      img.className = 'avatar';
-      img.alt = '';
-      img.loading = 'lazy';
-      img.src = avatarUrl(e.username);
-
-      var body = document.createElement('span');
-      body.className = 'sidebar-feed-body';
-      var line = document.createElement('span');
-      line.className = 'sidebar-feed-line';
-
-      var who = document.createElement('strong');
-      who.textContent = e.username;
-      line.appendChild(who);
-
-      if (e.kind === 'track') {
-        line.appendChild(document.createTextNode(' listened to '));
-        var song = document.createElement('em');
-        song.textContent = e.artists ? e.detail + ' \u2014 ' + e.artists : e.detail;
-        line.appendChild(song);
+      var li = existing[e.id];
+      if (li) {
+        delete existing[e.id];
+        li.querySelector('.sidebar-feed-time').textContent = relativeTime(e.ts);
       } else {
-        line.appendChild(document.createTextNode(' started ' + (ACTIVITY_LABELS[e.detail] || 'in the arcade')));
+        li = buildFeedRow(e);
       }
-
-      var when = document.createElement('span');
-      when.className = 'sidebar-feed-time';
-      when.textContent = relativeTime(e.ts);
-
-      body.appendChild(line);
-      body.appendChild(when);
-      li.appendChild(img);
-      li.appendChild(body);
-      sidebarFeedEl.appendChild(li);
+      var shouldFollow = previous ? previous.nextSibling : sidebarFeedEl.firstChild;
+      if (li !== shouldFollow) sidebarFeedEl.insertBefore(li, shouldFollow);
+      previous = li;
     }
+
+    Object.keys(existing).forEach(function (id) { existing[id].remove(); });
   }
 
   if (sidebarToggle) {
@@ -3400,6 +3455,11 @@
   var T_PX = 24;
   var T_LOCK_MS = 500;
   var T_LOCK_RESETS = 15;
+  // No SRS kick rises more than two rows, so a piece is never allowed further
+  // than that above the deepest row it has reached. Without a ceiling anchored
+  // to how far the piece has actually fallen, spamming rotate ratchets it up
+  // the board: every kick lifts it, and being airborne again clears the lock.
+  var T_MAX_KICK_RISE = 2;
 
   var T_DEFS = {
     I: { color: '#41c6d8', size: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },
@@ -3598,6 +3658,7 @@
     for (var i = 0; i < kicks.length; i++) {
       var kx = kicks[i][0];
       var ky = kicks[i][1];
+      if (p.y + ky < tetris.lowestY - T_MAX_KICK_RISE) continue;
       if (!tCollide(p.x + kx, p.y + ky, newRot)) {
         p.x += kx;
         p.y += ky;
@@ -3605,6 +3666,7 @@
         tetris.lastMoveRotation = true;
         tetris.lastKickIndex = i;
         if (tCollide(p.x, p.y + 1, p.rot)) tResetLock();
+        else if (ky < 0 && tetris.lockResets < T_LOCK_RESETS) tetris.lockResets++;
         return;
       }
     }
@@ -3625,6 +3687,7 @@
 
   function tSpawn(type) {
     tetris.piece = { type: type, rot: 0, x: type === 'O' ? 4 : 3, y: -1 };
+    tetris.lowestY = tetris.piece.y;
     tetris.gravAcc = 0;
     tetris.lockAcc = 0;
     tetris.lockResets = 0;
@@ -3674,6 +3737,7 @@
     var p = tetris.piece;
     var dist = tGhostY() - p.y;
     p.y += dist;
+    if (p.y > tetris.lowestY) tetris.lowestY = p.y;
     tetris.score += dist * 2;
     if (dist > 0) tetris.lastMoveRotation = false;
     tLock();
@@ -3734,11 +3798,15 @@
     });
     if (over) { endTetris(); return; }
 
-    var fullRows = [];
+    var cleared = 0;
     for (var y = T_ROWS - 1; y >= 0; y--) {
-      if (tetris.grid[y].every(Boolean)) fullRows.push(y);
+      if (tetris.grid[y].every(Boolean)) {
+        tetris.grid.splice(y, 1);
+        tetris.grid.unshift(new Array(T_COLS).fill(null));
+        cleared++;
+        y++;
+      }
     }
-    var cleared = fullRows.length;
 
     var names = ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'];
     var action = '';
@@ -3772,32 +3840,11 @@
     }
     tetris.score += base;
     tetris.lines += cleared;
-    var prevLevel = tetris.level;
     tetris.level = Math.floor(tetris.lines / 10) + 1;
-    if (tetris.level > prevLevel) action = (action ? action + ' · ' : '') + 'LEVEL ' + tetris.level;
     if (action) flashAction(action);
 
     tetris.holdUsed = false;
     updateTetrisHud();
-
-    if (cleared) {
-      // Held on screen for a beat, then collapsed in tFinishClear.
-      tetris.piece = null;
-      tetris.clearing = { rows: fullRows, elapsed: 0, big: cleared >= 4 || tspin };
-      return;
-    }
-    tSpawnFromQueue();
-  }
-
-  var T_CLEAR_MS = 190;
-
-  function tFinishClear() {
-    // Take every cleared row out first, then put the replacements back on
-    // top — unshifting between splices would shift the remaining indices.
-    var rows = tetris.clearing.rows.slice().sort(function (a, b) { return a - b; });
-    for (var i = rows.length - 1; i >= 0; i--) tetris.grid.splice(rows[i], 1);
-    for (var j = 0; j < rows.length; j++) tetris.grid.unshift(new Array(T_COLS).fill(null));
-    tetris.clearing = null;
     tSpawnFromQueue();
   }
 
@@ -3811,11 +3858,6 @@
 
   function tStep(dt) {
     var t = tetris;
-    if (t.clearing) {
-      t.clearing.elapsed += dt;
-      if (t.clearing.elapsed >= T_CLEAR_MS) tFinishClear();
-      return;
-    }
     var p = t.piece;
 
     if (t.dirHeld) {
@@ -3840,7 +3882,10 @@
       t.gravAcc -= delay;
       if (!tCollide(p.x, p.y + 1, p.rot)) {
         p.y++;
-        t.lockResets = 0;
+        if (p.y > t.lowestY) {
+          t.lowestY = p.y;
+          t.lockResets = 0;
+        }
         t.lastMoveRotation = false;
         if (t.softHeld) { t.score += 1; updateTetrisHud(); }
       } else {
@@ -3854,80 +3899,39 @@
         tLock();
         return;
       }
+    } else if (t.lockResets >= T_LOCK_RESETS) {
+      t.lockAcc += dt;
+      if (t.lockAcc >= T_LOCK_MS) {
+        p.y = tGhostY();
+        tLock();
+        return;
+      }
     } else {
       t.lockAcc = 0;
     }
   }
 
-  function roundRectPath(ctx, x, y, w, h, r) {
-    var rad = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + rad, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rad);
-    ctx.arcTo(x + w, y + h, x, y + h, rad);
-    ctx.arcTo(x, y + h, x, y, rad);
-    ctx.arcTo(x, y, x + w, y, rad);
-    ctx.closePath();
-  }
-
   function drawTCell(ctx, x, y, px, color, ghost) {
-    var gx = x * px + 1;
-    var gy = y * px + 1;
-    var size = px - 2;
-
     if (ghost) {
-      ctx.globalAlpha = 0.14;
+      ctx.globalAlpha = 0.18;
       ctx.fillStyle = color;
-      roundRectPath(ctx, gx, gy, size, size, 4);
-      ctx.fill();
-      ctx.globalAlpha = 0.55;
+      ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
+      ctx.globalAlpha = 1;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
-      roundRectPath(ctx, gx + 0.75, gy + 0.75, size - 1.5, size - 1.5, 3.5);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      ctx.strokeRect(x * px + 1.5, y * px + 1.5, px - 3, px - 3);
       return;
     }
-
-    var grad = ctx.createLinearGradient(gx, gy, gx, gy + size);
-    grad.addColorStop(0, color);
-    grad.addColorStop(1, shadeColor(color, -0.28));
-    ctx.fillStyle = grad;
-    roundRectPath(ctx, gx, gy, size, size, 4);
-    ctx.fill();
-
-    ctx.fillStyle = 'rgba(255,255,255,0.22)';
-    roundRectPath(ctx, gx + 2, gy + 2, size - 4, Math.max(2, size * 0.22), 2);
-    ctx.fill();
-
-    ctx.strokeStyle = 'rgba(0,0,0,0.32)';
-    ctx.lineWidth = 1;
-    roundRectPath(ctx, gx + 0.5, gy + 0.5, size - 1, size - 1, 4);
-    ctx.stroke();
-  }
-
-  function shadeColor(hex, amount) {
-    var n = parseInt(hex.slice(1), 16);
-    var r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-    function mix(c) {
-      return Math.max(0, Math.min(255, Math.round(amount < 0 ? c * (1 + amount) : c + (255 - c) * amount)));
-    }
-    return 'rgb(' + mix(r) + ',' + mix(g) + ',' + mix(b) + ')';
+    ctx.fillStyle = color;
+    ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(x * px + 1, y * px + 1, px - 2, 3);
   }
 
   function drawTetris() {
     var ctx = tetrisCtx;
-    var W = tetrisCanvas.width;
-    var H = tetrisCanvas.height;
-    ctx.clearRect(0, 0, W, H);
-
-    var bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, 'rgba(16,20,29,0.95)');
-    bg.addColorStop(1, 'rgba(8,10,15,0.98)');
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, W, H);
-
-    ctx.strokeStyle = 'rgba(233,225,208,0.05)';
+    ctx.clearRect(0, 0, tetrisCanvas.width, tetrisCanvas.height);
+    ctx.strokeStyle = 'rgba(233,225,208,0.06)';
     ctx.lineWidth = 1;
     for (var gx = 1; gx < T_COLS; gx++) {
       ctx.beginPath(); ctx.moveTo(gx * T_PX + 0.5, 0); ctx.lineTo(gx * T_PX + 0.5, T_ROWS * T_PX); ctx.stroke();
@@ -3936,51 +3940,12 @@
       ctx.beginPath(); ctx.moveTo(0, gy * T_PX + 0.5); ctx.lineTo(T_COLS * T_PX, gy * T_PX + 0.5); ctx.stroke();
     }
     if (!tetris) return;
-
-    var clearing = tetris.clearing;
-    var t = clearing ? Math.min(1, clearing.elapsed / T_CLEAR_MS) : 0;
-    var clearRows = Object.create(null);
-    if (clearing) clearing.rows.forEach(function (r) { clearRows[r] = true; });
-
     for (var y = 0; y < T_ROWS; y++) {
-      var isClearing = clearRows[y];
-      if (isClearing) {
-        ctx.save();
-        ctx.translate(0, (y + 0.5) * T_PX);
-        ctx.scale(1, Math.max(0.02, 1 - t * 0.85));
-        ctx.translate(0, -(y + 0.5) * T_PX);
-        ctx.globalAlpha = 1 - t * 0.65;
-      }
       for (var x = 0; x < T_COLS; x++) {
         if (tetris.grid[y][x]) drawTCell(ctx, x, y, T_PX, tetris.grid[y][x]);
       }
-      if (isClearing) {
-        ctx.globalAlpha = 0.55 * (1 - t);
-        ctx.fillStyle = '#fdf7e8';
-        roundRectPath(ctx, 1, y * T_PX + 1, T_COLS * T_PX - 2, T_PX - 2, 4);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.restore();
-      }
     }
-
-    if (clearing) {
-      var half = (T_COLS * T_PX) / 2;
-      var reach = half * Math.min(1, t * 1.6);
-      clearing.rows.forEach(function (r) {
-        var cy = r * T_PX + T_PX / 2;
-        var g = ctx.createLinearGradient(half - reach, 0, half + reach, 0);
-        g.addColorStop(0, 'rgba(147,184,154,0)');
-        g.addColorStop(0.5, 'rgba(233,225,208,' + (0.85 * (1 - t)).toFixed(3) + ')');
-        g.addColorStop(1, 'rgba(147,184,154,0)');
-        ctx.fillStyle = g;
-        ctx.fillRect(half - reach, cy - 1.5, reach * 2, 3);
-      });
-      return;
-    }
-
     var p = tetris.piece;
-    if (!p) return;
     var cells = T_SHAPES[p.type][p.rot];
     var color = T_DEFS[p.type].color;
     var gy2 = tGhostY();
@@ -3990,14 +3955,10 @@
         if (by >= 0) drawTCell(ctx, p.x + c[0], by, T_PX, color, true);
       });
     }
-    ctx.save();
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 10;
     cells.forEach(function (c) {
       var by = p.y + c[1];
       if (by >= 0) drawTCell(ctx, p.x + c[0], by, T_PX, color);
     });
-    ctx.restore();
   }
 
   function drawMini(ctx, type, slotY, slotH, dim) {
@@ -4013,12 +3974,12 @@
     var ox = (ctx.canvas.width - w) / 2;
     var oy = slotY + (slotH - h) / 2;
     ctx.globalAlpha = dim ? 0.35 : 1;
-    ctx.save();
-    ctx.translate(ox - minX * px, oy - minY * px);
     cells.forEach(function (c) {
-      drawTCell(ctx, c[0], c[1], px, T_DEFS[type].color);
+      ctx.fillStyle = T_DEFS[type].color;
+      ctx.fillRect(ox + (c[0] - minX) * px + 1, oy + (c[1] - minY) * px + 1, px - 2, px - 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(ox + (c[0] - minX) * px + 1, oy + (c[1] - minY) * px + 1, px - 2, 2);
     });
-    ctx.restore();
     ctx.globalAlpha = 1;
   }
 
@@ -4054,8 +4015,7 @@
     tetris = {
       grid: grid, bag: [], queue: [], piece: null, hold: null, holdUsed: false,
       score: 0, lines: 0, level: 1, combo: -1, b2b: false, b2bCount: 0,
-      clearing: null, flash: 0,
-      gravAcc: 0, lockAcc: 0, lockResets: 0,
+      gravAcc: 0, lockAcc: 0, lockResets: 0, lowestY: -1,
       lastMoveRotation: false, lastKickIndex: 0,
       dirHeld: 0, leftHeld: false, rightHeld: false, dasAcc: 0, arrAcc: 0, softHeld: false,
     };
@@ -5043,7 +5003,7 @@
       return;
     }
 
-    if (activeGame === 'tetris' && tetris && tetris.piece) {
+    if (activeGame === 'tetris' && tetris) {
       var b = tCfg.binds;
       var code = e.code;
       if (code === b.left) {

@@ -1595,35 +1595,25 @@ body[data-chat-skin="paper"]:is([data-view="chat"],[data-view="games"]) .atmosph
   transform: none;
   box-shadow: none;
 }
-.tetris-boardwrap{
-  position: relative;
-  flex-shrink: 0;
-  padding: 6px;
-  border-radius: 14px;
-  background: linear-gradient(160deg, rgba(139,115,85,0.28), rgba(111,143,118,0.14) 45%, rgba(139,115,85,0.22));
-  box-shadow: 0 22px 44px -22px rgba(0,0,0,0.75);
-}
+.tetris-boardwrap{ position: relative; flex-shrink: 0; }
 #tetris-canvas{
   background: rgba(8,10,15,0.92);
-  border: 1px solid rgba(139,115,85,0.4);
-  border-radius: 9px;
+  border: 1px solid rgba(139,115,85,0.35);
+  border-radius: 8px;
   display: block;
-  box-shadow: inset 0 0 34px rgba(0,0,0,0.55);
 }
-.t-box canvas{ filter: drop-shadow(0 3px 6px rgba(0,0,0,0.4)); }
-.t-stats b{ transition: color 0.25s var(--ease); }
 .t-action{
   position: absolute;
-  top: 1.2rem;
+  top: 0.7rem;
   left: 0;
   right: 0;
   text-align: center;
   font: 500 0.78rem var(--font-mono);
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   color: var(--verdigris-bright);
   pointer-events: none;
   opacity: 0;
-  text-shadow: 0 0 14px rgba(147,184,154,0.7), 0 1px 2px rgba(0,0,0,0.8);
+  text-shadow: 0 0 12px rgba(147,184,154,0.6);
 }
 .t-action.is-flash{ animation: actionFlash 1.4s var(--ease) forwards; }
 @keyframes actionFlash{
