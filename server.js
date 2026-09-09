@@ -27,6 +27,7 @@ const USERNAME_RE = /^[^\x00-\x1F\x7F]{1,20}$/;
 const LEGACY_USERNAME_RE = /^[a-z0-9_]{1,20}$/;
 const RESERVED_USERNAMES = new Set(['admin', 'system', 'moderator', 'root', 'soulstudies']);
 const MAX_MESSAGE_LEN = 4000;
+const MAX_EDIT_HISTORY = 20;
 const MAX_MESSAGES_KEPT = 300;
 const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 // 'enc' = AES-GCM ciphertext this server can't read. Avatars stay real images.
@@ -38,6 +39,10 @@ const ACTIVITY_CODES = [
   'chat', 'essay', 'arcade', 'spotify', 'idle',
   'game:snake', 'game:tetris', 'game:mines', 'game:poker', 'game:cookie', 'game:doom',
 ];
+const MAX_NOWPLAYING_LEN = 120;
+const MAX_FEED_ENTRIES = 60;
+// Dwell time before a game shows up in the feed, so tab-flicking stays quiet.
+const FEED_MIN_DWELL_MS = 20 * 1000;
 const MAX_GAME_SCORE = 1e15;
 // How long a reported activity stays believable without a refresh.
 const ACTIVITY_STALE_MS = 2 * 60 * 1000;
@@ -54,9 +59,21 @@ const SPOTIFY_SCOPES = [
   'user-modify-playback-state',
   'playlist-read-private',
   'playlist-read-collaborative',
+  'user-library-read',
+  'user-top-read',
+  'user-read-recently-played',
   // 'streaming' is required by the Web Playback SDK; accounts linked before it need a reconnect.
   'streaming',
 ].join(' ');
+const SPOTIFY_REQUIRED_SCOPES = [
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'playlist-read-private',
+  'user-library-read',
+  'streaming',
+];
+// Algorithmic, so it 404s on /v1/playlists — playable as a context only.
+const SPOTIFY_DJ_URI = 'spotify:playlist:37i9dQZF1EYkqdzj48dyYq';
 // Signs the OAuth `state` so the callback works without the SameSite=Strict cookie.
 const SPOTIFY_STATE_SECRET = crypto.randomBytes(32);
 const SPOTIFY_STATE_TTL_MS = 5 * 60 * 1000;
@@ -363,7 +380,12 @@ for (const room of ROOMS) {
     if (!ALLOWED_AVATAR_EXTS.includes(ext)) continue;
     const base = path.basename(entry.name, path.extname(entry.name));
     const key = decodeUserFileBase(base);
-    if (key) avatarExtByUser.set(key, { ext, base });
+    if (!key) continue;
+    // mtime is the avatar's version; client URLs carry it so a new upload
+    // is a new URL rather than a cache hit on the old picture.
+    let v = 0;
+    try { v = Math.floor(fs.statSync(path.join(avatarsDir, entry.name)).mtimeMs); } catch (e) { v = 0; }
+    avatarExtByUser.set(key, { ext, base, v });
   }
 
   const chatImageExtById = new Map();
@@ -390,6 +412,8 @@ for (const room of ROOMS) {
     avatarExtByUser,
     chatImageExtById,
     usernameOwners: new Map(),
+    spotifyDropped: new Set(),
+    feed: [],
   };
 }
 
@@ -498,6 +522,11 @@ function releaseUsername(sid, session) {
   }
 }
 
+function avatarVersionFor(roomState, usernameKey) {
+  const rec = roomState && roomState.avatarExtByUser.get(usernameKey);
+  return rec ? (rec.v || 0) : 0;
+}
+
 function activeUsernamesInRoom(roomId) {
   const roomState = rooms[roomId];
   if (!roomState) return [];
@@ -510,11 +539,86 @@ function activeUsernamesInRoom(roomId) {
       // the tab is still checking in, but whatever it last said it was
       // doing is no longer worth believing, so fall back to unknown.
       const fresh = s.activity && now - (s.activityAt || 0) < ACTIVITY_STALE_MS;
-      names.push({ name: s.username, activity: fresh ? s.activity : null });
+      const np = s.nowPlaying && now - s.nowPlaying.ts < ACTIVITY_STALE_MS ? s.nowPlaying : null;
+      names.push({
+        name: s.username,
+        activity: fresh ? s.activity : null,
+        listening: np ? { name: np.name, artists: np.artists } : null,
+        avatarVersion: avatarVersionFor(roomState, key),
+      });
     }
   }
   names.sort((a, b) => a.name.localeCompare(b.name));
   return names;
+}
+
+function avatarVersionsInRoom(roomId) {
+  const roomState = rooms[roomId];
+  if (!roomState) return {};
+  const out = Object.create(null);
+  for (const [key, rec] of roomState.avatarExtByUser) out[key] = rec.v || 0;
+  return out;
+}
+
+function pushFeedEntry(roomState, entry) {
+  const last = roomState.feed[roomState.feed.length - 1];
+  if (last && last.username === entry.username && last.kind === entry.kind && last.detail === entry.detail) {
+    last.ts = entry.ts;
+    return;
+  }
+  roomState.feed.push(entry);
+  if (roomState.feed.length > MAX_FEED_ENTRIES) {
+    roomState.feed.splice(0, roomState.feed.length - MAX_FEED_ENTRIES);
+  }
+}
+
+function applyPresence(session, activity, track) {
+  const now = Date.now();
+  const roomState = session.room ? rooms[session.room] : null;
+
+  if (activity && ACTIVITY_CODES.includes(activity)) {
+    if (session.activity !== activity) {
+      session.activitySince = now;
+      session.activityFeedPosted = false;
+    }
+    session.activity = activity;
+    session.activityAt = now;
+
+    if (roomState && activity.startsWith('game:') && !session.activityFeedPosted &&
+        now - (session.activitySince || now) >= FEED_MIN_DWELL_MS) {
+      session.activityFeedPosted = true;
+      pushFeedEntry(roomState, {
+        id: crypto.randomUUID(), username: session.username,
+        kind: 'game', detail: activity, ts: now,
+      });
+    }
+  }
+
+  if (track && typeof track === 'object') {
+    const name = sanitizeText(track.name, MAX_NOWPLAYING_LEN);
+    const artists = typeof track.artists === 'string'
+      ? (sanitizeText(track.artists, MAX_NOWPLAYING_LEN) || '') : '';
+    if (name) {
+      const changed = !session.nowPlaying || session.nowPlaying.name !== name ||
+        session.nowPlaying.artists !== artists;
+      session.nowPlaying = { name, artists, ts: now };
+      if (changed && roomState) {
+        pushFeedEntry(roomState, {
+          id: crypto.randomUUID(), username: session.username,
+          kind: 'track', detail: name, artists, ts: now,
+        });
+      }
+    }
+  } else if (track === null) {
+    session.nowPlaying = null;
+  }
+}
+
+function recentFeed(roomId, since) {
+  const roomState = rooms[roomId];
+  if (!roomState) return [];
+  const cut = Number(since) || 0;
+  return roomState.feed.filter((e) => e.ts > cut).slice(-MAX_FEED_ENTRIES);
 }
 
 function getSession(req) {
@@ -753,10 +857,10 @@ function letterAvatarSvg(username) {
   );
 }
 
-function sendSvg(res, svg) {
+function sendSvg(res, svg, cacheControl) {
   res.writeHead(200, {
     'Content-Type': 'image/svg+xml; charset=utf-8',
-    'Cache-Control': 'private, max-age=120',
+    'Cache-Control': cacheControl || 'private, max-age=120',
   });
   res.end(svg);
 }
@@ -936,38 +1040,95 @@ function sendSpotifyForbidden(res, context, action, status, json) {
   });
 }
 
+// One in-flight refresh per account. Two parallel refreshes race, and the
+// loser can spend an already-rotated refresh token — which reads as a real
+// revocation and used to log the user straight back out.
+const spotifyRefreshInFlight = new Map();
+
+function spotifyMissingScopes(rec) {
+  const granted = new Set(String((rec && rec.scope) || '').split(' ').filter(Boolean));
+  return SPOTIFY_REQUIRED_SCOPES.filter((sc) => !granted.has(sc));
+}
+
+async function refreshSpotifyToken(roomState, key, rec) {
+  if (!rec.refreshToken) {
+    dropSpotifyConnection(roomState, key);
+    return null;
+  }
+  let result;
+  try {
+    result = await spotifyTokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: rec.refreshToken,
+    });
+  } catch (e) {
+    // Network trouble on our side. The connection is probably still good, so
+    // leave it alone and let the next call try again.
+    console.error('[spotify] token refresh for ' + key + ' threw', e && e.message);
+    return null;
+  }
+  const { status, json } = result;
+  if (status === 200 && json && json.access_token) {
+    rec.accessToken = json.access_token;
+    if (json.refresh_token) rec.refreshToken = json.refresh_token;
+    rec.expiresAt = Date.now() + (Number(json.expires_in) || 3600) * 1000;
+    if (typeof json.scope === 'string') rec.scope = json.scope;
+    rec.lastError = null;
+    roomState.spotifyDirty = true;
+    return rec.accessToken;
+  }
+  logSpotifyIssue('token refresh for ' + key, status, json);
+  // Only an outright rejection of the grant means the user really has to
+  // reconnect. A 429 or a 5xx is Spotify having a moment.
+  const err = json && typeof json.error === 'string' ? json.error : '';
+  if (status === 400 && err === 'invalid_grant') {
+    dropSpotifyConnection(roomState, key);
+    return null;
+  }
+  rec.lastError = 'refresh';
+  return null;
+}
+
 async function ensureFreshSpotifyToken(roomState, key) {
   const rec = roomState.spotifyTokens[key];
   if (!rec) return null;
   if (rec.expiresAt - Date.now() > 60 * 1000) return rec.accessToken;
 
-  try {
-    const { status, json } = await spotifyTokenRequest({
-      grant_type: 'refresh_token',
-      refresh_token: rec.refreshToken,
-    });
-    if (status !== 200 || !json || !json.access_token) {
-      logSpotifyIssue('token refresh for ' + key, status, json);
-      delete roomState.spotifyTokens[key];
-      roomState.spotifyDirty = true;
-      return null;
-    }
-    rec.accessToken = json.access_token;
-    if (json.refresh_token) rec.refreshToken = json.refresh_token;
-    rec.expiresAt = Date.now() + (Number(json.expires_in) || 3600) * 1000;
-    if (typeof json.scope === 'string') rec.scope = json.scope;
-    roomState.spotifyDirty = true;
-    return rec.accessToken;
-  } catch (e) {
-    return null;
+  const mapKey = roomState.avatarsDir + '|' + key;
+  let pending = spotifyRefreshInFlight.get(mapKey);
+  if (!pending) {
+    pending = refreshSpotifyToken(roomState, key, rec)
+      .finally(() => { spotifyRefreshInFlight.delete(mapKey); });
+    spotifyRefreshInFlight.set(mapKey, pending);
   }
+  return pending;
 }
 
 function dropSpotifyConnection(roomState, key) {
   if (roomState.spotifyTokens[key]) {
     delete roomState.spotifyTokens[key];
     roomState.spotifyDirty = true;
+    // So /status can say why the panel went back to "Connect".
+    roomState.spotifyDropped.add(key);
   }
+}
+
+function spotifyDjEntry() {
+  return {
+    id: 'dj',
+    kind: 'dj',
+    uri: SPOTIFY_DJ_URI,
+    name: 'DJ',
+    owner: 'Spotify',
+    trackCount: null,
+    image: null,
+  };
+}
+
+function spotifyMarket(roomState, key) {
+  const rec = roomState && roomState.spotifyTokens[key];
+  const c = rec && typeof rec.country === 'string' ? rec.country : '';
+  return /^[A-Z]{2}$/.test(c) ? c : 'US';
 }
 
 function spotifyRedirectUri(req) {
@@ -980,12 +1141,17 @@ function simplifyTrack(t) {
   if (!t) return null;
   const images = (t.album && Array.isArray(t.album.images)) ? t.album.images : [];
   const art = images.length ? (images[Math.min(1, images.length - 1)] || images[0]).url : null;
+  const artistList = Array.isArray(t.artists)
+    ? t.artists.filter(Boolean).map((a) => ({ id: a.id || null, name: a.name || '' }))
+    : [];
   return {
     id: t.id,
     uri: t.uri,
     name: t.name,
-    artists: Array.isArray(t.artists) ? t.artists.map((a) => a.name).join(', ') : '',
+    artists: artistList.map((a) => a.name).join(', '),
+    artistList,
     album: t.album ? t.album.name : '',
+    albumId: t.album ? (t.album.id || null) : null,
     durationMs: t.duration_ms || 0,
     albumArt: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
   };
@@ -1000,7 +1166,8 @@ function simplifyPlaylist(p) {
     uri: p.uri,
     name: p.name,
     owner: p.owner ? (p.owner.display_name || p.owner.id || '') : '',
-    trackCount: p.tracks ? (p.tracks.total || 0) : 0,
+    // null, not 0: "0 songs" is a claim, and an absent total isn't one.
+    trackCount: p.tracks && typeof p.tracks.total === 'number' ? p.tracks.total : null,
     image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
   };
 }
@@ -1014,6 +1181,7 @@ function simplifyArtist(a) {
     uri: a.uri,
     name: a.name,
     genres: Array.isArray(a.genres) ? a.genres.slice(0, 3) : [],
+    followers: a.followers && typeof a.followers.total === 'number' ? a.followers.total : null,
     image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
   };
 }
@@ -1027,16 +1195,18 @@ function simplifyAlbum(al) {
     uri: al.uri,
     name: al.name,
     artists: Array.isArray(al.artists) ? al.artists.map((a) => a.name).join(', ') : '',
+    artistList: Array.isArray(al.artists)
+      ? al.artists.filter(Boolean).map((a) => ({ id: a.id || null, name: a.name || '' })) : [],
+    albumType: typeof al.album_group === 'string' ? al.album_group : (al.album_type || ''),
     year: al.release_date ? String(al.release_date).slice(0, 4) : '',
     totalTracks: al.total_tracks || 0,
     image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
   };
 }
 
-// Playlist items nest the track under `item`, not the deprecated `track` key.
 function simplifyPlaylistItem(entry) {
   if (!entry || entry.is_local) return null;
-  const t = entry.item || entry.track;
+  const t = entry.track || entry.item;
   if (!t || (t.type && t.type !== 'track')) return null;
   return simplifyTrack(t);
 }
@@ -1101,11 +1271,24 @@ async function handleApi(req, res, pathname) {
     const qi = req.url.indexOf('?');
     if (qi !== -1) {
       const activity = new URLSearchParams(req.url.slice(qi + 1)).get('activity');
-      if (activity && ACTIVITY_CODES.includes(activity)) {
-        session.activity = activity;
-        session.activityAt = Date.now();
-      }
+      if (activity && ACTIVITY_CODES.includes(activity)) applyPresence(session, activity, undefined);
     }
+  }
+
+  // POST /api/presence — the heartbeat every view sends, whichever one is up.
+  if (pathname === '/api/presence' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const track = Object.prototype.hasOwnProperty.call(body, 'track') ? body.track : undefined;
+    applyPresence(session, typeof body.activity === 'string' ? body.activity : null, track);
+    return sendJson(res, 200, {
+      ok: true,
+      activeUsers: activeUsernamesInRoom(session.room),
+      feed: recentFeed(session.room, Number(body.feedSince) || 0),
+      serverTime: Date.now(),
+    });
   }
 
   // GET /api/session — bootstrap info for the frontend (no secrets)
@@ -1190,12 +1373,14 @@ async function handleApi(req, res, pathname) {
     const roomState = rooms[session.room];
     const url = new URL(req.url, 'http://internal');
     const since = Number(url.searchParams.get('since')) || 0;
-    const recent = roomState.messages.filter((m) => m.ts > since).slice(-100);
+    const recent = roomState.messages.filter((m) => Math.max(m.ts, m.editedAt || 0) > since).slice(-100);
     return sendJson(res, 200, {
       messages: recent,
       serverTime: Date.now(),
       clearedAt: roomState.clearedAt,
       activeUsers: activeUsernamesInRoom(session.room),
+      avatarVersions: avatarVersionsInRoom(session.room),
+      feed: recentFeed(session.room, Number(url.searchParams.get('feedSince')) || 0),
     });
   }
 
@@ -1240,6 +1425,43 @@ async function handleApi(req, res, pathname) {
       roomState.byId.clear();
       for (const m of roomState.messages) roomState.byId.set(m.id, m);
     }
+    scheduleSave(session.room);
+    return sendJson(res, 200, { ok: true, message: msg });
+  }
+
+  // POST /api/chat/edit — the author rewrites one of their own text messages.
+  if (pathname === '/api/chat/edit' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const id = typeof body.id === 'string' ? body.id : '';
+    if (!REPLY_ID_RE.test(id)) return sendJson(res, 400, { error: 'Invalid message id' });
+    const text = sanitizeText(body.text, MAX_MESSAGE_LEN);
+    if (!text) return sendJson(res, 400, { error: 'Message could not be saved.' });
+
+    const roomState = rooms[session.room];
+    const msg = roomState.byId.get(id);
+    if (!msg) return sendJson(res, 404, { error: 'That message is gone.' });
+    if (msg.username !== session.username) return sendJson(res, 403, { error: 'You can only edit your own messages.' });
+    if (msg.type !== 'text') return sendJson(res, 400, { error: 'Only text messages can be edited.' });
+    if (msg.text === text) return sendJson(res, 200, { ok: true, message: msg });
+
+    if (!Array.isArray(msg.history)) msg.history = [];
+    msg.history.push({ text: msg.text, ts: msg.editedAt || msg.ts });
+    if (msg.history.length > MAX_EDIT_HISTORY) {
+      msg.history.splice(0, msg.history.length - MAX_EDIT_HISTORY);
+    }
+    msg.text = text;
+    msg.editedAt = Date.now();
+
+    // A reply quoting this message keeps its own snapshot, so refresh those
+    // too rather than leaving the old wording quoted around the room.
+    for (const other of roomState.messages) {
+      if (other.replyTo && other.replyTo.id === id) other.replyTo.cipher = text;
+    }
+
     scheduleSave(session.room);
     return sendJson(res, 200, { ok: true, message: msg });
   }
@@ -1370,15 +1592,17 @@ async function handleApi(req, res, pathname) {
 
     const roomState = rooms[session.room];
     const key = session.username.toLowerCase();
+    const version = Date.now();
     try {
       saveAvatarFile(roomState.avatarsDir, key, detected.ext, buf);
-      roomState.avatarExtByUser.set(key, { ext: detected.ext, base: userFileBase(key) });
+      roomState.avatarExtByUser.set(key, { ext: detected.ext, base: userFileBase(key), v: version });
     } catch (e) {
       return sendJson(res, 500, { error: 'Could not save image.' });
     }
     return sendJson(res, 200, {
       ok: true,
-      avatarUrl: '/api/avatar/' + encodeURIComponent(session.username) + '?v=' + Date.now(),
+      avatarVersion: version,
+      avatarUrl: '/api/avatar/' + encodeURIComponent(session.username) + '?v=' + version,
     });
   }
 
@@ -1394,21 +1618,28 @@ async function handleApi(req, res, pathname) {
 
     const key = username.toLowerCase();
     const rec = roomState.avatarExtByUser.get(key);
+    // A ?v= URL names one exact upload, so it can be cached hard. A bare one
+    // must revalidate, or a changed picture keeps showing up as the old one.
+    const askedVersion = new URL(req.url, 'http://internal').searchParams.get('v');
+    const cacheControl = askedVersion
+      ? 'private, max-age=31536000, immutable'
+      : 'private, no-cache, must-revalidate';
     if (rec) {
       const filePath = path.join(roomState.avatarsDir, rec.base + '.' + rec.ext);
       fs.readFile(filePath, (err, data) => {
         if (err) {
-          return sendSvg(res, letterAvatarSvg(username));
+          return sendSvg(res, letterAvatarSvg(username), cacheControl);
         }
         res.writeHead(200, {
           'Content-Type': AVATAR_MIME[rec.ext],
-          'Cache-Control': 'private, max-age=120',
+          'Cache-Control': cacheControl,
+          'ETag': '"' + (rec.v || 0) + '"',
         });
         res.end(data);
       });
       return;
     }
-    return sendSvg(res, letterAvatarSvg(username));
+    return sendSvg(res, letterAvatarSvg(username), cacheControl);
   }
 
   // GET /api/games/scores — leaderboard for this session's room
@@ -1497,6 +1728,8 @@ async function handleApi(req, res, pathname) {
     const key = payload.username.toLowerCase();
 
     let displayName = '';
+    let country = '';
+    let product = '';
     try {
       const me = await spotifyApiRequest('GET', '/v1/me', json.access_token);
       // 403 here = authorized but not on the app's allowlist. Refuse rather than save
@@ -1505,8 +1738,10 @@ async function handleApi(req, res, pathname) {
         logSpotifyIssue('callback /v1/me for ' + key, me.status, me.json);
         return redirectHome('notallowed');
       }
-      if (me.status === 200 && me.json && typeof me.json.display_name === 'string') {
-        displayName = me.json.display_name;
+      if (me.status === 200 && me.json) {
+        if (typeof me.json.display_name === 'string') displayName = me.json.display_name;
+        if (typeof me.json.country === 'string') country = me.json.country.toUpperCase();
+        if (typeof me.json.product === 'string') product = me.json.product;
       }
     } catch (e) { /* not critical — the connection still succeeds without it */ }
 
@@ -1516,9 +1751,13 @@ async function handleApi(req, res, pathname) {
       expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
       scope: typeof json.scope === 'string' ? json.scope : '',
       displayName,
+      country,
+      product,
       connectedAt: Date.now(),
+      lastError: null,
     };
     roomState.spotifyDirty = true;
+    roomState.spotifyDropped.delete(key);
     return redirectHome('connected');
   }
 
@@ -1526,11 +1765,42 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/spotify/status' && req.method === 'GET') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     const roomState = rooms[session.room];
-    const rec = roomState.spotifyTokens[session.username.toLowerCase()];
+    const key = session.username.toLowerCase();
+    const rec = roomState.spotifyTokens[key];
+    if (!rec) {
+      return sendJson(res, 200, {
+        enabled: SPOTIFY_ENABLED,
+        connected: false,
+        displayName: null,
+        error: roomState.spotifyDropped.has(key)
+          ? 'Your Spotify connection expired. Connect again to carry on.'
+          : null,
+      });
+    }
+    // Proven before the UI claims it: a stale record here used to surface
+    // later as a bare 401.
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) {
+      const stillThere = Boolean(roomState.spotifyTokens[key]);
+      return sendJson(res, 200, {
+        enabled: SPOTIFY_ENABLED,
+        connected: false,
+        displayName: null,
+        transient: stillThere,
+        error: stillThere
+          ? 'Spotify did not answer just now — retrying in the background.'
+          : 'Your Spotify connection expired. Connect again to carry on.',
+      });
+    }
+    const missing = spotifyMissingScopes(rec);
     return sendJson(res, 200, {
       enabled: SPOTIFY_ENABLED,
-      connected: Boolean(rec),
-      displayName: rec ? rec.displayName : null,
+      connected: true,
+      displayName: rec.displayName || null,
+      product: rec.product || null,
+      premium: rec.product ? rec.product === 'premium' : null,
+      needsReconnect: missing.length > 0,
+      missingScopes: missing,
     });
   }
 
@@ -1579,12 +1849,16 @@ async function handleApi(req, res, pathname) {
     try {
       const { status, json } = await spotifyApiRequest('GET', '/v1/me/player', token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
-      if (status === 204 || !json) return sendJson(res, 200, { connected: true, playing: false, track: null, volumePercent: null, shuffle: false, repeat: 'off' });
+      if (status === 204 || !json) return sendJson(res, 200, { connected: true, playing: false, track: null, contextUri: null, isDj: false, volumePercent: null, shuffle: false, repeat: 'off' });
+      const contextUri = json.context && typeof json.context.uri === 'string' ? json.context.uri : null;
       return sendJson(res, 200, {
         connected: true,
         playing: Boolean(json.is_playing),
         progressMs: json.progress_ms || 0,
         track: simplifyTrack(json.item),
+        contextUri,
+        isDj: contextUri === SPOTIFY_DJ_URI,
+        deviceName: json.device && typeof json.device.name === 'string' ? json.device.name : null,
         volumePercent: (json.device && typeof json.device.volume_percent === 'number') ? json.device.volume_percent : null,
         shuffle: Boolean(json.shuffle_state),
         repeat: typeof json.repeat_state === 'string' ? json.repeat_state : 'off',
@@ -1712,10 +1986,12 @@ async function handleApi(req, res, pathname) {
     if (!/^[A-Za-z0-9]{1,64}$/.test(artistId)) return sendJson(res, 400, { error: 'Invalid artist id' });
 
     try {
-      const [artistRes, topRes, albumsRes] = await Promise.all([
+      const market = spotifyMarket(roomState, key);
+      const [artistRes, topRes, albumsRes, singlesRes] = await Promise.all([
         spotifyApiRequest('GET', '/v1/artists/' + artistId, token),
-        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/top-tracks?market=from_token', token),
-        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?include_groups=album,single&limit=20', token),
+        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/top-tracks?market=' + market, token),
+        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?include_groups=album&limit=50&market=' + market, token),
+        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?include_groups=single,compilation&limit=50&market=' + market, token),
       ]);
       if (artistRes.status === 401 || topRes.status === 401 || albumsRes.status === 401) {
         dropSpotifyConnection(roomState, key);
@@ -1726,10 +2002,19 @@ async function handleApi(req, res, pathname) {
         logSpotifyIssue('artist ' + artistId, artistRes.status, artistRes.json);
         return sendJson(res, 502, { error: 'Could not load that artist.' });
       }
+      if (topRes.status !== 200) logSpotifyIssue('artist ' + artistId + ' top-tracks', topRes.status, topRes.json);
+      const pick = (r) => (r.status === 200 && r.json ? (r.json.items || []) : []);
+      const seen = new Set();
+      const dedupe = (list) => list.filter(Boolean).map(simplifyAlbum).filter((al) => {
+        if (!al || !al.id || seen.has(al.id)) return false;
+        seen.add(al.id);
+        return true;
+      });
       return sendJson(res, 200, {
         artist: simplifyArtist(artistRes.json),
         topTracks: topRes.status === 200 && topRes.json ? (topRes.json.tracks || []).map(simplifyTrack).filter(Boolean) : [],
-        albums: albumsRes.status === 200 && albumsRes.json ? (albumsRes.json.items || []).map(simplifyAlbum).filter(Boolean) : [],
+        albums: dedupe(pick(albumsRes)),
+        singles: dedupe(pick(singlesRes)),
       });
     } catch (e) {
       console.error('[spotify] artist ' + artistId + ' threw', e && e.message);
@@ -1750,7 +2035,7 @@ async function handleApi(req, res, pathname) {
     if (!/^[A-Za-z0-9]{1,64}$/.test(albumId)) return sendJson(res, 400, { error: 'Invalid album id' });
 
     try {
-      const { status, json } = await spotifyApiRequest('GET', '/v1/albums/' + albumId, token);
+      const { status, json } = await spotifyApiRequest('GET', '/v1/albums/' + albumId + '?market=' + spotifyMarket(roomState, key), token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 404, { error: 'Album not found.' });
       if (status !== 200 || !json) {
@@ -1809,17 +2094,75 @@ async function handleApi(req, res, pathname) {
     const token = await ensureFreshSpotifyToken(roomState, key);
     if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
 
+    try {
+      // Every page, in one response — the old paged version stopped at the
+      // first 20 and left the rest of the library invisible.
+      const playlists = [];
+      let offset = 0;
+      let truncated = false;
+      for (let page = 0; page < 12; page++) {
+        const qs = new URLSearchParams({ limit: '50', offset: String(offset) }).toString();
+        const { status, json } = await spotifyApiRequest('GET', '/v1/me/playlists?' + qs, token);
+        if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+        if (status === 403) return sendSpotifyForbidden(res, 'playlists offset=' + offset, 'Loading your playlists', status, json);
+        if (status !== 200 || !json || !Array.isArray(json.items)) {
+          logSpotifyIssue('playlists offset=' + offset, status, json);
+          if (!playlists.length) return sendJson(res, 502, { error: 'Could not load playlists.' });
+          break;
+        }
+        for (const item of json.items) {
+          const pl = simplifyPlaylist(item);
+          if (pl) playlists.push(pl);
+        }
+        offset += json.items.length;
+        if (!json.next || !json.items.length) break;
+        if (page === 11) truncated = true;
+      }
+
+      let liked = null;
+      const likedRes = await spotifyApiRequest('GET', '/v1/me/tracks?limit=1', token).catch(() => null);
+      if (likedRes && likedRes.status === 200 && likedRes.json) {
+        liked = {
+          id: 'liked',
+          uri: null,
+          kind: 'liked',
+          name: 'Liked Songs',
+          owner: (roomState.spotifyTokens[key] && roomState.spotifyTokens[key].displayName) || '',
+          trackCount: typeof likedRes.json.total === 'number' ? likedRes.json.total : null,
+          image: null,
+        };
+      }
+
+      return sendJson(res, 200, { playlists, liked, dj: spotifyDjEntry(), truncated, nextOffset: null });
+    } catch (e) {
+      console.error('[spotify] playlists threw', e && e.message);
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
+  // GET /api/spotify/liked?offset=0
+  if (pathname === '/api/spotify/liked' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
     const url = new URL(req.url, 'http://internal');
     const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-
     try {
-      const qs = new URLSearchParams({ limit: '20', offset: String(offset) }).toString();
-      const { status, json } = await spotifyApiRequest('GET', '/v1/me/playlists?' + qs, token);
+      const qs = new URLSearchParams({ limit: '50', offset: String(offset), market: spotifyMarket(roomState, key) }).toString();
+      const { status, json } = await spotifyApiRequest('GET', '/v1/me/tracks?' + qs, token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
-      if (status === 403) return sendSpotifyForbidden(res, 'playlists offset=' + offset, 'Loading your playlists', status, json);
-      if (status !== 200 || !json || !Array.isArray(json.items)) { logSpotifyIssue('playlists offset=' + offset, status, json); return sendJson(res, 502, { error: 'Could not load playlists.' }); }
+      if (status === 403) return sendSpotifyForbidden(res, 'liked songs offset=' + offset, 'Loading your liked songs', status, json);
+      if (status !== 200 || !json || !Array.isArray(json.items)) {
+        logSpotifyIssue('liked songs offset=' + offset, status, json);
+        return sendJson(res, 502, { error: 'Could not load your liked songs.' });
+      }
       return sendJson(res, 200, {
-        playlists: json.items.map(simplifyPlaylist).filter(Boolean),
+        tracks: json.items.map((entry) => (entry && entry.track ? simplifyTrack(entry.track) : null)).filter(Boolean),
+        total: typeof json.total === 'number' ? json.total : null,
         nextOffset: json.next ? offset + json.items.length : null,
       });
     } catch (e) {
@@ -1841,11 +2184,11 @@ async function handleApi(req, res, pathname) {
 
     const url = new URL(req.url, 'http://internal');
     const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-    const fields = 'items(is_local,item(id,uri,name,type,duration_ms,artists(name),album(name,images))),next';
+    const fields = 'total,next,items(is_local,track(id,uri,name,type,duration_ms,artists(id,name),album(id,name,images)))';
 
     try {
-      const qs = new URLSearchParams({ limit: '50', offset: String(offset), fields }).toString();
-      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/items?' + qs, token);
+      const qs = new URLSearchParams({ limit: '50', offset: String(offset), fields, market: spotifyMarket(roomState, key) }).toString();
+      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/tracks?' + qs, token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 404, { error: 'Playlist not found.' });
       if (status === 429) return sendJson(res, 429, { error: 'Spotify is rate-limiting this connection — try again in a moment.' });
@@ -1856,6 +2199,7 @@ async function handleApi(req, res, pathname) {
       }
       return sendJson(res, 200, {
         tracks: json.items.map(simplifyPlaylistItem).filter(Boolean),
+        total: typeof json.total === 'number' ? json.total : null,
         nextOffset: json.next ? offset + json.items.length : null,
       });
     } catch (e) {
@@ -1877,13 +2221,23 @@ async function handleApi(req, res, pathname) {
 
     let body;
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const TRACK_URI_RE = /^spotify:track:[A-Za-z0-9]+$/;
     let bodyObj;
-    if (typeof body.contextUri === 'string' && /^spotify:(playlist|album):[A-Za-z0-9]+$/.test(body.contextUri)) {
+    if (typeof body.contextUri === 'string' && /^spotify:(playlist|album|artist):[A-Za-z0-9]+$/.test(body.contextUri)) {
       bodyObj = { context_uri: body.contextUri };
-      if (typeof body.offsetUri === 'string' && /^spotify:track:[A-Za-z0-9]+$/.test(body.offsetUri)) {
+      if (typeof body.offsetUri === 'string' && TRACK_URI_RE.test(body.offsetUri)) {
         bodyObj.offset = { uri: body.offsetUri };
       }
-    } else if (typeof body.uri === 'string' && body.uri.startsWith('spotify:track:')) {
+    } else if (Array.isArray(body.uris)) {
+      // Liked Songs and artist top tracks have no context of their own, so
+      // they are played as an explicit list instead.
+      const uris = body.uris.filter((u) => typeof u === 'string' && TRACK_URI_RE.test(u)).slice(0, 100);
+      if (uris.length) bodyObj = { uris };
+      if (bodyObj && typeof body.offsetUri === 'string') {
+        const at = uris.indexOf(body.offsetUri);
+        if (at > 0) bodyObj.offset = { position: at };
+      }
+    } else if (typeof body.uri === 'string' && TRACK_URI_RE.test(body.uri)) {
       bodyObj = { uris: [body.uri] };
     }
     const devId = spotifyDeviceIdOrFalse(body.deviceId);
@@ -2014,6 +2368,38 @@ async function handleApi(req, res, pathname) {
   // POST /api/spotify/queue — body: { uri }. Adds one track to the end of
   // Spotify's own play queue for the active device, without interrupting
   // whatever's currently playing.
+  // POST /api/spotify/repeat — off | context | track, same as Spotify's own.
+  if (pathname === '/api/spotify/repeat' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    if (!SPOTIFY_ENABLED) return sendJson(res, 503, { error: 'Spotify is not configured on this server yet.' });
+    if (spotifyTooFast(session)) return sendJson(res, 429, { error: 'Slow down a little.' });
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const token = await ensureFreshSpotifyToken(roomState, key);
+    if (!token) return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const state = body.state;
+    if (state !== 'off' && state !== 'context' && state !== 'track') {
+      return sendJson(res, 400, { error: 'Invalid repeat mode' });
+    }
+    const devId = spotifyDeviceIdOrFalse(body.deviceId);
+    if (devId === false) return sendJson(res, 400, { error: 'Invalid device' });
+
+    try {
+      const { status, json } = await spotifyApiRequest('PUT', '/v1/me/player/repeat?state=' + state + (devId ? '&device_id=' + devId : ''), token);
+      if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
+      if (status === 404) return sendJson(res, 409, { error: 'Open Spotify on a device first, then try again.' });
+      if (status === 403) return sendSpotifyForbidden(res, 'repeat', 'Repeat', status, json);
+      if (status >= 400) { logSpotifyIssue('repeat ' + state, status, json); return sendJson(res, 502, { error: 'Spotify could not change repeat.' }); }
+      return sendJson(res, 200, { ok: true, state });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach Spotify.' });
+    }
+  }
+
   if (pathname === '/api/spotify/queue' && req.method === 'POST') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });

@@ -23,7 +23,8 @@
     }
     if (wasGames && name !== 'games') leaveGames();
     if (name === 'games') enterGames();
-    setKeepalive(name === 'games');
+    if (myUsername) startPresence();
+    nudgePresence();
 
     if (name === 'gate') {
       gateInput.value = '';
@@ -48,36 +49,89 @@
     if (!document.hidden) lastInteractionAt = Date.now();
   });
 
+  function gameIsRunning() {
+    if (activeGame === 'snake') return !!snake;
+    if (activeGame === 'tetris') return !!tetris;
+    if (activeGame === 'mines') return !!(mines && !mines.over);
+    if (activeGame === 'doom') return !!(doomInstance && doomRaf);
+    if (activeGame === 'poker') return !!poker;
+    if (activeGame === 'cookie') return true;
+    return false;
+  }
+
   function currentActivityCode() {
-    // A hidden tab or one nobody has touched in a while is idle, whatever
-    // view happens to be on screen behind it.
     if (document.hidden || Date.now() - lastInteractionAt > IDLE_AFTER_MS) return 'idle';
     if (currentView === 'chat') return 'chat';
     if (currentView === 'games') {
-      // Music playing takes the spotlight over a game board that's just
-      // sitting there; a game that's actually being played wins otherwise.
+      // A game being played is more specific than "listening"; music rides along.
+      if (activeGame && (gameIsRunning() || !spotifyPlaying)) return 'game:' + activeGame;
       if (spotifyPlaying) return 'spotify';
-      return activeGame ? 'game:' + activeGame : 'arcade';
+      return 'arcade';
     }
     if (currentView === 'essay') return 'essay';
     return 'idle';
+  }
+
+  function currentListening() {
+    if (!spotifyPlaying || !spotifyNowTrack || !spotifyNowTrack.name) return null;
+    return { name: spotifyNowTrack.name, artists: spotifyNowTrack.artists || '' };
   }
 
   function withActivity(url) {
     return url + (url.indexOf('?') === -1 ? '?' : '&') + 'activity=' + encodeURIComponent(currentActivityCode());
   }
 
-  var keepaliveTimer = null;
-  function setKeepalive(on) {
-    if (on && !keepaliveTimer) {
-      keepaliveTimer = setInterval(function () {
-        fetch(withActivity('/api/session'), { credentials: 'same-origin' }).catch(function () { /* transient */ });
-      }, 45000);
-    } else if (!on && keepaliveTimer) {
-      clearInterval(keepaliveTimer);
-      keepaliveTimer = null;
-    }
+  // Beats from every view. Piggy-backing on whatever requests a view happened
+  // to make is what left people showing as "looking at chat" long after.
+  var PRESENCE_INTERVAL_MS = 20000;
+  var presenceTimer = null;
+  var presenceInFlight = false;
+  var lastPresenceKey = '';
+  var feedSince = 0;
+  var latestFeed = [];
+
+  async function sendPresence(force) {
+    if (!myUsername || !csrfToken) return;
+    if (presenceInFlight) return;
+    var activity = currentActivityCode();
+    var listening = currentListening();
+    var key = activity + '|' + (listening ? listening.name + '|' + listening.artists : '');
+    if (!force && key === lastPresenceKey && presenceTimer) return;
+    lastPresenceKey = key;
+    presenceInFlight = true;
+    try {
+      var res = await fetch('/api/presence', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ activity: activity, track: listening, feedSince: feedSince }),
+      });
+      if (!res.ok) return;
+      var data = await res.json();
+      if (data.activeUsers) updateActiveUsers(data.activeUsers);
+      if (data.feed) mergeFeed(data.feed);
+    } catch (e) { /* transient — the next beat retries */ }
+    finally { presenceInFlight = false; }
   }
+
+  function startPresence() {
+    if (presenceTimer) return;
+    presenceTimer = setInterval(function () { sendPresence(true); }, PRESENCE_INTERVAL_MS);
+    sendPresence(true);
+  }
+
+  function stopPresence() {
+    if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+    lastPresenceKey = '';
+  }
+
+  function nudgePresence() {
+    if (!presenceTimer) return;
+    sendPresence(false);
+  }
+
+  document.addEventListener('visibilitychange', function () { nudgePresence(); });
+
 
   // ---------------------------------------------------------------------
   // Shared session/CSRF state
@@ -414,6 +468,8 @@
   var pollTimer = null;
   var pollInFlight = false;
   var renderedIds = Object.create(null);
+  // id -> { el, body, textEl, msg }, so an edit can be applied in place.
+  var rendered = Object.create(null);
   var lastAuthor = null; // who sent the most recently rendered message, for grouping
   var replyingTo = null;
   var roomClearedAt = null; // server's last-clear stamp; a jump means wipe the view
@@ -432,8 +488,34 @@
     }
   }
 
+  // username (lowercased) -> upload version, so a new picture is a new URL.
+  var avatarVersions = Object.create(null);
+
   function avatarUrl(username) {
-    return '/api/avatar/' + encodeURIComponent(username || '');
+    var name = username || '';
+    var v = avatarVersions[name.toLowerCase()];
+    return '/api/avatar/' + encodeURIComponent(name) + (v ? '?v=' + v : '');
+  }
+
+  function applyAvatarVersions(map) {
+    if (!map) return;
+    Object.keys(map).forEach(function (key) {
+      var v = map[key];
+      if (!v || avatarVersions[key] === v) return;
+      avatarVersions[key] = v;
+      refreshAvatarImages(key);
+    });
+  }
+
+  function refreshAvatarImages(usernameKey) {
+    var prefix = '/api/avatar/';
+    var imgs = document.querySelectorAll('img[src^="' + prefix + '"]');
+    Array.prototype.forEach.call(imgs, function (img) {
+      var raw = img.getAttribute('src').slice(prefix.length).split('?')[0];
+      var name;
+      try { name = decodeURIComponent(raw); } catch (e) { name = raw; }
+      if (name.toLowerCase() === usernameKey) img.src = avatarUrl(name);
+    });
   }
 
   function chatImageUrl(imageId) {
@@ -564,6 +646,7 @@
       releaseDecryptedImageUrls();
       messagesEl.innerHTML = '';
       renderedIds = Object.create(null);
+      rendered = Object.create(null);
       lastAuthor = null;
       since = 0;
       await poll();
@@ -604,8 +687,16 @@
     return quote;
   }
 
+  function msgStamp(m) {
+    return Math.max(m.ts, m.editedAt || 0);
+  }
+
   async function renderOne(m) {
-    if (renderedIds[m.id]) { since = Math.max(since, m.ts); return; }
+    if (renderedIds[m.id]) {
+      since = Math.max(since, msgStamp(m));
+      await applyEditToRendered(m);
+      return;
+    }
     renderedIds[m.id] = true;
 
     // Consecutive messages from the same person render as one stream: no
@@ -680,6 +771,7 @@
       figure.addEventListener('click', function () { if (img.src) openLightbox(img.src); });
       body.appendChild(figure);
       previewForReply = '📷 Photo';
+      rendered[m.id] = { el: wrap, body: body, textEl: null, msg: m };
     } else {
       var text = document.createElement('div');
       text.className = 'text';
@@ -692,7 +784,9 @@
       text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
       if (plain === null) text.classList.add('is-locked');
       body.appendChild(text);
+      body.appendChild(buildEditedBadge(m));
       previewForReply = plain === null ? '🔒 message' : plain;
+      rendered[m.id] = { el: wrap, body: body, textEl: text, msg: m };
     }
 
     var actions = document.createElement('div');
@@ -703,18 +797,234 @@
     replyBtn.textContent = '↩ Reply';
     replyBtn.addEventListener('click', function () { startReply(m.id, m.username, truncate(String(previewForReply).replace(/\s+/g, ' '), 80)); });
     actions.appendChild(replyBtn);
+    if (m.type === 'text' && m.username === myUsername) {
+      var editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'msg-action-btn';
+      editBtn.textContent = '✎ Edit';
+      editBtn.addEventListener('click', function () { startEditMessage(m.id); });
+      actions.appendChild(editBtn);
+    }
     body.appendChild(actions);
 
     wrap.appendChild(lead);
     wrap.appendChild(body);
     messagesEl.appendChild(wrap);
     lastAuthor = m.username;
-    since = Math.max(since, m.ts);
+    since = Math.max(since, msgStamp(m));
 
     requestAnimationFrame(function () {
       requestAnimationFrame(function () { wrap.classList.add('msg-enter-active'); });
     });
     setTimeout(function () { wrap.classList.remove('msg-enter', 'msg-enter-active'); }, 500);
+  }
+
+  // -------------------------------------------------------------------
+  // Editing — the author rewrites a message, everyone keeps the old wording
+  // -------------------------------------------------------------------
+
+  async function plaintextOf(cipher) {
+    if (!cryptoAvailable) return cipher;
+    var out = await decryptText(cipher);
+    return out === null ? null : out;
+  }
+
+  function buildEditedBadge(m) {
+    var badge = document.createElement('button');
+    badge.type = 'button';
+    badge.className = 'msg-edited';
+    badge.textContent = '(edited)';
+    badge.title = 'See earlier versions';
+    badge.hidden = !m.editedAt;
+    badge.addEventListener('click', function () {
+      var entry = rendered[m.id];
+      openEditHistory(entry ? entry.msg : m);
+    });
+    return badge;
+  }
+
+  async function applyEditToRendered(m) {
+    var entry = rendered[m.id];
+    if (!entry) return;
+    var prev = entry.msg;
+    entry.msg = m;
+    if (m.type !== 'text' || !entry.textEl) return;
+    if (prev && prev.text === m.text && prev.editedAt === m.editedAt) return;
+
+    var plain = await plaintextOf(m.text);
+    entry.textEl.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
+    entry.textEl.classList.toggle('is-locked', plain === null);
+    if (cryptoAvailable) entry.el.setAttribute('data-cipher', m.text);
+    var badge = entry.body.querySelector('.msg-edited');
+    if (badge) badge.hidden = !m.editedAt;
+    entry.el.classList.add('is-edit-flash');
+    setTimeout(function () { entry.el.classList.remove('is-edit-flash'); }, 900);
+  }
+
+  var editingId = null;
+
+  async function startEditMessage(id) {
+    var entry = rendered[id];
+    if (!entry || !entry.textEl || entry.msg.username !== myUsername) return;
+    if (cryptoAvailable && !roomKey) { setUnlockVisible(true); return; }
+    if (editingId && editingId !== id) cancelEditMessage();
+
+    var current = await plaintextOf(entry.msg.text);
+    if (current === null) {
+      setChatStatus('That message cannot be decrypted here, so it cannot be edited.', true);
+      setTimeout(function () { setChatStatus(''); }, 3000);
+      return;
+    }
+
+    editingId = id;
+    var form = document.createElement('div');
+    form.className = 'msg-edit';
+    var box = document.createElement('textarea');
+    box.className = 'msg-edit-input';
+    box.maxLength = 500;
+    box.rows = 1;
+    box.value = current;
+    var row = document.createElement('div');
+    row.className = 'msg-edit-actions';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'msg-edit-save';
+    save.textContent = 'Save';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'msg-edit-cancel';
+    cancel.textContent = 'Cancel';
+    var hint = document.createElement('span');
+    hint.className = 'msg-edit-hint';
+    hint.textContent = 'enter saves · esc cancels';
+    row.appendChild(save);
+    row.appendChild(cancel);
+    row.appendChild(hint);
+    form.appendChild(box);
+    form.appendChild(row);
+
+    entry.textEl.hidden = true;
+    entry.body.insertBefore(form, entry.textEl.nextSibling);
+    entry.editForm = form;
+
+    function grow() {
+      box.style.height = 'auto';
+      box.style.height = Math.min(box.scrollHeight, 200) + 'px';
+    }
+    box.addEventListener('input', grow);
+    grow();
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+
+    save.addEventListener('click', function () { commitEditMessage(id, box.value); });
+    cancel.addEventListener('click', cancelEditMessage);
+    box.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); cancelEditMessage(); }
+      else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        commitEditMessage(id, box.value);
+      }
+    });
+  }
+
+  function cancelEditMessage() {
+    if (!editingId) return;
+    var entry = rendered[editingId];
+    if (entry) {
+      if (entry.editForm) { entry.editForm.remove(); entry.editForm = null; }
+      if (entry.textEl) entry.textEl.hidden = false;
+    }
+    editingId = null;
+  }
+
+  async function commitEditMessage(id, raw) {
+    var entry = rendered[id];
+    if (!entry) return;
+    var text = String(raw || '').trim();
+    if (!text) return;
+    var wasPlain = await plaintextOf(entry.msg.text);
+    if (text === wasPlain) { cancelEditMessage(); return; }
+
+    var payload = cryptoAvailable ? await encryptText(text) : text;
+    try {
+      var res = await fetch('/api/chat/edit', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ id: id, text: payload }),
+      });
+      if (res.status === 403) { showView('gate'); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok || !data.message) {
+        setChatStatus(data.error || 'Could not save that edit.', true);
+        setTimeout(function () { setChatStatus(''); }, 3000);
+        return;
+      }
+      cancelEditMessage();
+      await applyEditToRendered(data.message);
+      since = Math.max(since, msgStamp(data.message));
+    } catch (e) {
+      setChatStatus('Could not save that edit.', true);
+      setTimeout(function () { setChatStatus(''); }, 3000);
+    }
+  }
+
+  async function openEditHistory(m) {
+    var overlay = document.createElement('div');
+    overlay.className = 'history-overlay';
+    var card = document.createElement('div');
+    card.className = 'history-card';
+
+    var head = document.createElement('div');
+    head.className = 'history-head';
+    var title = document.createElement('h3');
+    title.textContent = 'Edit history';
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'history-close';
+    closeBtn.setAttribute('aria-label', 'Close edit history');
+    closeBtn.textContent = '×';
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    card.appendChild(head);
+
+    var list = document.createElement('ol');
+    list.className = 'history-list';
+
+    var versions = (m.history || []).slice();
+    versions.push({ text: m.text, ts: m.editedAt || m.ts, current: true });
+
+    for (var i = versions.length - 1; i >= 0; i--) {
+      var v = versions[i];
+      var li = document.createElement('li');
+      li.className = 'history-item' + (v.current ? ' is-current' : '');
+      var meta = document.createElement('div');
+      meta.className = 'history-meta';
+      meta.textContent = (v.current ? 'Now' : 'Version ' + (i + 1)) + ' · ' + fmtTime(v.ts);
+      var textEl = document.createElement('div');
+      textEl.className = 'history-text';
+      var plain = await plaintextOf(v.text);
+      textEl.textContent = plain === null ? '🔒 Unable to decrypt this version' : plain;
+      if (plain === null) textEl.classList.add('is-locked');
+      li.appendChild(meta);
+      li.appendChild(textEl);
+      list.appendChild(li);
+    }
+
+    card.appendChild(list);
+    overlay.appendChild(card);
+
+    function close() {
+      overlay.remove();
+      document.removeEventListener('keydown', esc);
+    }
+    function esc(e) { if (e.key === 'Escape') close(); }
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', esc);
+
+    document.body.appendChild(overlay);
+    requestAnimationFrame(function () { overlay.classList.add('is-open'); });
   }
 
   async function renderMessages(list) {
@@ -746,6 +1056,7 @@
   function resetChatView() {
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
     renderedIds = Object.create(null);
+    rendered = Object.create(null);
     lastAuthor = null;
     cancelReply();
   }
@@ -754,7 +1065,7 @@
     if (pollInFlight) return;
     pollInFlight = true;
     try {
-      var res = await fetch(withActivity('/api/chat/messages?since=' + since), { credentials: 'same-origin' });
+      var res = await fetch(withActivity('/api/chat/messages?since=' + since + '&feedSince=' + feedSince), { credentials: 'same-origin' });
       if (res.status === 403) {
         stopChatPolling();
         showView('gate');
@@ -769,8 +1080,10 @@
           resetChatView();
         }
       }
+      applyAvatarVersions(data.avatarVersions);
       await renderMessages(data.messages || []);
       updateActiveUsers(data.activeUsers || []);
+      mergeFeed(data.feed || []);
     } catch (e) { /* transient — next poll retries */ }
     finally { pollInFlight = false; }
   }
@@ -780,6 +1093,7 @@
     since = 0;
     roomClearedAt = null;
     renderedIds = Object.create(null);
+    rendered = Object.create(null);
     lastAuthor = null;
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
     poll().then(function () { scrollToBottom(false); });
@@ -1002,7 +1316,10 @@
       });
       var data = await res.json();
       if (res.ok) {
-        myAvatarEl.src = data.avatarUrl;
+        var key = (myUsername || '').toLowerCase();
+        avatarVersions[key] = data.avatarVersion || Date.now();
+        myAvatarEl.src = avatarUrl(myUsername);
+        refreshAvatarImages(key);
         setAvatarStatus('Profile picture updated.');
         setTimeout(function () { setAvatarStatus(''); }, 2500);
       } else {
@@ -1020,6 +1337,11 @@
       await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
     } catch (e) { /* best effort */ }
     stopChatPolling();
+    stopPresence();
+    latestFeed.length = 0;
+    feedSince = 0;
+    renderFeed();
+    updateActiveUsers([]);
     myUsername = null;
     myRoom = null;
     csrfToken = null;
@@ -1133,6 +1455,57 @@
     'game:doom': 'playing Doom',
   };
 
+  function buildUserRow(entry, className) {
+    // Older servers sent a bare string here; accept both shapes so a stale
+    // cached page doesn't render "[object Object]".
+    var name = typeof entry === 'string' ? entry : (entry && entry.name);
+    if (!name) return null;
+    var activity = typeof entry === 'string' ? null : (entry && entry.activity);
+    var listening = typeof entry === 'string' ? null : (entry && entry.listening);
+
+    var li = document.createElement('li');
+    li.className = className + (name === myUsername ? ' is-me' : '');
+    var img = document.createElement('img');
+    img.className = 'avatar';
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = avatarUrl(name);
+    var info = document.createElement('span');
+    info.className = 'active-user-info';
+    var span = document.createElement('span');
+    span.className = 'active-user-name';
+    span.textContent = name; // textContent — never innerHTML
+    info.appendChild(span);
+
+    var label = ACTIVITY_LABELS[activity];
+    if (label) {
+      var act = document.createElement('span');
+      act.className = 'active-user-activity' + (activity === 'idle' ? ' is-idle' : '');
+      act.textContent = label; // textContent — and only ever from the map above
+      info.appendChild(act);
+    }
+    if (listening && listening.name) {
+      var song = document.createElement('span');
+      song.className = 'active-user-song';
+      var note = document.createElement('span');
+      note.className = 'active-user-note';
+      note.setAttribute('aria-hidden', 'true');
+      note.textContent = '\u266a';
+      var songText = document.createElement('span');
+      songText.className = 'active-user-song-text';
+      songText.textContent = listening.artists
+        ? listening.name + ' \u2014 ' + listening.artists
+        : listening.name;
+      song.appendChild(note);
+      song.appendChild(songText);
+      info.appendChild(song);
+    }
+
+    li.appendChild(img);
+    li.appendChild(info);
+    return li;
+  }
+
   function updateActiveUsers(list) {
     list = list || [];
     var count = String(list.length);
@@ -1141,36 +1514,133 @@
       activeCountBadge.textContent = count;
       activeCountBadge.hidden = list.length === 0;
     }
+    // Presence beats carry versions too, so an avatar change still lands on
+    // people sitting in the arcade with chat polling stopped.
+    var versions = null;
+    list.forEach(function (entry) {
+      if (entry && entry.name && entry.avatarVersion) {
+        if (!versions) versions = Object.create(null);
+        versions[entry.name.toLowerCase()] = entry.avatarVersion;
+      }
+    });
+    applyAvatarVersions(versions);
+
     activeUsersList.innerHTML = '';
     activeUsersEmpty.hidden = list.length !== 0;
     list.forEach(function (entry) {
-      // Older servers sent a bare string here; accept both shapes so a
-      // stale cached page doesn't render "[object Object]".
-      var name = typeof entry === 'string' ? entry : (entry && entry.name);
-      if (!name) return;
-      var activity = typeof entry === 'string' ? null : (entry && entry.activity);
+      var row = buildUserRow(entry, 'active-user-row');
+      if (row) activeUsersList.appendChild(row);
+    });
+    renderSidebarPresence(list);
+  }
+
+  // ---------------------------------------------------------------------
+  // Room sidebar — who is here, and what everyone has been up to
+  // ---------------------------------------------------------------------
+
+  var sidebarNowEl = document.getElementById('sidebar-now');
+  var sidebarNowEmpty = document.getElementById('sidebar-now-empty');
+  var sidebarFeedEl = document.getElementById('sidebar-feed');
+  var sidebarFeedEmpty = document.getElementById('sidebar-feed-empty');
+  var sidebarToggle = document.getElementById('sidebar-toggle');
+
+  function renderSidebarPresence(list) {
+    if (!sidebarNowEl) return;
+    sidebarNowEl.innerHTML = '';
+    var any = 0;
+    list.forEach(function (entry) {
+      var row = buildUserRow(entry, 'sidebar-user-row');
+      if (row) { sidebarNowEl.appendChild(row); any++; }
+    });
+    if (sidebarNowEmpty) sidebarNowEmpty.hidden = any !== 0;
+  }
+
+  function mergeFeed(entries) {
+    if (entries && entries.length) {
+      entries.forEach(function (e) {
+        if (!e || !e.id) return;
+        if (e.ts > feedSince) feedSince = e.ts;
+        var at = -1;
+        for (var i = 0; i < latestFeed.length; i++) {
+          if (latestFeed[i].id === e.id) { at = i; break; }
+        }
+        if (at === -1) latestFeed.push(e);
+        else latestFeed[at] = e;
+      });
+      latestFeed.sort(function (a, b) { return a.ts - b.ts; });
+      if (latestFeed.length > 40) latestFeed.splice(0, latestFeed.length - 40);
+    }
+    renderFeed();
+  }
+
+  function relativeTime(ts) {
+    var secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (secs < 45) return 'just now';
+    var mins = Math.round(secs / 60);
+    if (mins < 60) return mins + 'm ago';
+    return Math.round(mins / 60) + 'h ago';
+  }
+
+  function renderFeed() {
+    if (!sidebarFeedEl) return;
+    sidebarFeedEl.innerHTML = '';
+    if (sidebarFeedEmpty) sidebarFeedEmpty.hidden = latestFeed.length !== 0;
+    for (var i = latestFeed.length - 1; i >= 0; i--) {
+      var e = latestFeed[i];
       var li = document.createElement('li');
-      li.className = 'active-user-row' + (name === myUsername ? ' is-me' : '');
+      li.className = 'sidebar-feed-row';
+
       var img = document.createElement('img');
       img.className = 'avatar';
       img.alt = '';
       img.loading = 'lazy';
-      img.src = avatarUrl(name);
-      var span = document.createElement('span');
-      span.className = 'active-user-name';
-      span.textContent = name; // textContent — never innerHTML
-      li.appendChild(img);
-      li.appendChild(span);
-      var label = ACTIVITY_LABELS[activity];
-      if (label) {
-        var act = document.createElement('span');
-        act.className = 'active-user-activity' + (activity === 'idle' ? ' is-idle' : '');
-        act.textContent = label; // textContent, and only ever from the map above
-        li.appendChild(act);
+      img.src = avatarUrl(e.username);
+
+      var body = document.createElement('span');
+      body.className = 'sidebar-feed-body';
+      var line = document.createElement('span');
+      line.className = 'sidebar-feed-line';
+
+      var who = document.createElement('strong');
+      who.textContent = e.username;
+      line.appendChild(who);
+
+      if (e.kind === 'track') {
+        line.appendChild(document.createTextNode(' listened to '));
+        var song = document.createElement('em');
+        song.textContent = e.artists ? e.detail + ' \u2014 ' + e.artists : e.detail;
+        line.appendChild(song);
+      } else {
+        line.appendChild(document.createTextNode(' started ' + (ACTIVITY_LABELS[e.detail] || 'in the arcade')));
       }
-      activeUsersList.appendChild(li);
-    });
+
+      var when = document.createElement('span');
+      when.className = 'sidebar-feed-time';
+      when.textContent = relativeTime(e.ts);
+
+      body.appendChild(line);
+      body.appendChild(when);
+      li.appendChild(img);
+      li.appendChild(body);
+      sidebarFeedEl.appendChild(li);
+    }
   }
+
+  if (sidebarToggle) {
+    sidebarToggle.addEventListener('click', function () {
+      var open = !document.body.classList.toggle('sidebar-collapsed');
+      sidebarToggle.setAttribute('aria-expanded', String(open));
+      try { localStorage.setItem('ss_sidebar_open', open ? '1' : '0'); } catch (e) { /* ignore */ }
+    });
+    try {
+      if (localStorage.getItem('ss_sidebar_open') === '0') {
+        document.body.classList.add('sidebar-collapsed');
+        sidebarToggle.setAttribute('aria-expanded', 'false');
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  setInterval(function () { if (latestFeed.length) renderFeed(); }, 60000);
 
   // ---------------------------------------------------------------------
   // Arcade shared: tabs, leaderboard, score submission
@@ -1304,6 +1774,7 @@
       document.getElementById('stage-' + g).hidden = g !== name;
     });
     renderActiveLb();
+    nudgePresence();
   }
 
   gameTabs.forEach(function (tab) {
@@ -1351,7 +1822,10 @@
   var spotifyLibraryBody = document.getElementById('spotify-library-body');
   var spotifyPlaylistsStatus = document.getElementById('spotify-playlists-status');
   var spotifyPlaylistsListEl = document.getElementById('spotify-playlists-list');
-  var spotifyLoadMorePlaylistsBtn = document.getElementById('spotify-loadmore-playlists-btn');
+  var spotifyPinnedListEl = document.getElementById('spotify-pinned-list');
+  var spotifyReconnectEl = document.getElementById('spotify-reconnect');
+  var spotifyReconnectText = document.getElementById('spotify-reconnect-text');
+  var spotifyReconnectBtn = document.getElementById('spotify-reconnect-btn');
 
   // Search
   var spotifySearchBar = document.getElementById('spotify-search-bar');
@@ -1377,6 +1851,8 @@
   };
   var spotifyHomeEmpty = document.getElementById('spotify-home-empty');
   var spotifyHomeGrid = document.getElementById('spotify-home-grid');
+  var spotifyHomeFeatured = document.getElementById('spotify-home-featured');
+  var spotifyHomeCount = document.getElementById('spotify-home-count');
 
   // Playlist detail
   var spotifyPlaylistBackBtn = document.getElementById('spotify-playlist-back');
@@ -1410,6 +1886,9 @@
   var spotifyArtistTopTracksEl = document.getElementById('spotify-artist-top-tracks');
   var spotifyArtistAlbumsSection = document.getElementById('spotify-artist-albums-section');
   var spotifyArtistAlbumsEl = document.getElementById('spotify-artist-albums');
+  var spotifyArtistSinglesSection = document.getElementById('spotify-artist-singles-section');
+  var spotifyArtistSinglesEl = document.getElementById('spotify-artist-singles');
+  var spotifyArtistPlayAllBtn = document.getElementById('spotify-artist-playall');
 
   // Player bar
   var spotifyNowplaying = document.getElementById('spotify-nowplaying');
@@ -1421,6 +1900,7 @@
   var spotifyPrevBtn = document.getElementById('spotify-prev');
   var spotifyToggleBtn = document.getElementById('spotify-toggle');
   var spotifyNextBtn = document.getElementById('spotify-next');
+  var spotifyRepeatBtn = document.getElementById('spotify-repeat');
   var spotifyTimeElapsed = document.getElementById('spotify-time-elapsed');
   var spotifyTimeTotal = document.getElementById('spotify-time-total');
   var spotifyProgressTrack = document.getElementById('spotify-progress-track');
@@ -1430,8 +1910,12 @@
 
   var spotifyConnected = false;
   var spotifyPlaying = false;
+  var spotifyNowTrack = null;
   var spotifyShuffleOn = false;
   var spotifyShuffleToggling = false;
+  var spotifyRepeatMode = 'off';
+  var spotifyRepeatToggling = false;
+  var spotifyDjPlaying = false;
   var spotifyPollTimer = null;
   var spotifyProgressTimer = null;
   var spotifyProgressMs = 0;
@@ -1448,9 +1932,10 @@
 
   var spotifyCurrentView = 'home';
   var spotifyPlaylistsLoaded = false;
-  var spotifyPlaylistsNextOffset = null;
   var spotifyCurrentPlaylist = null;
   var spotifyTracksNextOffset = null;
+  var spotifyPlaylistTrackUris = [];
+  var spotifyArtistTopUris = [];
   var spotifyCurrentAlbumId = null;
   var spotifyCurrentArtistId = null;
 
@@ -1479,6 +1964,14 @@
       spotifyBodyDisconnected.hidden = !data.enabled || spotifyConnected;
       spotifyApp.hidden = !spotifyConnected;
       if (spotifyMaximizeBtn) spotifyMaximizeBtn.hidden = !spotifyConnected;
+      if (spotifyReconnectEl) {
+        var needs = spotifyConnected && data.needsReconnect;
+        spotifyReconnectEl.hidden = !needs;
+        if (needs && spotifyReconnectText) {
+          spotifyReconnectText.textContent = 'This connection predates a permission the player now needs. Reconnect to finish setting it up.';
+        }
+      }
+      if (!spotifyConnected && data.error) setSpotifyStatusMsg(data.error);
       if (spotifyConnected) {
         spotifyAccountName.textContent = data.displayName ? 'Connected as ' + data.displayName : 'Connected';
         startSpotifyPolling();
@@ -1498,7 +1991,6 @@
 
   function resetSpotifyBrowsing() {
     spotifyPlaylistsLoaded = false;
-    spotifyPlaylistsNextOffset = null;
     spotifyCurrentPlaylist = null;
     spotifyTracksNextOffset = null;
     spotifyCurrentAlbumId = null;
@@ -1506,13 +1998,17 @@
     spotifyShuffleOn = false;
     if (spotifyShuffleBtn) spotifyShuffleBtn.setAttribute('aria-pressed', 'false');
     if (spotifyPlaylistsListEl) { spotifyPlaylistsListEl.innerHTML = ''; spotifyPlaylistsListEl.hidden = true; }
+    if (spotifyPinnedListEl) { spotifyPinnedListEl.innerHTML = ''; spotifyPinnedListEl.hidden = true; }
     if (spotifyHomeGrid) spotifyHomeGrid.innerHTML = '';
+    if (spotifyHomeFeatured) spotifyHomeFeatured.innerHTML = '';
+    spotifyRepeatMode = 'off';
+    setRepeatUi('off');
     if (spotifySearchInput) spotifySearchInput.value = '';
     spotifyClearSearchResults();
     setSpotifySearchStatus('Search for a song, artist, album, or playlist.');
     spotifyViewHistory.length = 0;
     spotifySwitchView('home');
-    loadSpotifyPlaylists(true);
+    loadSpotifyPlaylists();
   }
 
   function startSpotifyPolling() {
@@ -1546,14 +2042,18 @@
       if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); return; }
       if (!res.ok) return;
       var data = await res.json();
+      var wasPlaying = spotifyPlaying;
+      var wasTrack = spotifyNowTrack ? spotifyNowTrack.name : null;
       spotifyPlaying = !!data.playing;
       spotifyToggleBtn.textContent = spotifyPlaying ? '⏸' : '▶';
       spotifyToggleBtn.setAttribute('aria-label', spotifyPlaying ? 'Pause' : 'Play');
+      spotifyDjPlaying = !!data.isDj;
       if (data.track) {
+        spotifyNowTrack = data.track;
         spotifyNowplaying.hidden = false;
         spotifyNothingPlaying.hidden = true;
         spotifyTrackName.textContent = data.track.name || '';
-        spotifyTrackArtists.textContent = data.track.artists || '';
+        renderNowPlayingArtists(data.track, data.isDj);
         if (data.track.albumArt) {
           spotifyArt.src = data.track.albumArt;
           spotifyArt.hidden = false;
@@ -1563,10 +2063,16 @@
         spotifyDurationMs = data.track.durationMs || 0;
         spotifyProgressMs = data.progressMs || 0;
       } else {
+        spotifyNowTrack = null;
         spotifyNowplaying.hidden = true;
         spotifyNothingPlaying.hidden = false;
         spotifyDurationMs = 0;
         spotifyProgressMs = 0;
+      }
+      if (typeof data.repeat === 'string' && !spotifyRepeatToggling) setRepeatUi(data.repeat);
+      markDjRow();
+      if (wasPlaying !== spotifyPlaying || wasTrack !== (spotifyNowTrack ? spotifyNowTrack.name : null)) {
+        nudgePresence();
       }
       spotifyRenderProgress();
       if (typeof data.volumePercent === 'number' && !spotifyDraggingVolume && spotifyVolumeSlider) {
@@ -1581,6 +2087,96 @@
         spotifyShuffleBtn.setAttribute('aria-pressed', spotifyShuffleOn ? 'true' : 'false');
       }
     } catch (e) { /* transient — next poll picks it back up */ }
+  }
+
+  function renderNowPlayingArtists(track, isDj) {
+    if (!spotifyTrackArtists) return;
+    spotifyTrackArtists.innerHTML = '';
+    if (isDj) {
+      var badge = document.createElement('span');
+      badge.className = 'spotify-dj-badge';
+      badge.textContent = 'DJ';
+      spotifyTrackArtists.appendChild(badge);
+    }
+    var list = (track && track.artistList) || [];
+    if (!list.length) {
+      spotifyTrackArtists.appendChild(document.createTextNode((track && track.artists) || ''));
+      return;
+    }
+    list.forEach(function (a, i) {
+      if (i) spotifyTrackArtists.appendChild(document.createTextNode(', '));
+      if (a.id) {
+        var link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'spotify-artist-link';
+        link.textContent = a.name;
+        link.addEventListener('click', function () { openSpotifyArtist(a.id); });
+        spotifyTrackArtists.appendChild(link);
+      } else {
+        spotifyTrackArtists.appendChild(document.createTextNode(a.name));
+      }
+    });
+  }
+
+  var REPEAT_UI = {
+    off: { icon: '🔁', label: 'Repeat off', pressed: 'false' },
+    context: { icon: '🔁', label: 'Repeating this playlist', pressed: 'true' },
+    track: { icon: '🔂', label: 'Repeating this song', pressed: 'true' },
+  };
+
+  function setRepeatUi(mode) {
+    spotifyRepeatMode = REPEAT_UI[mode] ? mode : 'off';
+    if (!spotifyRepeatBtn) return;
+    var ui = REPEAT_UI[spotifyRepeatMode];
+    spotifyRepeatBtn.textContent = ui.icon;
+    spotifyRepeatBtn.title = ui.label;
+    spotifyRepeatBtn.setAttribute('aria-label', ui.label);
+    spotifyRepeatBtn.setAttribute('aria-pressed', ui.pressed);
+    spotifyRepeatBtn.dataset.mode = spotifyRepeatMode;
+  }
+
+  if (spotifyRepeatBtn) {
+    spotifyRepeatBtn.addEventListener('click', async function () {
+      // Same cycle as Spotify's own button: off, whole playlist, one song.
+      var order = ['off', 'context', 'track'];
+      var next = order[(order.indexOf(spotifyRepeatMode) + 1) % order.length];
+      var previous = spotifyRepeatMode;
+      setRepeatUi(next);
+      spotifyRepeatToggling = true;
+      setSpotifyStatusMsg('');
+      try {
+        var res = await fetch('/api/spotify/repeat', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify(spotifyDeviceId ? { state: next, deviceId: spotifyDeviceId } : { state: next }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+          setRepeatUi(previous);
+          setSpotifyStatusMsg(data.error || 'Could not change repeat.');
+          if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
+        }
+      } catch (e) {
+        setRepeatUi(previous);
+        setSpotifyStatusMsg('Could not reach Spotify.');
+      }
+      spotifyRepeatToggling = false;
+    });
+  }
+
+  if (spotifyReconnectBtn) {
+    spotifyReconnectBtn.addEventListener('click', function () {
+      setSpotifyStatusMsg('');
+      openSpotifyPopup();
+    });
+  }
+
+  function markDjRow() {
+    var rows = document.querySelectorAll('[data-spotify-dj]');
+    Array.prototype.forEach.call(rows, function (el) {
+      el.classList.toggle('is-playing', spotifyDjPlaying && spotifyPlaying);
+    });
   }
 
   window.onSpotifyWebPlaybackSDKReady = function () {
@@ -1635,20 +2231,28 @@
       spotifyProgressMs = state.position || 0;
       var track = state.track_window && state.track_window.current_track;
       if (track && spotifyNowplaying && spotifyNothingPlaying) {
+        var artistList = (Array.isArray(track.artists) ? track.artists : []).map(function (a) {
+          return { id: (a.uri || '').replace('spotify:artist:', '') || null, name: a.name || '' };
+        });
+        spotifyNowTrack = {
+          name: track.name || '',
+          artists: artistList.map(function (a) { return a.name; }).join(', '),
+          artistList: artistList,
+        };
         spotifyNowplaying.hidden = false;
         spotifyNothingPlaying.hidden = true;
         if (spotifyTrackName) spotifyTrackName.textContent = track.name || '';
-        if (spotifyTrackArtists) {
-          spotifyTrackArtists.textContent = Array.isArray(track.artists)
-            ? track.artists.map(function (a) { return a.name; }).join(', ')
-            : '';
-        }
+        renderNowPlayingArtists(spotifyNowTrack, spotifyDjPlaying);
         var art = track.album && Array.isArray(track.album.images) && track.album.images[0] && track.album.images[0].url;
         if (spotifyArt) {
           if (art) { spotifyArt.src = art; spotifyArt.hidden = false; } else { spotifyArt.hidden = true; }
         }
       }
+      if (typeof state.repeat_mode === 'number' && !spotifyRepeatToggling) {
+        setRepeatUi(['off', 'context', 'track'][state.repeat_mode] || 'off');
+      }
       spotifyRenderProgress();
+      nudgePresence();
     });
 
     spotifyPlayer.connect();
@@ -1661,6 +2265,8 @@
     spotifyPlayerInitStarted = false;
   }
 
+  var spotifyPopupWatch = null;
+
   function openSpotifyPopup() {
     var w = 420, h = 720;
     var left = window.screenX + Math.max(0, (window.outerWidth - w) / 2);
@@ -1670,7 +2276,18 @@
       // Popup blocked — fall back to a normal top-level navigation; the
       // return trip is picked up by handleSpotifyRedirectParam() below.
       window.location.href = '/api/spotify/login';
+      return;
     }
+    setSpotifyStatusMsg('Finish connecting in the Spotify window…');
+    // If the postMessage never lands, fall back to asking the server.
+    if (spotifyPopupWatch) clearInterval(spotifyPopupWatch);
+    spotifyPopupWatch = setInterval(function () {
+      if (!popup.closed) return;
+      clearInterval(spotifyPopupWatch);
+      spotifyPopupWatch = null;
+      setSpotifyStatusMsg('');
+      refreshSpotifyStatus();
+    }, 700);
   }
 
   if (spotifyConnectBtn) {
@@ -1895,6 +2512,11 @@
     }
   }
   function playSpotifyTrack(uri) { playSpotify({ uri: uri }); }
+  // Liked Songs and artist top tracks have no context of their own, so they
+  // go over as an explicit list; without this they stop after one song.
+  function playSpotifyUris(uris, startUri) {
+    playSpotify(startUri ? { uris: uris, offsetUri: startUri } : { uris: uris });
+  }
   function playSpotifyContext(contextUri) { playSpotify({ contextUri: contextUri }); }
   function playSpotifyContextTrack(contextUri, offsetUri) { playSpotify({ contextUri: contextUri, offsetUri: offsetUri }); }
 
@@ -1922,13 +2544,38 @@
     }
   }
 
+  function fillArtistLinks(container, track) {
+    container.innerHTML = '';
+    var list = (track && track.artistList) || [];
+    if (!list.length) {
+      container.textContent = (track && track.artists) || '';
+      return;
+    }
+    list.forEach(function (a, i) {
+      if (i) container.appendChild(document.createTextNode(', '));
+      if (a.id) {
+        var link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'spotify-artist-link';
+        link.textContent = a.name;
+        link.addEventListener('click', function (e) { e.stopPropagation(); openSpotifyArtist(a.id); });
+        container.appendChild(link);
+      } else {
+        container.appendChild(document.createTextNode(a.name));
+      }
+    });
+  }
+
   // A numbered track row for a table (playlist/album/artist top tracks/
   // search songs): index, small art, name+artist, optional album, duration.
   function buildTrackTableRow(track, index, onPlay, onQueue) {
     var li = document.createElement('li');
-    var btn = document.createElement('button');
-    btn.type = 'button';
+    // A div, not a button: the artist and album names inside it are their own
+    // controls, and a button cannot legally contain other buttons.
+    var btn = document.createElement('div');
     btn.className = 'spotify-track-row';
+    btn.setAttribute('role', 'button');
+    btn.tabIndex = 0;
     btn.setAttribute('aria-label', 'Play ' + (track.name || 'track') + (track.artists ? ' by ' + track.artists : ''));
 
     var idx = document.createElement('span');
@@ -1937,11 +2584,19 @@
 
     var main = document.createElement('span');
     main.className = 'spotify-track-row-main';
-    var img = document.createElement('img');
-    img.className = 'spotify-track-row-art';
-    img.alt = '';
-    img.loading = 'lazy';
-    if (track.albumArt) img.src = track.albumArt;
+    var img;
+    if (track.albumArt) {
+      img = document.createElement('img');
+      img.className = 'spotify-track-row-art';
+      img.alt = '';
+      img.loading = 'lazy';
+      img.src = track.albumArt;
+    } else {
+      img = document.createElement('span');
+      img.className = 'spotify-track-row-art spotify-row-art-glyph';
+      img.setAttribute('aria-hidden', 'true');
+      img.textContent = '♪';
+    }
     var info = document.createElement('span');
     info.className = 'spotify-track-row-info';
     var name = document.createElement('span');
@@ -1949,7 +2604,7 @@
     name.textContent = track.name || '';
     var artist = document.createElement('span');
     artist.className = 'spotify-track-row-artist';
-    artist.textContent = track.artists || '';
+    fillArtistLinks(artist, track);
     info.appendChild(name);
     info.appendChild(artist);
     main.appendChild(img);
@@ -1957,7 +2612,16 @@
 
     var album = document.createElement('span');
     album.className = 'spotify-track-row-album';
-    album.textContent = track.album || '';
+    if (track.albumId) {
+      var albumLink = document.createElement('button');
+      albumLink.type = 'button';
+      albumLink.className = 'spotify-artist-link';
+      albumLink.textContent = track.album || '';
+      albumLink.addEventListener('click', function (e) { e.stopPropagation(); openSpotifyAlbum(track.albumId); });
+      album.appendChild(albumLink);
+    } else {
+      album.textContent = track.album || '';
+    }
 
     var duration = document.createElement('span');
     duration.className = 'spotify-track-row-duration';
@@ -1968,6 +2632,9 @@
     btn.appendChild(album);
     btn.appendChild(duration);
     btn.addEventListener('click', function () { onPlay(track); });
+    btn.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlay(track); }
+    });
     li.appendChild(btn);
 
     if (onQueue) {
@@ -1986,6 +2653,13 @@
     return li;
   }
 
+  // null means "Spotify didn't say", which is not the same as an empty
+  // playlist — saying "0 songs" there is what made every playlist look empty.
+  function trackCountLabel(count) {
+    if (typeof count !== 'number') return '';
+    return count === 1 ? '1 song' : count + ' songs';
+  }
+
   // Small sidebar-style row, reused for the "Your Library" playlist list.
   function buildPlaylistNavRow(playlist, onOpen) {
     var li = document.createElement('li');
@@ -1993,11 +2667,19 @@
     btn.type = 'button';
     btn.className = 'spotify-row-btn';
     btn.setAttribute('aria-label', 'Open playlist ' + (playlist.name || ''));
-    var img = document.createElement('img');
-    img.className = 'spotify-row-art';
-    img.alt = '';
-    img.loading = 'lazy';
-    if (playlist.image) img.src = playlist.image;
+    var art;
+    if (playlist.image) {
+      art = document.createElement('img');
+      art.className = 'spotify-row-art';
+      art.alt = '';
+      art.loading = 'lazy';
+      art.src = playlist.image;
+    } else {
+      art = document.createElement('span');
+      art.className = 'spotify-row-art spotify-row-art-glyph';
+      art.setAttribute('aria-hidden', 'true');
+      art.textContent = playlist.kind === 'dj' ? '🎧' : (playlist.kind === 'liked' ? '♥' : '♪');
+    }
     var info = document.createElement('div');
     info.className = 'spotify-row-info';
     var name = document.createElement('span');
@@ -2005,15 +2687,16 @@
     name.textContent = playlist.name || '';
     var sub = document.createElement('span');
     sub.className = 'spotify-row-sub';
-    var count = playlist.trackCount === 1 ? '1 song' : playlist.trackCount + ' songs';
-    sub.textContent = playlist.owner ? playlist.owner + ' · ' + count : count;
+    var count = trackCountLabel(playlist.trackCount);
+    var owner = playlist.kind === 'liked' ? '' : playlist.owner;
+    sub.textContent = [owner, count].filter(Boolean).join(' · ') || 'Playlist';
     info.appendChild(name);
     info.appendChild(sub);
     var chevron = document.createElement('span');
     chevron.className = 'spotify-row-play-icon';
     chevron.setAttribute('aria-hidden', 'true');
     chevron.textContent = '›';
-    btn.appendChild(img);
+    btn.appendChild(art);
     btn.appendChild(info);
     btn.appendChild(chevron);
     btn.addEventListener('click', function () { onOpen(playlist); });
@@ -2040,7 +2723,7 @@
       var placeholder = document.createElement('span');
       placeholder.className = 'spotify-card-art-placeholder';
       placeholder.setAttribute('aria-hidden', 'true');
-      placeholder.textContent = '♪';
+      placeholder.textContent = opts.glyph || '♪';
       btn.appendChild(placeholder);
     }
     var name = document.createElement('span');
@@ -2105,17 +2788,16 @@
     });
   }
 
-  async function loadSpotifyPlaylists(reset) {
-    if (reset) {
-      spotifyPlaylistsListEl.innerHTML = '';
-      spotifyHomeGrid.innerHTML = '';
-      spotifyPlaylistsNextOffset = null;
-    }
+  async function loadSpotifyPlaylists() {
+    spotifyPlaylistsListEl.innerHTML = '';
+    spotifyPinnedListEl.innerHTML = '';
+    spotifyPinnedListEl.hidden = true;
+    spotifyHomeGrid.innerHTML = '';
+    spotifyHomeFeatured.innerHTML = '';
+    if (spotifyHomeCount) spotifyHomeCount.hidden = true;
     setSpotifyPlaylistsStatus('Loading playlists…');
-    spotifyLoadMorePlaylistsBtn.hidden = true;
     try {
-      var offset = reset ? 0 : (spotifyPlaylistsNextOffset || 0);
-      var res = await fetch('/api/spotify/playlists?offset=' + offset, { credentials: 'same-origin' });
+      var res = await fetch('/api/spotify/playlists', { credentials: 'same-origin' });
       var data = await res.json().catch(function () { return {}; });
       spotifyPlaylistsLoaded = true;
       if (!res.ok) {
@@ -2123,8 +2805,28 @@
         if (res.status === 401) { spotifyConnected = false; refreshSpotifyStatus(); }
         return;
       }
+
+      var pinned = [];
+      if (data.dj) pinned.push(data.dj);
+      if (data.liked) pinned.push(data.liked);
+      pinned.forEach(function (entry) {
+        var row = buildPlaylistNavRow(entry, openSpotifyPlaylist);
+        if (entry.kind === 'dj') row.firstChild.setAttribute('data-spotify-dj', '1');
+        spotifyPinnedListEl.appendChild(row);
+        spotifyHomeFeatured.appendChild(buildCard({
+          name: entry.name,
+          image: entry.image,
+          glyph: entry.kind === 'dj' ? '🎧' : '♥',
+          sub: entry.kind === 'dj' ? 'Made for you by Spotify' : trackCountLabel(entry.trackCount),
+          label: 'Open ' + entry.name,
+          onClick: function () { openSpotifyPlaylist(entry); },
+        }));
+      });
+      spotifyPinnedListEl.hidden = pinned.length === 0;
+      markDjRow();
+
       var playlists = data.playlists || [];
-      if (!playlists.length && reset) {
+      if (!playlists.length) {
         setSpotifyPlaylistsStatus('No playlists found on this account.');
         spotifyHomeEmpty.hidden = false;
         spotifyPlaylistsListEl.hidden = true;
@@ -2136,19 +2838,21 @@
         spotifyPlaylistsListEl.appendChild(buildPlaylistNavRow(pl, openSpotifyPlaylist));
         spotifyHomeGrid.appendChild(buildCard({
           name: pl.name, image: pl.image,
-          sub: pl.owner || 'Playlist', label: 'Open playlist ' + (pl.name || ''),
+          sub: trackCountLabel(pl.trackCount) || pl.owner || 'Playlist',
+          label: 'Open playlist ' + (pl.name || ''),
           onClick: function () { openSpotifyPlaylist(pl); },
         }));
       });
       spotifyPlaylistsListEl.hidden = false;
-      spotifyPlaylistsNextOffset = data.nextOffset;
-      spotifyLoadMorePlaylistsBtn.hidden = spotifyPlaylistsNextOffset == null;
+      if (spotifyHomeCount) {
+        spotifyHomeCount.textContent = playlists.length + (playlists.length === 1 ? ' playlist' : ' playlists') +
+          (data.truncated ? ' (showing the first 600)' : '');
+        spotifyHomeCount.hidden = false;
+      }
     } catch (e) {
       setSpotifyPlaylistsStatus('Could not reach Spotify — try again.');
     }
   }
-
-  if (spotifyLoadMorePlaylistsBtn) spotifyLoadMorePlaylistsBtn.addEventListener('click', function () { loadSpotifyPlaylists(false); });
 
   function spotifyClearSearchResults() {
     [spotifySearchTracksEl, spotifySearchArtistsEl, spotifySearchAlbumsEl, spotifySearchPlaylistsEl].forEach(function (el) { if (el) el.innerHTML = ''; });
@@ -2211,16 +2915,36 @@
     });
   }
 
+  function renderPlaylistMeta(playlist, total) {
+    var count = trackCountLabel(typeof total === 'number' ? total : playlist.trackCount);
+    var owner = playlist.kind === 'liked' ? '' : (playlist.owner ? 'By ' + playlist.owner : '');
+    spotifyPlaylistMetaEl.textContent = [owner, count].filter(Boolean).join(' · ');
+  }
+
   async function openSpotifyPlaylist(playlist) {
     spotifyCurrentPlaylist = playlist;
     spotifyTracksNextOffset = null;
+    spotifyPlaylistTrackUris = [];
     spotifySwitchView('playlist');
     spotifyPlaylistNameEl.textContent = playlist.name || '';
-    spotifyPlaylistMetaEl.textContent = (playlist.owner ? 'By ' + playlist.owner : '') + (playlist.trackCount ? ' · ' + playlist.trackCount + (playlist.trackCount === 1 ? ' song' : ' songs') : '');
+    renderPlaylistMeta(playlist);
     if (playlist.image) { spotifyPlaylistArt.src = playlist.image; spotifyPlaylistArt.hidden = false; spotifyPlaylistArtPlaceholder.hidden = true; }
-    else { spotifyPlaylistArt.hidden = true; spotifyPlaylistArtPlaceholder.hidden = false; }
+    else {
+      spotifyPlaylistArt.hidden = true;
+      spotifyPlaylistArtPlaceholder.hidden = false;
+      spotifyPlaylistArtPlaceholder.textContent =
+        playlist.kind === 'dj' ? '🎧' : (playlist.kind === 'liked' ? '♥' : '♪');
+    }
     spotifyPlaylistTracksEl.innerHTML = '';
     spotifyPlaylistTracksEl.hidden = true;
+
+    // The DJ has no track list to fetch — it is a live stream Spotify picks.
+    if (playlist.kind === 'dj') {
+      spotifyLoadMoreBtn.hidden = true;
+      spotifyPlaylistMetaEl.textContent = 'Spotify picks the music and talks between songs.';
+      setSpotifyPlaylistTracksStatus('Press play and the DJ takes over. Skip a track and it adjusts.');
+      return;
+    }
     await loadSpotifyPlaylistTracks(true);
   }
 
@@ -2234,7 +2958,10 @@
     spotifyLoadMoreBtn.hidden = true;
     try {
       var offset = reset ? 0 : (spotifyTracksNextOffset || 0);
-      var res = await fetch('/api/spotify/playlists/' + encodeURIComponent(spotifyCurrentPlaylist.id) + '/tracks?offset=' + offset, { credentials: 'same-origin' });
+      var url = spotifyCurrentPlaylist.kind === 'liked'
+        ? '/api/spotify/liked?offset=' + offset
+        : '/api/spotify/playlists/' + encodeURIComponent(spotifyCurrentPlaylist.id) + '/tracks?offset=' + offset;
+      var res = await fetch(url, { credentials: 'same-origin' });
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) {
         setSpotifyPlaylistTracksStatus(data.error || 'Could not load that playlist.');
@@ -2248,15 +2975,17 @@
         return;
       }
       setSpotifyPlaylistTracksStatus('');
+      if (typeof data.total === 'number') renderPlaylistMeta(spotifyCurrentPlaylist, data.total);
       var startIdx = spotifyPlaylistTracksEl.children.length;
       tracks.forEach(function (track, i) {
+        if (track.uri) spotifyPlaylistTrackUris.push(track.uri);
         spotifyPlaylistTracksEl.appendChild(buildTrackTableRow(track, startIdx + i + 1, function (t) {
           // Play within the playlist's own context so Spotify queues and
           // auto-advances through the rest of the playlist afterward,
           // instead of stopping once this one track ends.
           var contextUri = spotifyCurrentPlaylist && spotifyCurrentPlaylist.uri;
           if (contextUri) playSpotifyContextTrack(contextUri, t.uri);
-          else playSpotifyTrack(t.uri);
+          else playSpotifyUris(spotifyPlaylistTrackUris, t.uri);
         }, function (t) { spotifyQueueTrack(t.uri); }));
       });
       spotifyPlaylistTracksEl.hidden = false;
@@ -2276,7 +3005,9 @@
   if (spotifyPlaylistBackBtn) spotifyPlaylistBackBtn.addEventListener('click', spotifyGoBack);
   if (spotifyPlaylistPlayAllBtn) {
     spotifyPlaylistPlayAllBtn.addEventListener('click', function () {
-      if (spotifyCurrentPlaylist) playSpotifyContext(spotifyCurrentPlaylist.uri);
+      if (!spotifyCurrentPlaylist) return;
+      if (spotifyCurrentPlaylist.uri) playSpotifyContext(spotifyCurrentPlaylist.uri);
+      else if (spotifyPlaylistTrackUris.length) playSpotifyUris(spotifyPlaylistTrackUris);
     });
   }
   if (spotifyLoadMoreBtn) spotifyLoadMoreBtn.addEventListener('click', function () { loadSpotifyPlaylistTracks(false); });
@@ -2305,7 +3036,10 @@
       }
       var album = data.album || {};
       spotifyAlbumNameEl.textContent = album.name || '';
-      spotifyAlbumMetaEl.textContent = (album.artists || '') + (album.year ? ' · ' + album.year : '') + (album.totalTracks ? ' · ' + album.totalTracks + (album.totalTracks === 1 ? ' song' : ' songs') : '');
+      spotifyAlbumMetaEl.innerHTML = '';
+      fillArtistLinks(spotifyAlbumMetaEl, { artists: album.artists, artistList: album.artistList });
+      var albumBits = [album.year, trackCountLabel(album.totalTracks)].filter(Boolean).join(' · ');
+      if (albumBits) spotifyAlbumMetaEl.appendChild(document.createTextNode(' · ' + albumBits));
       if (album.image) { spotifyAlbumArt.src = album.image; spotifyAlbumArt.hidden = false; spotifyAlbumArtPlaceholder.hidden = true; }
       spotifyAlbumPlayAllBtn.onclick = function () { if (album.uri) playSpotifyContext(album.uri); };
       var tracks = data.tracks || [];
@@ -2352,6 +3086,10 @@
     spotifyArtistTopSection.hidden = true;
     spotifyArtistAlbumsEl.innerHTML = '';
     spotifyArtistAlbumsSection.hidden = true;
+    spotifyArtistSinglesEl.innerHTML = '';
+    spotifyArtistSinglesSection.hidden = true;
+    if (spotifyArtistPlayAllBtn) spotifyArtistPlayAllBtn.hidden = true;
+    spotifyArtistTopUris = [];
     setSpotifyArtistStatus('Loading…');
     try {
       var res = await fetch('/api/spotify/artists/' + encodeURIComponent(artistId), { credentials: 'same-origin' });
@@ -2363,22 +3101,45 @@
       }
       var artist = data.artist || {};
       spotifyArtistNameEl.textContent = artist.name || '';
-      spotifyArtistMetaEl.textContent = (artist.genres || []).join(', ');
+      var metaBits = [];
+      if (typeof artist.followers === 'number') {
+        metaBits.push(formatFollowers(artist.followers) + ' followers');
+      }
+      if (artist.genres && artist.genres.length) metaBits.push(artist.genres.join(', '));
+      spotifyArtistMetaEl.textContent = metaBits.join(' · ');
       if (artist.image) { spotifyArtistArt.src = artist.image; spotifyArtistArt.hidden = false; spotifyArtistArtPlaceholder.hidden = true; }
       setSpotifyArtistStatus('');
+
       var topTracks = data.topTracks || [];
       if (topTracks.length) {
-        topTracks.slice(0, 10).forEach(function (track, i) {
-          spotifyArtistTopTracksEl.appendChild(buildTrackTableRow(track, i + 1, function (t) { playSpotifyTrack(t.uri); }, function (t) { spotifyQueueTrack(t.uri); }));
+        var top = topTracks.slice(0, 10);
+        spotifyArtistTopUris = top.map(function (t) { return t.uri; }).filter(Boolean);
+        top.forEach(function (track, i) {
+          spotifyArtistTopTracksEl.appendChild(buildTrackTableRow(track, i + 1, function (t) {
+            playSpotifyUris(spotifyArtistTopUris, t.uri);
+          }, function (t) { spotifyQueueTrack(t.uri); }));
         });
         spotifyArtistTopSection.hidden = false;
+        if (spotifyArtistPlayAllBtn) spotifyArtistPlayAllBtn.hidden = false;
       }
-      var albums = data.albums || [];
-      if (albums.length) {
-        albums.forEach(function (al) { spotifyArtistAlbumsEl.appendChild(buildCard({ name: al.name, image: al.image, sub: al.year || 'Album', onClick: function () { openSpotifyAlbum(al.id); } })); });
-        spotifyArtistAlbumsSection.hidden = false;
+
+      function fillShelf(list, el, section) {
+        if (!list || !list.length) return false;
+        list.forEach(function (al) {
+          el.appendChild(buildCard({
+            name: al.name,
+            image: al.image,
+            sub: [al.year, trackCountLabel(al.totalTracks)].filter(Boolean).join(' · ') || 'Album',
+            label: 'Open album ' + (al.name || ''),
+            onClick: function () { openSpotifyAlbum(al.id); },
+          }));
+        });
+        section.hidden = false;
+        return true;
       }
-      if (!topTracks.length && !albums.length) setSpotifyArtistStatus('Nothing found for this artist.');
+      var hasAlbums = fillShelf(data.albums, spotifyArtistAlbumsEl, spotifyArtistAlbumsSection);
+      var hasSingles = fillShelf(data.singles, spotifyArtistSinglesEl, spotifyArtistSinglesSection);
+      if (!topTracks.length && !hasAlbums && !hasSingles) setSpotifyArtistStatus('Nothing found for this artist.');
     } catch (e) {
       setSpotifyArtistStatus('Could not reach Spotify — try again.');
     }
@@ -2388,6 +3149,18 @@
     if (!spotifyArtistStatus) return;
     spotifyArtistStatus.textContent = msg || '';
     spotifyArtistStatus.hidden = !msg;
+  }
+
+  function formatFollowers(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(n);
+  }
+
+  if (spotifyArtistPlayAllBtn) {
+    spotifyArtistPlayAllBtn.addEventListener('click', function () {
+      if (spotifyArtistTopUris.length) playSpotifyUris(spotifyArtistTopUris);
+    });
   }
 
   if (spotifyArtistBackBtn) spotifyArtistBackBtn.addEventListener('click', spotifyGoBack);
@@ -2416,7 +3189,9 @@
   window.addEventListener('message', function (event) {
     if (event.origin !== window.location.origin) return;
     if (!event.data || event.data.source !== 'soulstudies-spotify') return;
+    if (spotifyPopupWatch) { clearInterval(spotifyPopupWatch); spotifyPopupWatch = null; }
     if (event.data.status === 'connected') {
+      setSpotifyStatusMsg('');
       refreshSpotifyStatus();
     } else if (event.data.status === 'denied') {
       setSpotifyStatusMsg('Spotify connection was cancelled.');
@@ -2959,15 +3734,11 @@
     });
     if (over) { endTetris(); return; }
 
-    var cleared = 0;
+    var fullRows = [];
     for (var y = T_ROWS - 1; y >= 0; y--) {
-      if (tetris.grid[y].every(Boolean)) {
-        tetris.grid.splice(y, 1);
-        tetris.grid.unshift(new Array(T_COLS).fill(null));
-        cleared++;
-        y++;
-      }
+      if (tetris.grid[y].every(Boolean)) fullRows.push(y);
     }
+    var cleared = fullRows.length;
 
     var names = ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'];
     var action = '';
@@ -3001,11 +3772,32 @@
     }
     tetris.score += base;
     tetris.lines += cleared;
+    var prevLevel = tetris.level;
     tetris.level = Math.floor(tetris.lines / 10) + 1;
+    if (tetris.level > prevLevel) action = (action ? action + ' · ' : '') + 'LEVEL ' + tetris.level;
     if (action) flashAction(action);
 
     tetris.holdUsed = false;
     updateTetrisHud();
+
+    if (cleared) {
+      // Held on screen for a beat, then collapsed in tFinishClear.
+      tetris.piece = null;
+      tetris.clearing = { rows: fullRows, elapsed: 0, big: cleared >= 4 || tspin };
+      return;
+    }
+    tSpawnFromQueue();
+  }
+
+  var T_CLEAR_MS = 190;
+
+  function tFinishClear() {
+    // Take every cleared row out first, then put the replacements back on
+    // top — unshifting between splices would shift the remaining indices.
+    var rows = tetris.clearing.rows.slice().sort(function (a, b) { return a - b; });
+    for (var i = rows.length - 1; i >= 0; i--) tetris.grid.splice(rows[i], 1);
+    for (var j = 0; j < rows.length; j++) tetris.grid.unshift(new Array(T_COLS).fill(null));
+    tetris.clearing = null;
     tSpawnFromQueue();
   }
 
@@ -3019,6 +3811,11 @@
 
   function tStep(dt) {
     var t = tetris;
+    if (t.clearing) {
+      t.clearing.elapsed += dt;
+      if (t.clearing.elapsed >= T_CLEAR_MS) tFinishClear();
+      return;
+    }
     var p = t.piece;
 
     if (t.dirHeld) {
@@ -3062,27 +3859,75 @@
     }
   }
 
+  function roundRectPath(ctx, x, y, w, h, r) {
+    var rad = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+
   function drawTCell(ctx, x, y, px, color, ghost) {
+    var gx = x * px + 1;
+    var gy = y * px + 1;
+    var size = px - 2;
+
     if (ghost) {
-      ctx.globalAlpha = 0.18;
+      ctx.globalAlpha = 0.14;
       ctx.fillStyle = color;
-      ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
-      ctx.globalAlpha = 1;
+      roundRectPath(ctx, gx, gy, size, size, 4);
+      ctx.fill();
+      ctx.globalAlpha = 0.55;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
-      ctx.strokeRect(x * px + 1.5, y * px + 1.5, px - 3, px - 3);
+      roundRectPath(ctx, gx + 0.75, gy + 0.75, size - 1.5, size - 1.5, 3.5);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
       return;
     }
-    ctx.fillStyle = color;
-    ctx.fillRect(x * px + 1, y * px + 1, px - 2, px - 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.18)';
-    ctx.fillRect(x * px + 1, y * px + 1, px - 2, 3);
+
+    var grad = ctx.createLinearGradient(gx, gy, gx, gy + size);
+    grad.addColorStop(0, color);
+    grad.addColorStop(1, shadeColor(color, -0.28));
+    ctx.fillStyle = grad;
+    roundRectPath(ctx, gx, gy, size, size, 4);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    roundRectPath(ctx, gx + 2, gy + 2, size - 4, Math.max(2, size * 0.22), 2);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.32)';
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, gx + 0.5, gy + 0.5, size - 1, size - 1, 4);
+    ctx.stroke();
+  }
+
+  function shadeColor(hex, amount) {
+    var n = parseInt(hex.slice(1), 16);
+    var r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    function mix(c) {
+      return Math.max(0, Math.min(255, Math.round(amount < 0 ? c * (1 + amount) : c + (255 - c) * amount)));
+    }
+    return 'rgb(' + mix(r) + ',' + mix(g) + ',' + mix(b) + ')';
   }
 
   function drawTetris() {
     var ctx = tetrisCtx;
-    ctx.clearRect(0, 0, tetrisCanvas.width, tetrisCanvas.height);
-    ctx.strokeStyle = 'rgba(233,225,208,0.06)';
+    var W = tetrisCanvas.width;
+    var H = tetrisCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    var bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, 'rgba(16,20,29,0.95)');
+    bg.addColorStop(1, 'rgba(8,10,15,0.98)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = 'rgba(233,225,208,0.05)';
     ctx.lineWidth = 1;
     for (var gx = 1; gx < T_COLS; gx++) {
       ctx.beginPath(); ctx.moveTo(gx * T_PX + 0.5, 0); ctx.lineTo(gx * T_PX + 0.5, T_ROWS * T_PX); ctx.stroke();
@@ -3091,12 +3936,51 @@
       ctx.beginPath(); ctx.moveTo(0, gy * T_PX + 0.5); ctx.lineTo(T_COLS * T_PX, gy * T_PX + 0.5); ctx.stroke();
     }
     if (!tetris) return;
+
+    var clearing = tetris.clearing;
+    var t = clearing ? Math.min(1, clearing.elapsed / T_CLEAR_MS) : 0;
+    var clearRows = Object.create(null);
+    if (clearing) clearing.rows.forEach(function (r) { clearRows[r] = true; });
+
     for (var y = 0; y < T_ROWS; y++) {
+      var isClearing = clearRows[y];
+      if (isClearing) {
+        ctx.save();
+        ctx.translate(0, (y + 0.5) * T_PX);
+        ctx.scale(1, Math.max(0.02, 1 - t * 0.85));
+        ctx.translate(0, -(y + 0.5) * T_PX);
+        ctx.globalAlpha = 1 - t * 0.65;
+      }
       for (var x = 0; x < T_COLS; x++) {
         if (tetris.grid[y][x]) drawTCell(ctx, x, y, T_PX, tetris.grid[y][x]);
       }
+      if (isClearing) {
+        ctx.globalAlpha = 0.55 * (1 - t);
+        ctx.fillStyle = '#fdf7e8';
+        roundRectPath(ctx, 1, y * T_PX + 1, T_COLS * T_PX - 2, T_PX - 2, 4);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      }
     }
+
+    if (clearing) {
+      var half = (T_COLS * T_PX) / 2;
+      var reach = half * Math.min(1, t * 1.6);
+      clearing.rows.forEach(function (r) {
+        var cy = r * T_PX + T_PX / 2;
+        var g = ctx.createLinearGradient(half - reach, 0, half + reach, 0);
+        g.addColorStop(0, 'rgba(147,184,154,0)');
+        g.addColorStop(0.5, 'rgba(233,225,208,' + (0.85 * (1 - t)).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(147,184,154,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(half - reach, cy - 1.5, reach * 2, 3);
+      });
+      return;
+    }
+
     var p = tetris.piece;
+    if (!p) return;
     var cells = T_SHAPES[p.type][p.rot];
     var color = T_DEFS[p.type].color;
     var gy2 = tGhostY();
@@ -3106,10 +3990,14 @@
         if (by >= 0) drawTCell(ctx, p.x + c[0], by, T_PX, color, true);
       });
     }
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
     cells.forEach(function (c) {
       var by = p.y + c[1];
       if (by >= 0) drawTCell(ctx, p.x + c[0], by, T_PX, color);
     });
+    ctx.restore();
   }
 
   function drawMini(ctx, type, slotY, slotH, dim) {
@@ -3125,12 +4013,12 @@
     var ox = (ctx.canvas.width - w) / 2;
     var oy = slotY + (slotH - h) / 2;
     ctx.globalAlpha = dim ? 0.35 : 1;
+    ctx.save();
+    ctx.translate(ox - minX * px, oy - minY * px);
     cells.forEach(function (c) {
-      ctx.fillStyle = T_DEFS[type].color;
-      ctx.fillRect(ox + (c[0] - minX) * px + 1, oy + (c[1] - minY) * px + 1, px - 2, px - 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.18)';
-      ctx.fillRect(ox + (c[0] - minX) * px + 1, oy + (c[1] - minY) * px + 1, px - 2, 2);
+      drawTCell(ctx, c[0], c[1], px, T_DEFS[type].color);
     });
+    ctx.restore();
     ctx.globalAlpha = 1;
   }
 
@@ -3166,6 +4054,7 @@
     tetris = {
       grid: grid, bag: [], queue: [], piece: null, hold: null, holdUsed: false,
       score: 0, lines: 0, level: 1, combo: -1, b2b: false, b2bCount: 0,
+      clearing: null, flash: 0,
       gravAcc: 0, lockAcc: 0, lockResets: 0,
       lastMoveRotation: false, lastKickIndex: 0,
       dirHeld: 0, leftHeld: false, rightHeld: false, dasAcc: 0, arrAcc: 0, softHeld: false,
@@ -4154,7 +5043,7 @@
       return;
     }
 
-    if (activeGame === 'tetris' && tetris) {
+    if (activeGame === 'tetris' && tetris && tetris.piece) {
       var b = tCfg.binds;
       var code = e.code;
       if (code === b.left) {

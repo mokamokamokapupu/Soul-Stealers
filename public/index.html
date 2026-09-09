@@ -611,6 +611,9 @@
           <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><circle cx="8.5" cy="8.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 18.5c0-2.9 2.2-4.8 5-4.8s5 1.9 5 4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M15 8.8a2.4 2.4 0 1 0 0-4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M14.2 13.9c2.3.3 3.9 2 3.9 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span class="active-count-badge" id="active-count-badge" hidden>0</span>
         </button>
+        <button type="button" class="icon-btn" id="sidebar-toggle" title="Room activity" aria-expanded="true" aria-label="Toggle the room activity sidebar">
+          <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15 4v16" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
         <button type="button" class="icon-btn" id="chat-settings-btn" title="Appearance settings" aria-haspopup="true" aria-expanded="false" aria-label="Appearance settings">
           <svg viewBox="0 0 24 24" class="tool-icon" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.2v2.2M12 18.6v2.2M20.8 12h-2.2M5.4 12H3.2M18.2 5.8l-1.6 1.6M7.4 16.6l-1.6 1.6M18.2 18.2l-1.6-1.6M7.4 7.4L5.8 5.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
@@ -653,6 +656,9 @@
     </div>
 
     <p class="avatar-status" id="avatar-status"></p>
+
+    <div class="chat-body">
+    <div class="chat-main">
 
     <div class="messages-wrap">
       <div class="unlock-overlay" id="unlock-overlay" hidden>
@@ -703,6 +709,23 @@
       <textarea id="msg-input" maxlength="500" rows="1" placeholder="Write something…" required></textarea>
       <button type="submit" id="send-btn">Send</button>
     </form>
+
+    </div>
+
+    <aside class="room-sidebar" id="room-sidebar" aria-label="Room activity">
+      <section class="sidebar-section">
+        <h3 class="sidebar-heading">Here now</h3>
+        <ul class="sidebar-user-list" id="sidebar-now"></ul>
+        <p class="sidebar-empty" id="sidebar-now-empty" hidden>Nobody else is around.</p>
+      </section>
+      <section class="sidebar-section sidebar-section-feed">
+        <h3 class="sidebar-heading">Recently</h3>
+        <ul class="sidebar-feed-list" id="sidebar-feed"></ul>
+        <p class="sidebar-empty" id="sidebar-feed-empty" hidden>Nothing yet. Play something, or put a record on.</p>
+      </section>
+    </aside>
+
+    </div>
   </div>
 </div>
 
@@ -921,9 +944,9 @@
                 </ul>
 
                 <div class="spotify-library-body" id="spotify-library-body">
+                  <ul class="spotify-playlist-nav-list spotify-pinned-list" id="spotify-pinned-list" hidden></ul>
                   <p class="spotify-list-status" id="spotify-playlists-status" aria-live="polite">Loading playlists…</p>
                   <ul class="spotify-playlist-nav-list" id="spotify-playlists-list" hidden></ul>
-                  <button type="button" class="spotify-loadmore-btn" id="spotify-loadmore-playlists-btn" hidden>Load more</button>
                 </div>
               </nav>
 
@@ -936,7 +959,10 @@
                 </div>
 
                 <div class="spotify-view" id="spotify-view-home" data-view="home">
+                  <h2 class="spotify-view-title">Made for you</h2>
+                  <div class="spotify-card-grid" id="spotify-home-featured"></div>
                   <h2 class="spotify-view-title">Your playlists</h2>
+                  <p class="spotify-list-status" id="spotify-home-count" hidden aria-live="polite"></p>
                   <p class="spotify-empty-note" id="spotify-home-empty" hidden>Your Spotify playlists will show up here.</p>
                   <div class="spotify-card-grid" id="spotify-home-grid"></div>
                 </div>
@@ -1009,19 +1035,30 @@
                       <p class="spotify-detail-meta" id="spotify-artist-meta"></p>
                     </div>
                   </div>
+                  <div class="spotify-detail-actions">
+                    <button type="button" class="spotify-playall-btn" id="spotify-artist-playall" hidden>▶ Play</button>
+                  </div>
                   <p class="spotify-list-status" id="spotify-artist-status" aria-live="polite">Loading…</p>
                   <section class="spotify-result-section" id="spotify-artist-top-section" hidden>
                     <h3>Popular</h3>
                     <ol class="spotify-track-table" id="spotify-artist-top-tracks"></ol>
                   </section>
                   <section class="spotify-result-section" id="spotify-artist-albums-section" hidden>
-                    <h3>Discography</h3>
+                    <h3>Albums</h3>
                     <div class="spotify-card-grid" id="spotify-artist-albums"></div>
+                  </section>
+                  <section class="spotify-result-section" id="spotify-artist-singles-section" hidden>
+                    <h3>Singles &amp; EPs</h3>
+                    <div class="spotify-card-grid" id="spotify-artist-singles"></div>
                   </section>
                 </div>
               </div>
             </div>
 
+            <div class="spotify-reconnect" id="spotify-reconnect" hidden>
+              <span id="spotify-reconnect-text">This connection is missing a permission it now needs.</span>
+              <button type="button" class="spotify-reconnect-btn" id="spotify-reconnect-btn">Reconnect</button>
+            </div>
             <p class="spotify-status-msg" id="spotify-status-msg" hidden aria-live="polite"></p>
 
             <div class="spotify-player-bar" id="spotify-player-bar">
@@ -1042,6 +1079,7 @@
                   <button type="button" class="spotify-ctl-btn" id="spotify-prev" title="Previous" aria-label="Previous track">⏮</button>
                   <button type="button" class="spotify-ctl-btn spotify-ctl-main" id="spotify-toggle" title="Play/Pause" aria-label="Play or pause">▶</button>
                   <button type="button" class="spotify-ctl-btn" id="spotify-next" title="Next" aria-label="Next track">⏭</button>
+                  <button type="button" class="spotify-ctl-btn spotify-ctl-repeat" id="spotify-repeat" title="Repeat" aria-label="Repeat off" data-mode="off">🔁</button>
                 </div>
                 <div class="spotify-progress-row">
                   <span class="spotify-time" id="spotify-time-elapsed">0:00</span>
