@@ -749,23 +749,29 @@ function sendJson(res, status, obj, extraHeaders) {
   res.end(body);
 }
 
-function applySecurityHeaders(res) {
+const CSP_PUBLIC =
+  "default-src 'self'; script-src 'self'; " +
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
+  "img-src 'self' data:; connect-src 'self'; " +
+  "frame-ancestors 'none'; base-uri 'none'";
+
+const CSP_MEMBER =
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://sdk.scdn.co; " +
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
+  // blob: is for decrypted chat images, minted in-page from bytes it already holds.
+  "img-src 'self' data: blob: https://*.scdn.co; " +
+  "connect-src 'self' https://*.spotify.com wss://*.spotify.com https://*.scdn.co; " +
+  "media-src 'self' blob: https://*.scdn.co; frame-src https://sdk.scdn.co https://*.spotify.com; " +
+  "frame-ancestors 'none'; base-uri 'none'";
+
+// The wider policy names third parties, so it goes only to sessions that have
+// already been let in. A visitor at the essay sees a policy that names nobody.
+function applySecurityHeaders(res, member) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  res.setHeader(
-    'Content-Security-Policy',
-    // GET /api/spotify/player-token — the one place a token reaches the browser,
-    // required by the Web Playback SDK. See the CSP note in applySecurityHeaders.
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://sdk.scdn.co; " +
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; " +
-    // blob: is for decrypted chat images, minted in-page from bytes it already holds.
-    "img-src 'self' data: blob: https://*.scdn.co; " +
-    "connect-src 'self' https://*.spotify.com wss://*.spotify.com https://*.scdn.co; " +
-    "media-src 'self' blob: https://*.scdn.co; frame-src https://sdk.scdn.co https://*.spotify.com; " +
-    "frame-ancestors 'none'; base-uri 'none'"
-  );
+  res.setHeader('Content-Security-Policy', member ? CSP_MEMBER : CSP_PUBLIC);
 }
 
 // Appends rather than replaces: a response can carry both the session and the
@@ -1342,23 +1348,169 @@ const PRETTY_ROUTES = {
   '/chat': '/index.html',
 };
 
-function serveStatic(req, res, urlPath) {
+// Comments never reach the browser. This walks the source rather than running
+// a regex over it, so an apostrophe in a comment or a "//" inside a string or
+// regex literal cannot make it eat live code. The result is parsed before it
+// is cached; if it does not parse, the original is served untouched.
+const strippedCache = new Map();
+
+function stripJsComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  // What the previous meaningful character was, so a '/' can be told apart:
+  // after a value it is division, otherwise it starts a regex literal.
+  let prev = '';
+  while (i < n) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      out += ' ';
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      let j = i + 1;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === quote) break;
+        // A template literal can hold ${ ... } with anything inside it.
+        if (quote === '`' && src[j] === '$' && src[j + 1] === '{') {
+          let depth = 1;
+          j += 2;
+          while (j < n && depth > 0) {
+            if (src[j] === '{') depth++;
+            else if (src[j] === '}') depth--;
+            j++;
+          }
+          continue;
+        }
+        j++;
+      }
+      out += src.slice(i, j + 1);
+      prev = quote;
+      i = j + 1;
+      continue;
+    }
+    if (c === '/' && !')]}'.includes(prev) && !/[A-Za-z0-9_$]/.test(prev)) {
+      // Regex literal: copy it whole, including any '/' inside a class.
+      let j = i + 1;
+      let inClass = false;
+      while (j < n) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === '[') inClass = true;
+        else if (src[j] === ']') inClass = false;
+        else if (src[j] === '/' && !inClass) break;
+        else if (src[j] === '\n') break;
+        j++;
+      }
+      if (j < n && src[j] === '/') {
+        while (j + 1 < n && /[a-z]/.test(src[j + 1])) j++;
+        out += src.slice(i, j + 1);
+        prev = '/';
+        i = j + 1;
+        continue;
+      }
+    }
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  // Collapse the blank lines the comments left behind.
+  return out.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n');
+}
+
+function stripCssComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n');
+}
+
+function stripComments(filePath, data) {
+  const cached = strippedCache.get(filePath);
+  let mtime = 0;
+  try { mtime = fs.statSync(filePath).mtimeMs; } catch (e) { return data; }
+  if (cached && cached.mtime === mtime) return cached.body;
+
+  const src = data.toString('utf8');
+  let body;
+  try {
+    if (filePath.endsWith('.css')) {
+      body = Buffer.from(stripCssComments(src), 'utf8');
+    } else {
+      const stripped = stripJsComments(src);
+      // Only ship it if it still parses.
+      new (require('vm').Script)(stripped, { filename: filePath });
+      body = Buffer.from(stripped, 'utf8');
+    }
+  } catch (e) {
+    console.error('[soul-studies] comment strip failed for ' + filePath + ', serving as-is:', e.message);
+    body = data;
+  }
+  strippedCache.set(filePath, { mtime, body });
+  return body;
+}
+
+// Files that describe anything past the gate. A visitor who has not been let
+// in gets a plain 404, so the response says nothing about what is there.
+const MEMBER_ONLY_FILES = new Set(['/assets/app.js', '/assets/app.css', '/assets/doom.wasm']);
+
+function notFound(res) {
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not found');
+}
+
+function serveStatic(req, res, urlPath, member) {
   let rel = urlPath.split('?')[0];
   rel = PRETTY_ROUTES[rel] || rel;
+
+  if (MEMBER_ONLY_FILES.has(rel) && !member) return notFound(res);
+
+  if (rel === '/index.html') return serveDocument(res, member);
+
   const resolved = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!resolved.startsWith(PUBLIC_DIR)) {
     res.writeHead(403); res.end('Forbidden'); return;
   }
   fs.readFile(resolved, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
-      return;
-    }
+    if (err) return notFound(res);
     const ext = path.extname(resolved);
+    const body = (ext === '.js' || ext === '.css') ? stripComments(resolved, data) : data;
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-    res.end(data);
+    res.end(body);
   });
+}
+
+// The page is assembled per visitor: the essay for everyone, the rest of the
+// app only once there is a session that has passed the gate.
+const SHELL_PATH = path.join(ROOT, 'private', 'shell.html');
+
+function serveDocument(res, member) {
+  let page;
+  try {
+    page = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  } catch (e) {
+    return notFound(res);
+  }
+  if (member) {
+    let shell = '';
+    try { shell = fs.readFileSync(SHELL_PATH, 'utf8'); } catch (e) { shell = ''; }
+    page = page
+      .replace('<!--APP-SHELL-->', shell + '\n<script src="/assets/app.js"></script>')
+      .replace('<!--APP-STYLE-->', '<link rel="stylesheet" href="/assets/app.css">');
+  } else {
+    page = page.replace('<!--APP-SHELL-->', '').replace('<!--APP-STYLE-->', '');
+  }
+  page = page.replace(/<!--[\s\S]*?-->/g, '').replace(/\n{3,}/g, '\n\n');
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(page);
 }
 
 // ---------------------------------------------------------------------------
@@ -2721,7 +2873,9 @@ async function handleApi(req, res, pathname) {
 // ---------------------------------------------------------------------------
 
 const server = http.createServer((req, res) => {
-  applySecurityHeaders(res);
+  const found = getSession(req);
+  const member = Boolean(found && found.session && found.session.stage !== 'none');
+  applySecurityHeaders(res, member);
   const pathname = req.url.split('?')[0];
 
   if (pathname.startsWith('/api/')) {
@@ -2733,7 +2887,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'GET' || req.method === 'HEAD') {
-    return serveStatic(req, res, pathname);
+    return serveStatic(req, res, pathname, member);
   }
 
   res.writeHead(405); res.end('Method not allowed');

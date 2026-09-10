@@ -168,7 +168,7 @@
   // key is derived (PBKDF2) from the site password every room member already knows.
 
   var ROOM_KEY_STORAGE = 'ss_room_key_v1';
-  var PBKDF2_SALT = new TextEncoder().encode('soul-studies-chat-room-v1');
+  var PBKDF2_SALT = new TextEncoder().encode('soul-studies-key-v2');
   var PBKDF2_ITERATIONS = 150000;
   var roomKey = null;
   var cryptoAvailable = !!(window.crypto && window.crypto.subtle);
@@ -327,22 +327,21 @@
       window.history.replaceState(null, '', '/');
     }
 
+    if (cryptoAvailable && !roomKey) roomKey = await loadCachedRoomKey();
+
     if (startView === 'chat') {
       myUsername = data.username;
       whoNameEl.textContent = myUsername || '—';
       myAvatarEl.src = avatarUrl(myUsername);
       updateRoomTag();
-      if (cryptoAvailable) roomKey = await loadCachedRoomKey();
       setUnlockVisible(cryptoAvailable && !roomKey);
     }
 
     showView(bannedOnLoad ? 'gate' : startView);
     if (bannedOnLoad) setGateError('This device has been blocked from that room.');
-    ready();
-  }
-
-  function ready() {
-    document.body.classList.add('is-ready');
+    // The essay's scroll position survives the reload out of the gate, which
+    // would otherwise drop you halfway down the room.
+    if (startView !== 'essay') window.scrollTo(0, 0);
   }
 
   // ---------------------------------------------------------------------
@@ -449,6 +448,7 @@
           whoNameEl.textContent = myUsername;
           myAvatarEl.src = avatarUrl(myUsername);
           updateRoomTag();
+          setUnlockVisible(cryptoAvailable && !roomKey);
           showView('chat');
         }, 280);
         return;
@@ -1382,12 +1382,10 @@
     releaseDecryptedImageUrls();
     cancelReply();
     updateRoomTag();
-    var res = await fetch('/api/session', { credentials: 'same-origin' }).catch(function () { return null; });
-    if (res) {
-      try { applySessionData(await res.json()); } catch (e) { /* ignore */ }
-    }
     lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
-    showView('essay');
+    // Back to the bare page — this one still holds markup a signed-out
+    // visitor is not meant to have.
+    window.location.replace('/');
   });
 
   var SCALE_KEY = 'ss_ui_scale';
@@ -2317,6 +2315,7 @@
         spotifyAccountName.textContent = data.displayName ? 'Connected as ' + data.displayName : 'Connected';
         startSpotifyPolling();
         refreshNowPlaying();
+        ensureSpotifySdk();
         initSpotifyPlayer();
         // A fresh connection (including reconnecting after a disconnect)
         // starts browsing from scratch — old playlist/search data belonged
@@ -2518,6 +2517,18 @@
     Array.prototype.forEach.call(rows, function (el) {
       el.classList.toggle('is-playing', spotifyDjPlaying && spotifyPlaying);
     });
+  }
+
+  // The SDK is fetched only when an account is actually connected: it is the
+  // one third-party script here, and nothing should reach for it otherwise.
+  var spotifySdkRequested = false;
+  function ensureSpotifySdk() {
+    if (spotifySdkRequested) return;
+    spotifySdkRequested = true;
+    var el = document.createElement('script');
+    el.src = 'https://sdk.scdn.co/spotify-player.js';
+    el.async = true;
+    document.head.appendChild(el);
   }
 
   window.onSpotifyWebPlaybackSDKReady = function () {
@@ -5364,7 +5375,6 @@
   });
 
   var COMBOS = [
-    { keys: ['q', 'w', 'e', 'i', 'o', 'p'], from: ['essay'], fired: false, go: function () { showView('gate'); } },
     { keys: ['g', 'a', 'm', 'e'], from: ['chat'], fired: false, go: function () { showView('games'); } },
   ];
   var COMBO_KEYS = Object.create(null);
@@ -5427,66 +5437,6 @@
     heldKeys = Object.create(null);
     COMBOS.forEach(function (c) { c.fired = false; });
   });
-
-  // ---------------------------------------------------------------------
-  // Publication page: section tabs, scroll reveals, progress rail
-  // ---------------------------------------------------------------------
-
-  var pubTabs = Array.prototype.slice.call(document.querySelectorAll('.pub-tab'));
-  var pubPanels = Array.prototype.slice.call(document.querySelectorAll('.pub-panel'));
-  var pubTabsBar = document.getElementById('pub-tabs');
-
-  function activatePubTab(name) {
-    pubTabs.forEach(function (t) {
-      var active = t.dataset.tab === name;
-      t.classList.toggle('is-active', active);
-      t.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-    pubPanels.forEach(function (p) {
-      var active = p.dataset.panel === name;
-      p.classList.toggle('is-active', active);
-      if (active) {
-        p.querySelectorAll('[data-reveal]').forEach(function (el) { el.classList.add('in-view'); });
-      }
-    });
-    if (pubTabsBar) {
-      var top = pubTabsBar.getBoundingClientRect().top;
-      if (top < 0) pubTabsBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
-
-  pubTabs.forEach(function (tab) {
-    tab.addEventListener('click', function () { activatePubTab(tab.dataset.tab); });
-  });
-
-  var revealEls = document.querySelectorAll('[data-reveal]');
-  if (revealEls.length && 'IntersectionObserver' in window) {
-    var revealObserver = new IntersectionObserver(
-      function (entries) {
-        entries.forEach(function (entry) {
-          if (entry.isIntersecting) {
-            entry.target.classList.add('in-view');
-            revealObserver.unobserve(entry.target);
-          }
-        });
-      },
-      { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
-    );
-    revealEls.forEach(function (el) { revealObserver.observe(el); });
-  } else {
-    revealEls.forEach(function (el) { el.classList.add('in-view'); });
-  }
-
-  var progressFill = document.getElementById('progress-fill');
-  function updateProgress() {
-    var doc = document.documentElement;
-    var scrollTop = doc.scrollTop || document.body.scrollTop;
-    var height = doc.scrollHeight - doc.clientHeight;
-    var pct = height > 0 ? Math.min(1, Math.max(0, scrollTop / height)) : 0;
-    progressFill.style.transform = 'scaleX(' + pct + ')';
-  }
-  window.addEventListener('scroll', updateProgress, { passive: true });
-  updateProgress();
 
   // ---------------------------------------------------------------------
   // Go
