@@ -39,6 +39,28 @@ const ADMIN_KEY = process.env.SOUL_STUDIES_ADMIN_KEY || '';
 const DEVICE_ID_RE = /^[0-9a-f]{32}$/;
 const DEVICE_COOKIE_MAX_AGE = 10 * 365 * 24 * 60 * 60; // seconds
 const MAX_BANS_KEPT = 500;
+
+// The key chord that opens the way in, from the environment so it is in
+// neither the repo nor the page. The page only ever sees a hash of it.
+const ENTRY_CHORD = Array.from(new Set(
+  String(process.env.SOUL_STUDIES_ENTRY || '').toLowerCase().replace(/[^a-z0-9]/g, '').split('')
+)).sort().join('');
+const sha256Hex = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+const ENTRY_CHECK = ENTRY_CHORD.length >= 3 ? sha256Hex(ENTRY_CHORD + '|a') : '';
+const ENTRY_PROOF = ENTRY_CHORD.length >= 3 ? sha256Hex(ENTRY_CHORD + '|b') : '';
+// A chord or a login earns one page load, which has to happen promptly.
+const ENTRY_GRANT_MS = 2 * 60 * 1000;
+// How long the entry form's own files and the login call stay reachable.
+const GATE_WINDOW_MS = 15 * 60 * 1000;
+
+// Encrypts what the room keeps in the browser. Stable across deploys as long
+// as the secret it is derived from is.
+const PREFS_SECRET = crypto.createHash('sha256').update(
+  'prefs:' + (process.env.SOUL_STUDIES_PREFS_SECRET || process.env.SOUL_STUDIES_PASSWORD || crypto.randomBytes(32).toString('hex'))
+).digest();
+function prefsKeyFor(deviceId) {
+  return crypto.createHmac('sha256', PREFS_SECRET).update('device:' + (deviceId || '')).digest('base64');
+}
 const MAX_MESSAGE_LEN = 4000;
 const MAX_EDIT_HISTORY = 20;
 const MAX_MESSAGES_KEPT = 300;
@@ -1341,13 +1363,6 @@ const MIME = {
   '.wasm': 'application/wasm',
 };
 
-const PRETTY_ROUTES = {
-  '/': '/index.html',
-  '/portal': '/index.html',
-  '/setup': '/index.html',
-  '/chat': '/index.html',
-};
-
 // Comments never reach the browser. This walks the source rather than running
 // a regex over it, so an apostrophe in a comment or a "//" inside a string or
 // regex literal cannot make it eat live code. The result is parsed before it
@@ -1430,13 +1445,13 @@ function stripCssComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n');
 }
 
-function stripComments(filePath, data) {
+function stripComments(filePath, data, transform) {
   const cached = strippedCache.get(filePath);
   let mtime = 0;
   try { mtime = fs.statSync(filePath).mtimeMs; } catch (e) { return data; }
   if (cached && cached.mtime === mtime) return cached.body;
 
-  const src = data.toString('utf8');
+  const src = transform ? transform(data.toString('utf8')) : data.toString('utf8');
   let body;
   try {
     if (filePath.endsWith('.css')) {
@@ -1449,77 +1464,154 @@ function stripComments(filePath, data) {
     }
   } catch (e) {
     console.error('[soul-studies] comment strip failed for ' + filePath + ', serving as-is:', e.message);
-    body = data;
+    body = Buffer.from(src, 'utf8');
   }
   strippedCache.set(filePath, { mtime, body });
   return body;
 }
 
-// Files that describe anything past the gate. A visitor who has not been let
-// in gets a plain 404, so the response says nothing about what is there.
-const MEMBER_ONLY_FILES = new Set(['/assets/app.js', '/assets/app.css', '/assets/doom.wasm']);
+const PRIVATE_DIR = path.join(ROOT, 'private');
+
+// Every file a browser may ask for, and who may have it. Anything not listed
+// here is a plain 404 — there is no general-purpose static directory.
+const ASSETS = {
+  '/assets/essay.css': { file: path.join(PUBLIC_DIR, 'assets', 'essay.css'), who: 'anyone' },
+  '/assets/essay.js': { file: path.join(PUBLIC_DIR, 'assets', 'essay.js'), who: 'anyone' },
+  '/assets/gate.css': { file: path.join(PRIVATE_DIR, 'gate.css'), who: 'entering' },
+  '/assets/gate.js': { file: path.join(PRIVATE_DIR, 'gate.js'), who: 'entering' },
+  '/assets/app.css': { file: path.join(PRIVATE_DIR, 'app.css'), who: 'member' },
+  '/assets/app.js': { file: path.join(PRIVATE_DIR, 'app.js'), who: 'member' },
+  '/assets/doom.wasm': { file: path.join(PRIVATE_DIR, 'doom.wasm'), who: 'member' },
+};
 
 function notFound(res) {
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not found');
 }
 
-function serveStatic(req, res, urlPath, member) {
-  let rel = urlPath.split('?')[0];
-  rel = PRETTY_ROUTES[rel] || rel;
+function mayHave(who, session) {
+  if (who === 'anyone') return true;
+  if (!session) return false;
+  if (session.stage !== 'none') return true;
+  return who === 'entering' && (session.gateUntil || 0) > Date.now();
+}
 
-  if (MEMBER_ONLY_FILES.has(rel) && !member) return notFound(res);
-
-  if (rel === '/index.html') return serveDocument(res, member);
-
-  const resolved = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!resolved.startsWith(PUBLIC_DIR)) {
-    res.writeHead(403); res.end('Forbidden'); return;
-  }
-  fs.readFile(resolved, (err, data) => {
+function serveAsset(req, res, pathname, session) {
+  const asset = ASSETS[pathname];
+  if (!asset || !mayHave(asset.who, session)) return notFound(res);
+  fs.readFile(asset.file, (err, data) => {
     if (err) return notFound(res);
-    const ext = path.extname(resolved);
-    const body = (ext === '.js' || ext === '.css') ? stripComments(resolved, data) : data;
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    const ext = path.extname(asset.file);
+    let body = data;
+    if (ext === '.js' || ext === '.css') {
+      body = stripComments(asset.file, data, pathname === '/assets/essay.js' ? fillEntryCheck : null);
+    }
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    if (asset.who !== 'anyone') headers['Cache-Control'] = 'no-store';
+    res.writeHead(200, headers);
     res.end(body);
   });
 }
 
-// The page is assembled per visitor: the essay for everyone, the rest of the
-// app only once there is a session that has passed the gate.
-const SHELL_PATH = path.join(ROOT, 'private', 'shell.html');
+function fillEntryCheck(src) {
+  return src.replace("'{{E}}'", JSON.stringify(ENTRY_CHECK));
+}
 
-function serveDocument(res, member) {
+function readPrivate(name) {
+  try { return fs.readFileSync(path.join(PRIVATE_DIR, name), 'utf8'); } catch (e) { return ''; }
+}
+
+// One URL, three possible pages. The essay is the default for everyone,
+// signed in or not; the other two are handed out for exactly one load, right
+// after the entry chord or a login, so a refresh or a new tab is the essay.
+function serveDocument(req, res) {
   let page;
   try {
     page = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   } catch (e) {
     return notFound(res);
   }
-  if (member) {
-    let shell = '';
-    try { shell = fs.readFileSync(SHELL_PATH, 'utf8'); } catch (e) { shell = ''; }
-    page = page
-      .replace('<!--APP-SHELL-->', shell + '\n<script src="/assets/app.js"></script>')
-      .replace('<!--APP-STYLE-->', '<link rel="stylesheet" href="/assets/app.css">');
-  } else {
-    page = page.replace('<!--APP-SHELL-->', '').replace('<!--APP-STYLE-->', '');
+
+  const found = getSession(req);
+  const session = found && found.session;
+  const now = Date.now();
+  let kind = 'essay';
+  if (session && session.entryGrantedAt && now - session.entryGrantedAt < ENTRY_GRANT_MS) {
+    session.entryGrantedAt = 0;
+    session.gateUntil = now + GATE_WINDOW_MS;
+    kind = session.stage === 'none' ? 'gate' : 'app';
   }
+
+  const gate = readPrivate('gate.html');
+  if (kind === 'essay') {
+    page = page
+      .replace('<!--X-STYLE-->', '')
+      .replace('<!--X-BODY-->', '')
+      .replace('<!--X-SCRIPT-->', '<script src="/assets/essay.js"></script>');
+  } else if (kind === 'gate') {
+    page = page
+      .replace('class="view active" id="view-essay"', 'class="view" id="view-essay"')
+      .replace('<!--X-STYLE-->',
+        '<meta name="t" content="' + escapeXml(session.csrfToken) + '">\n' +
+        '<link rel="stylesheet" href="/assets/gate.css">')
+      .replace('<!--X-BODY-->', gate.replace('class="view" id="view-gate"', 'class="view active" id="view-gate"'))
+      .replace('<!--X-SCRIPT-->', '<script src="/assets/gate.js"></script>');
+  } else {
+    page = page
+      .replace('class="view active" id="view-essay"', 'class="view" id="view-essay"')
+      .replace('<!--X-STYLE-->',
+        '<link rel="stylesheet" href="/assets/gate.css">\n<link rel="stylesheet" href="/assets/app.css">')
+      .replace('<!--X-BODY-->', gate + readPrivate('shell.html'))
+      .replace('<!--X-SCRIPT-->', '<script src="/assets/essay.js"></script>\n<script src="/assets/app.js"></script>');
+    res.setHeader('Content-Security-Policy', CSP_MEMBER);
+  }
+
   page = page.replace(/<!--[\s\S]*?-->/g, '').replace(/\n{3,}/g, '\n\n');
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
   });
-  res.end(page);
+  res.end(req.method === 'HEAD' ? undefined : page);
 }
 
-// ---------------------------------------------------------------------------
-// API route handlers
-// ---------------------------------------------------------------------------
+// POST / — the essay's own keyboard handler, once it has seen the chord.
+// Always answers 204, right or wrong, so a guess learns nothing.
+async function handleEntry(req, res) {
+  const ip = clientIp(req);
+  const done = () => { res.writeHead(204); res.end(); };
+  if (!checkRateLimit(ip).allowed) return done();
+
+  let body;
+  try { body = await readJsonBody(req); } catch (e) { return done(); }
+  const offered = typeof body.p === 'string' ? body.p : '';
+  const a = Buffer.from(offered);
+  const b = Buffer.from(ENTRY_PROOF);
+  const ok = ENTRY_PROOF && a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (!ok) {
+    recordLoginFailure(ip);
+    return done();
+  }
+
+  let { sid, session } = getSession(req) || {};
+  if (!session) {
+    const created = newSession(ip);
+    sid = created.sid;
+    session = created.session;
+    setSessionCookie(res, sid, req);
+  }
+  ensureDeviceId(req, res);
+  session.lastSeen = Date.now();
+  session.entryGrantedAt = Date.now();
+  return done();
+}
 
 async function handleApi(req, res, pathname) {
   let { sid, session } = getSession(req) || {};
   if (!session) {
+    // No session means nobody has been let in. Nothing here exists for them,
+    // not even enough to earn a cookie — except the one address Spotify
+    // sends people back to, which has its own proof in the state token.
+    if (pathname !== '/api/spotify/callback') return notFound(res);
     const created = newSession(clientIp(req));
     sid = created.sid;
     session = created.session;
@@ -1550,6 +1642,16 @@ async function handleApi(req, res, pathname) {
     }
     // Ban lifted — stop holding it against them.
     if (session.bannedFrom) session.bannedFrom = null;
+  }
+
+  // Same wall for a session that exists but was never let in: the login call
+  // only answers while an entry form is open, and nothing else answers at all.
+  if (session.stage === 'none') {
+    const gateOpen = (session.gateUntil || 0) > Date.now();
+    const allowed =
+      (pathname === '/api/login' && req.method === 'POST' && gateOpen) ||
+      pathname === '/api/spotify/callback';
+    if (!allowed) return notFound(res);
   }
 
   // Any API call may carry ?activity=. Unknown values are dropped.
@@ -1585,6 +1687,7 @@ async function handleApi(req, res, pathname) {
       room: session.room,
       csrfToken: session.csrfToken,
       isAdmin: session.stage === 'active' && isAdminName(session.username),
+      pk: prefsKeyFor(session.deviceId),
     });
   }
 
@@ -1612,6 +1715,7 @@ async function handleApi(req, res, pathname) {
       recordLoginSuccess(ip);
       session.stage = 'password_ok';
       session.room = matchedRoom;
+      session.entryGrantedAt = Date.now();
       session.csrfToken = crypto.randomBytes(16).toString('hex'); // rotate on privilege change
       return sendJson(res, 200, { ok: true, csrfToken: session.csrfToken, room: matchedRoom });
     } else {
@@ -2131,7 +2235,12 @@ async function handleApi(req, res, pathname) {
   // GET /api/spotify/callback
   if (pathname === '/api/spotify/callback' && req.method === 'GET') {
     const url = new URL(req.url, 'http://internal');
-    const redirectHome = (flag) => { res.writeHead(302, { Location: '/?spotify=' + flag }); res.end(); };
+    const CODES = { connected: '1', denied: '2', notallowed: '3', error: '4' };
+    const redirectHome = (flag) => {
+      if (session.stage !== 'none') session.entryGrantedAt = Date.now();
+      res.writeHead(302, { Location: '/?r=' + (CODES[flag] || '4') });
+      res.end();
+    };
 
     if (!SPOTIFY_ENABLED) return redirectHome('error');
     if (url.searchParams.get('error')) return redirectHome('denied');
@@ -2873,9 +2982,8 @@ async function handleApi(req, res, pathname) {
 // ---------------------------------------------------------------------------
 
 const server = http.createServer((req, res) => {
-  const found = getSession(req);
-  const member = Boolean(found && found.session && found.session.stage !== 'none');
-  applySecurityHeaders(res, member);
+  // The strict policy by default; only the room's own page widens it.
+  applySecurityHeaders(res, false);
   const pathname = req.url.split('?')[0];
 
   if (pathname.startsWith('/api/')) {
@@ -2886,12 +2994,25 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'GET' || req.method === 'HEAD') {
-    return serveStatic(req, res, pathname, member);
+  if (pathname === '/') {
+    if (req.method === 'POST') {
+      handleEntry(req, res).catch(() => { res.writeHead(204); res.end(); });
+      return;
+    }
+    if (req.method === 'GET' || req.method === 'HEAD') return serveDocument(req, res);
   }
 
-  res.writeHead(405); res.end('Method not allowed');
+  if ((req.method === 'GET' || req.method === 'HEAD') && pathname.startsWith('/assets/')) {
+    const found = getSession(req);
+    return serveAsset(req, res, pathname, found && found.session);
+  }
+
+  return notFound(res);
 });
+
+if (!ENTRY_CHECK) {
+  console.warn('[soul-studies] SOUL_STUDIES_ENTRY is not set (3+ keys) — the essay has no way in.');
+}
 
 // Periodic cleanup of expired sessions — also frees any username the
 // session was holding (in its room), so it becomes available for reuse.

@@ -167,7 +167,7 @@
   // Chat content encryption. The server only ever sees an opaque blob. The AES-GCM
   // key is derived (PBKDF2) from the site password every room member already knows.
 
-  var ROOM_KEY_STORAGE = 'ss_room_key_v1';
+  var ROOM_KEY_STORAGE = 'k';
   var PBKDF2_SALT = new TextEncoder().encode('soul-studies-key-v2');
   var PBKDF2_ITERATIONS = 150000;
   var roomKey = null;
@@ -218,6 +218,89 @@
     roomKey = null;
     try { sessionStorage.removeItem(ROOM_KEY_STORAGE); } catch (e) { /* ignore */ }
   }
+
+  // Everything the room remembers in this browser, sealed into one value so the
+  // storage panel shows nothing readable. Its key comes with the session, so
+  // it only exists while someone is signed in.
+  var PREFS_STORAGE = 'p';
+  var prefs = (function () {
+    var data = Object.create(null);
+    var key = null;
+    var timer = null;
+    var loaded = false;
+    var waiting = [];
+
+    async function load(b64) {
+      try {
+        if (b64 && cryptoAvailable) {
+          key = await crypto.subtle.importKey('raw', base64ToBytes(b64), 'AES-GCM', false, ['encrypt', 'decrypt']);
+          var stored = localStorage.getItem(PREFS_STORAGE);
+          if (stored) {
+            var bytes = base64ToBytes(stored);
+            var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, key, bytes.slice(12));
+            var parsed = JSON.parse(new TextDecoder().decode(plain));
+            if (parsed && typeof parsed === 'object') {
+              Object.keys(parsed).forEach(function (k) { data[k] = String(parsed[k]); });
+            }
+          }
+        }
+      } catch (e) { /* unreadable, e.g. a new device key — start clean */ }
+      if (key) sweepLegacy();
+      loaded = true;
+      waiting.splice(0).forEach(function (fn) { try { fn(); } catch (e2) { /* keep going */ } });
+    }
+
+    // Earlier builds left readable keys behind; fold them in and remove them.
+    function sweepLegacy() {
+      try {
+        var moved = false;
+        for (var i = localStorage.length - 1; i >= 0; i--) {
+          var name = localStorage.key(i);
+          if (name && name.indexOf('ss_') === 0) {
+            if (!(name in data)) data[name] = localStorage.getItem(name);
+            localStorage.removeItem(name);
+            moved = true;
+          }
+        }
+        sessionStorage.removeItem('ss_room_key_v1');
+        if (moved) schedule();
+      } catch (e) { /* storage unavailable */ }
+    }
+
+    function get(name) { return name in data ? data[name] : null; }
+    function set(name, value) { data[name] = String(value); schedule(); }
+    function remove(name) { if (name in data) { delete data[name]; schedule(); } }
+
+    function schedule() {
+      if (!key) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(save, 250);
+    }
+
+    async function save() {
+      timer = null;
+      if (!key) return;
+      try {
+        var iv = crypto.getRandomValues(new Uint8Array(12));
+        var sealed = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(JSON.stringify(data)));
+        var out = new Uint8Array(12 + sealed.byteLength);
+        out.set(iv, 0);
+        out.set(new Uint8Array(sealed), 12);
+        localStorage.setItem(PREFS_STORAGE, bytesToBase64(out));
+      } catch (e) { /* storage full or unavailable */ }
+    }
+
+    function flush() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      return save();
+    }
+
+    function ready(fn) { if (loaded) fn(); else waiting.push(fn); }
+
+    return { load: load, get: get, set: set, remove: remove, flush: flush, ready: ready };
+  })();
+
+  window.addEventListener('pagehide', function () { prefs.flush(); });
 
   async function encryptText(plaintext) {
     var iv = crypto.getRandomValues(new Uint8Array(12));
@@ -301,31 +384,20 @@
     }
   }
 
-  var PATH_HINT = { '/': 'essay', '/portal': 'gate', '/setup': 'setup', '/chat': 'chat' };
-  var STAGE_MAX = { none: 'gate', password_ok: 'setup', active: 'chat' };
-
   async function bootstrapRouting() {
-    var hinted = PATH_HINT[window.location.pathname] || 'essay';
-
     var data;
     var bannedOnLoad = false;
     try {
       var res = await fetch('/api/session', { credentials: 'same-origin' });
-      data = await res.json();
+      data = await res.json().catch(function () { return {}; });
       if (res.status === 403 && data && data.banned) { bannedOnLoad = true; data = { stage: 'none' }; }
     } catch (e) {
       data = { stage: 'none' };
     }
     applySessionData(data);
+    await prefs.load(data.pk);
 
-    var maxAllowed = STAGE_MAX[data.stage] || 'gate';
-    var hintedIdx = VIEWS.indexOf(hinted);
-    var maxIdx = VIEWS.indexOf(maxAllowed);
-    var startView = VIEWS[Math.min(hintedIdx, maxIdx)];
-
-    if (window.location.pathname !== '/') {
-      window.history.replaceState(null, '', '/');
-    }
+    var startView = data.stage === 'active' ? 'chat' : (data.stage === 'password_ok' ? 'setup' : 'gate');
 
     if (cryptoAvailable && !roomKey) roomKey = await loadCachedRoomKey();
 
@@ -337,11 +409,16 @@
       setUnlockVisible(cryptoAvailable && !roomKey);
     }
 
-    showView(bannedOnLoad ? 'gate' : startView);
+    showView(startView);
     if (bannedOnLoad) setGateError('This device has been blocked from that room.');
-    // The essay's scroll position survives the reload out of the gate, which
-    // would otherwise drop you halfway down the room.
-    if (startView !== 'essay') window.scrollTo(0, 0);
+    window.scrollTo(0, 0);
+  }
+
+  // Leaving always means reloading onto the bare essay, which drops this
+  // page's markup, scripts and memory rather than just hiding them.
+  async function leaveForEssay() {
+    try { await prefs.flush(); } catch (e) { /* leave regardless */ }
+    window.location.replace('/');
   }
 
   // ---------------------------------------------------------------------
@@ -1383,9 +1460,7 @@
     cancelReply();
     updateRoomTag();
     lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
-    // Back to the bare page — this one still holds markup a signed-out
-    // visitor is not meant to have.
-    window.location.replace('/');
+    leaveForEssay();
   });
 
   var SCALE_KEY = 'ss_ui_scale';
@@ -1393,12 +1468,6 @@
   var SKINS = ['', 'abyss', 'plum', 'crimson', 'paper'];
   var uiScale = 1;
   var chatSkin = '';
-  try {
-    var savedScale = parseFloat(localStorage.getItem(SCALE_KEY));
-    if (savedScale >= 0.8 && savedScale <= 1.3) uiScale = savedScale;
-    var savedSkin = localStorage.getItem(SKIN_KEY);
-    if (SKINS.indexOf(savedSkin) > 0) chatSkin = savedSkin;
-  } catch (e) { /* private mode */ }
 
   var settingsBtn = document.getElementById('chat-settings-btn');
   var settingsPanel = document.getElementById('chat-settings');
@@ -1434,18 +1503,29 @@
   scaleInput.addEventListener('input', function () {
     uiScale = parseFloat(scaleInput.value) || 1;
     scaleValue.textContent = Math.round(uiScale * 100) + '%';
-    try { localStorage.setItem(SCALE_KEY, String(uiScale)); } catch (e) { /* ignore */ }
+    prefs.set(SCALE_KEY, String(uiScale));
     applyUiScale();
   });
 
   skinButtons.forEach(function (btn) {
     btn.addEventListener('click', function () {
       chatSkin = btn.dataset.skin || '';
-      try { localStorage.setItem(SKIN_KEY, chatSkin); } catch (e) { /* ignore */ }
+      prefs.set(SKIN_KEY, chatSkin);
       applySkin();
     });
   });
   applySkin();
+
+  prefs.ready(function () {
+    var savedScale = parseFloat(prefs.get(SCALE_KEY));
+    if (savedScale >= 0.8 && savedScale <= 1.3) uiScale = savedScale;
+    var savedSkin = prefs.get(SKIN_KEY);
+    if (SKINS.indexOf(savedSkin) > 0) chatSkin = savedSkin;
+    scaleInput.value = String(uiScale);
+    scaleValue.textContent = Math.round(uiScale * 100) + '%';
+    applySkin();
+    applyUiScale();
+  });
 
   var ACTIVE_PANEL_KEY = 'ss_active_users_open';
   var activeUsersBtn = document.getElementById('active-users-btn');
@@ -1459,16 +1539,14 @@
     activeUsersPanel.hidden = !open;
     activeUsersBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     activeUsersBtn.classList.toggle('is-active', open);
-    try { localStorage.setItem(ACTIVE_PANEL_KEY, open ? '1' : '0'); } catch (e) { /* private mode */ }
+    prefs.set(ACTIVE_PANEL_KEY, open ? '1' : '0');
   }
 
   activeUsersBtn.addEventListener('click', function () {
     setActiveUsersPanelOpen(activeUsersPanel.hidden);
   });
 
-  var startPanelOpen = false;
-  try { startPanelOpen = localStorage.getItem(ACTIVE_PANEL_KEY) === '1'; } catch (e) { /* private mode */ }
-  setActiveUsersPanelOpen(startPanelOpen);
+  prefs.ready(function () { setActiveUsersPanelOpen(prefs.get(ACTIVE_PANEL_KEY) === '1'); });
 
   // Codes come from the server's fixed ACTIVITY_CODES list; anything not
   // in this map (including null) just shows no label at all.
@@ -1969,14 +2047,14 @@
     sidebarToggle.addEventListener('click', function () {
       var open = !document.body.classList.toggle('sidebar-collapsed');
       sidebarToggle.setAttribute('aria-expanded', String(open));
-      try { localStorage.setItem('ss_sidebar_open', open ? '1' : '0'); } catch (e) { /* ignore */ }
+      prefs.set('ss_sidebar_open', open ? '1' : '0');
     });
-    try {
-      if (localStorage.getItem('ss_sidebar_open') === '0') {
+    prefs.ready(function () {
+      if (prefs.get('ss_sidebar_open') === '0') {
         document.body.classList.add('sidebar-collapsed');
         sidebarToggle.setAttribute('aria-expanded', 'false');
       }
-    } catch (e) { /* ignore */ }
+    });
   }
 
   setInterval(function () { if (latestFeed.length) renderFeed(); }, 60000);
@@ -2559,18 +2637,14 @@
       spotifyDeviceId = null;
     });
     spotifyPlayer.addListener('initialization_error', function (data) {
-      console.error('[spotify player] initialization_error', data && data.message);
     });
     spotifyPlayer.addListener('authentication_error', function (data) {
-      console.error('[spotify player] authentication_error', data && data.message);
     });
     spotifyPlayer.addListener('account_error', function (data) {
       // The SDK reports both 'not Premium' and 'not approved for this app' here.
-      console.error('[spotify player] account_error', data && data.message);
       setSpotifyStatusMsg('In-browser playback unavailable for this account (needs Spotify Premium, and the account must be approved for this app) — controlling your other active device instead.');
     });
     spotifyPlayer.addListener('playback_error', function (data) {
-      console.error('[spotify player] playback_error', data && data.message);
     });
     spotifyPlayer.addListener('player_state_changed', function (state) {
       if (!state) return;
@@ -3519,8 +3593,8 @@
 
   function handleSpotifyRedirectParam() {
     var params = new URLSearchParams(window.location.search);
-    var flag = params.get('spotify');
-    if (!flag) return;
+    if (!params.has('r')) return;
+    var flag = { '1': 'connected', '2': 'denied', '3': 'notallowed' }[params.get('r')] || 'error';
     try { window.history.replaceState(null, '', window.location.pathname); } catch (e) { /* ignore */ }
 
     if (window.opener && !window.opener.closed) {
@@ -3571,17 +3645,12 @@
   var SNAKE_SPEEDS = { slow: 170, normal: 125, fast: 85 };
   var SNAKE_OPTS_KEY = 'ss_snake_opts';
   var snakeOpts = { speed: 'normal', apples: 1 };
-  try {
-    var savedSnake = JSON.parse(localStorage.getItem(SNAKE_OPTS_KEY) || '{}');
-    if (SNAKE_SPEEDS[savedSnake.speed]) snakeOpts.speed = savedSnake.speed;
-    if ([1, 3, 5].indexOf(savedSnake.apples) !== -1) snakeOpts.apples = savedSnake.apples;
-  } catch (e) { /* defaults */ }
   var snake = null;
   var snakeTimer = null;
   var snakeBest = 0;
 
   function saveSnakeOpts() {
-    try { localStorage.setItem(SNAKE_OPTS_KEY, JSON.stringify(snakeOpts)); } catch (e) { /* ignore */ }
+    prefs.set(SNAKE_OPTS_KEY, JSON.stringify(snakeOpts));
   }
 
   function refreshSnakeOptButtons() {
@@ -3614,6 +3683,14 @@
     });
   });
   refreshSnakeOptButtons();
+  prefs.ready(function () {
+    try {
+      var savedSnake = JSON.parse(prefs.get(SNAKE_OPTS_KEY) || '{}');
+      if (SNAKE_SPEEDS[savedSnake.speed]) snakeOpts.speed = savedSnake.speed;
+      if ([1, 3, 5].indexOf(savedSnake.apples) !== -1) snakeOpts.apples = savedSnake.apples;
+    } catch (e) { /* defaults */ }
+    refreshSnakeOptButtons();
+  });
 
   function snakeSpawnFood(s) {
     while (true) {
@@ -3826,7 +3903,7 @@
   function loadTetrisCfg() {
     tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33 };
     try {
-      var raw = localStorage.getItem(tetrisCfgKey());
+      var raw = prefs.get(tetrisCfgKey());
       if (raw) {
         var p = JSON.parse(raw);
         if (p && typeof p === 'object') {
@@ -3846,7 +3923,7 @@
   }
 
   function saveTetrisCfg() {
-    try { localStorage.setItem(tetrisCfgKey(), JSON.stringify(tCfg)); } catch (e) { /* ignore */ }
+    prefs.set(tetrisCfgKey(), JSON.stringify(tCfg));
   }
 
   function keyLabel(code) {
@@ -4696,7 +4773,7 @@
   function loadPokerChips() {
     var chips = POKER_START;
     try {
-      var raw = localStorage.getItem(pokerStorageKey());
+      var raw = prefs.get(pokerStorageKey());
       if (raw) {
         var n = Math.floor(Number(JSON.parse(raw).chips));
         if (n > 0) chips = n;
@@ -4707,7 +4784,7 @@
 
   function savePokerChips() {
     if (!pokerStacks) return;
-    try { localStorage.setItem(pokerStorageKey(), JSON.stringify({ chips: pokerStacks[0] })); } catch (e) { /* ignore */ }
+    prefs.set(pokerStorageKey(), JSON.stringify({ chips: pokerStacks[0] }));
   }
 
   function initPoker() {
@@ -5147,7 +5224,7 @@
   function loadCookieState() {
     cookie = { cookies: 0, total: 0, owned: {} };
     try {
-      var raw = localStorage.getItem(cookieStorageKey());
+      var raw = prefs.get(cookieStorageKey());
       if (raw) {
         var p = JSON.parse(raw);
         if (p && typeof p === 'object') {
@@ -5167,7 +5244,7 @@
   }
 
   function saveCookieState() {
-    try { localStorage.setItem(cookieStorageKey(), JSON.stringify(cookie)); } catch (e) { /* ignore */ }
+    prefs.set(cookieStorageKey(), JSON.stringify(cookie));
   }
 
   function cookieCps() {
@@ -5398,10 +5475,19 @@
       if (currentView !== 'essay') {
         e.preventDefault();
         showView('essay');
-        // The panic key should leave nothing audible behind — stop any
-        // Spotify playback (in-browser SDK or a remote-controlled device)
-        // the instant it fires, same as clicking pause.
-        if (spotifyConnected && spotifyPlaying) spotifyTransport('pause', '');
+        // keepalive, so the pause still reaches Spotify as the page unloads.
+        if (spotifyConnected && spotifyPlaying) {
+          try {
+            fetch('/api/spotify/pause', {
+              method: 'POST',
+              credentials: 'same-origin',
+              keepalive: true,
+              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+              body: JSON.stringify(spotifyDeviceId ? { deviceId: spotifyDeviceId } : {}),
+            });
+          } catch (err) { /* leaving anyway */ }
+        }
+        leaveForEssay();
       }
       return;
     }
