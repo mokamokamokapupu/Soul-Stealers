@@ -90,6 +90,7 @@
       /* stay put */
     } finally {
       busy = false;
+      if (Object.keys(held).sort().join('') !== last) consider();
     }
   }
 

@@ -111,6 +111,7 @@
         if (why.banned) handleBanned();
         return;
       }
+      if (res.status === 404) { roomClosed(); return; }
       if (!res.ok) return;
       var data = await res.json();
       if (data.activeUsers) updateActiveUsers(data.activeUsers);
@@ -397,25 +398,39 @@
     applySessionData(data);
     await prefs.load(data.pk);
 
-    var startView = data.stage === 'active' ? 'chat' : (data.stage === 'password_ok' ? 'setup' : 'gate');
-
     if (cryptoAvailable && !roomKey) roomKey = await loadCachedRoomKey();
 
-    if (startView === 'chat') {
-      myUsername = data.username;
-      whoNameEl.textContent = myUsername || '—';
-      myAvatarEl.src = avatarUrl(myUsername);
-      updateRoomTag();
-      setUnlockVisible(cryptoAvailable && !roomKey);
+    // Nothing of the room is drawn until this tab holds the password's key.
+    var startView = 'gate';
+    if (!cryptoAvailable || roomKey) {
+      if (data.stage === 'active') startView = 'chat';
+      else if (data.stage === 'password_ok') startView = 'setup';
     }
+
+    if (startView === 'chat') enterAs(data.username);
+    else myUsername = null;
 
     showView(startView);
     if (bannedOnLoad) setGateError('This device has been blocked from that room.');
     window.scrollTo(0, 0);
   }
 
+  function enterAs(name) {
+    myUsername = name;
+    whoNameEl.textContent = myUsername || '—';
+    myAvatarEl.src = avatarUrl(myUsername);
+    updateRoomTag();
+  }
+
   // Leaving always means reloading onto the bare essay, which drops this
   // page's markup, scripts and memory rather than just hiding them.
+  function roomClosed() {
+    if (wasBanned) return;
+    stopChatPolling();
+    stopPresence();
+    leaveForEssay();
+  }
+
   async function leaveForEssay() {
     try { await prefs.flush(); } catch (e) { /* leave regardless */ }
     window.location.replace('/');
@@ -450,14 +465,23 @@
         // Derive the room encryption key while the password is in memory —
         // it is never sent anywhere for this purpose.
         if (cryptoAvailable) {
-          try { await setRoomKey(gateInput.value); } catch (e2) { /* unlock prompt will cover it */ }
+          try { await setRoomKey(gateInput.value); } catch (e2) { roomKey = null; }
+        }
+        if (cryptoAvailable && !roomKey) {
+          setGateError('Something went wrong. Try again.');
+          return;
         }
         gateCard.classList.add('is-leaving');
         setTimeout(function () {
           gateCard.classList.remove('is-leaving');
           gateInput.disabled = false;
           gateInput.value = '';
-          showView('setup');
+          if (data.stage === 'active' && data.username) {
+            enterAs(data.username);
+            showView('chat');
+          } else {
+            showView('setup');
+          }
         }, 220);
         return;
       } else if (res.status === 429) {
@@ -522,10 +546,7 @@
           setupSubmit.textContent = 'Continue';
           setupSubmit.disabled = false;
           setupInput.value = '';
-          whoNameEl.textContent = myUsername;
-          myAvatarEl.src = avatarUrl(myUsername);
-          updateRoomTag();
-          setUnlockVisible(cryptoAvailable && !roomKey);
+          enterAs(myUsername);
           showView('chat');
         }, 280);
         return;
@@ -564,10 +585,6 @@
   var replyPreviewTextEl = document.getElementById('reply-preview-text');
   var replyPreviewCancelBtn = document.getElementById('reply-preview-cancel');
 
-  var unlockOverlay = document.getElementById('unlock-overlay');
-  var unlockForm = document.getElementById('unlock-form');
-  var unlockInput = document.getElementById('unlock-password');
-  var unlockError = document.getElementById('unlock-error');
 
   var since = 0;
   var pollTimer = null;
@@ -708,58 +725,6 @@
   });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !emojiPopover.hidden) setEmojiPopoverOpen(false);
-  });
-
-  function setUnlockVisible(visible) {
-    unlockOverlay.hidden = !visible;
-    if (visible) setTimeout(function () { unlockInput.focus(); }, 50);
-  }
-
-  unlockForm.addEventListener('submit', async function (e) {
-    e.preventDefault();
-    unlockError.textContent = '';
-    var candidate = unlockInput.value;
-    unlockInput.disabled = true;
-    try {
-      var candidateKey = await deriveRoomKey(candidate);
-      // Verify against a message already on screen when one exists; with an
-      // empty room there is nothing to check against, so accept.
-      var probe = messagesEl.querySelector('.msg[data-cipher]');
-      var ok = true;
-      if (probe) {
-        var savedKey = roomKey;
-        roomKey = candidateKey;
-        var decrypted = await decryptText(probe.getAttribute('data-cipher'));
-        ok = decrypted !== null;
-        roomKey = savedKey;
-      }
-      if (!ok) {
-        unlockError.textContent = 'That doesn\'t look right — try again.';
-        unlockInput.value = '';
-        unlockInput.disabled = false;
-        unlockInput.focus();
-        return;
-      }
-      roomKey = candidateKey;
-      try {
-        var raw = await crypto.subtle.exportKey('raw', roomKey);
-        sessionStorage.setItem(ROOM_KEY_STORAGE, bytesToBase64(new Uint8Array(raw)));
-      } catch (err) { /* key still works for this tab */ }
-      unlockInput.value = '';
-      unlockInput.disabled = false;
-      setUnlockVisible(false);
-      releaseDecryptedImageUrls();
-      messagesEl.innerHTML = '';
-      renderedIds = Object.create(null);
-      rendered = Object.create(null);
-      lastAuthor = null;
-      since = 0;
-      await poll();
-      scrollToBottom();
-    } catch (err) {
-      unlockError.textContent = 'Something went wrong. Try again.';
-      unlockInput.disabled = false;
-    }
   });
 
   async function buildReplyQuoteEl(replyTo) {
@@ -971,7 +936,7 @@
   async function startEditMessage(id) {
     var entry = rendered[id];
     if (!entry || !entry.textEl || entry.msg.username !== myUsername) return;
-    if (cryptoAvailable && !roomKey) { setUnlockVisible(true); return; }
+    if (cryptoAvailable && !roomKey) { leaveForEssay(); return; }
     if (editingId && editingId !== id) cancelEditMessage();
 
     var current = await plaintextOf(entry.msg.text);
@@ -1058,7 +1023,7 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
         body: JSON.stringify({ id: id, text: payload }),
       });
-      if (res.status === 403) { showView('gate'); return; }
+      if (res.status === 403) { roomClosed(); return; }
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok || !data.message) {
         setChatStatus(data.error || 'Could not save that edit.', true);
@@ -1174,10 +1139,10 @@
       if (res.status === 403) {
         var why = await res.json().catch(function () { return {}; });
         if (why.banned) { handleBanned(); return; }
-        stopChatPolling();
-        if (!wasBanned) showView('gate');
+        roomClosed();
         return;
       }
+      if (res.status === 404) { roomClosed(); return; }
       var data = await res.json();
       if (typeof data.clearedAt === 'number') {
         if (roomClearedAt === null) {
@@ -1248,7 +1213,7 @@
           credentials: 'same-origin',
           headers: { 'X-CSRF-Token': csrfToken },
         });
-        if (clearRes.status === 403) { showView('gate'); return; }
+        if (clearRes.status === 403) { roomClosed(); return; }
         var clearData = await clearRes.json();
         if (clearRes.ok) {
           roomClearedAt = clearData.clearedAt || roomClearedAt;
@@ -1266,7 +1231,7 @@
       return;
     }
 
-    if (cryptoAvailable && !roomKey) { setUnlockVisible(true); return; }
+    if (cryptoAvailable && !roomKey) { leaveForEssay(); return; }
 
     msgInput.value = ''; autoGrowComposer();
     sendBtn.disabled = true;
@@ -1282,7 +1247,7 @@
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
         body: JSON.stringify({ text: payloadText, replyTo: pendingReplyTo }),
       });
-      if (res.status === 403) { showView('gate'); return; }
+      if (res.status === 403) { roomClosed(); return; }
       var data = await res.json();
       if (res.ok && data.message) {
         // Render straight from the send response; the id-based dedup in
@@ -1348,7 +1313,7 @@
         headers: { 'Content-Type': contentType, 'X-CSRF-Token': csrfToken },
         body: body,
       });
-      if (res.status === 403) { showView('gate'); return; }
+      if (res.status === 403) { roomClosed(); return; }
       var data = await res.json();
       if (res.ok && data.message) {
         await renderMessages([data.message]);
@@ -2353,6 +2318,7 @@
   var spotifyTracksNextOffset = null;
   var spotifyPlaylistTrackUris = [];
   var spotifyArtistTopUris = [];
+  var spotifyArtistUri = null;
   var spotifyCurrentAlbumId = null;
   var spotifyCurrentArtistId = null;
 
@@ -3516,6 +3482,7 @@
     spotifyArtistSinglesSection.hidden = true;
     if (spotifyArtistPlayAllBtn) spotifyArtistPlayAllBtn.hidden = true;
     spotifyArtistTopUris = [];
+    spotifyArtistUri = null;
     setSpotifyArtistStatus('Loading…');
     try {
       var res = await fetch('/api/spotify/artists/' + encodeURIComponent(artistId), { credentials: 'same-origin' });
@@ -3526,6 +3493,8 @@
         return;
       }
       var artist = data.artist || {};
+      spotifyArtistUri = artist.uri || null;
+      if (spotifyArtistPlayAllBtn) spotifyArtistPlayAllBtn.hidden = !spotifyArtistUri;
       spotifyArtistNameEl.textContent = artist.name || '';
       var metaBits = [];
       if (typeof artist.followers === 'number') {
@@ -3586,6 +3555,7 @@
   if (spotifyArtistPlayAllBtn) {
     spotifyArtistPlayAllBtn.addEventListener('click', function () {
       if (spotifyArtistTopUris.length) playSpotifyUris(spotifyArtistTopUris);
+      else if (spotifyArtistUri) playSpotifyContext(spotifyArtistUri);
     });
   }
 

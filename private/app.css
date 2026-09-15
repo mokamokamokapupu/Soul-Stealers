@@ -579,36 +579,6 @@ body.sidebar-collapsed .room-sidebar{ display: none; }
 }
 .chat-status.is-error{ color: var(--danger); }
 .chat-status:empty{ margin: 0; }
-.unlock-overlay{
-  position: absolute;
-  inset: 0;
-  z-index: 15;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-  background: rgba(11,14,20,0.92);
-  backdrop-filter: blur(6px);
-  border-radius: 10px;
-  animation: fadeIn 0.3s var(--ease);
-}
-.unlock-overlay[hidden]{ display: none; }
-.unlock-card{ max-width: 360px; text-align: center; }
-.unlock-card .sigil{ width: 26px; height: 26px; }
-.unlock-card h2{
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 1.3rem;
-  margin: 0 0 0.8rem;
-  color: var(--parchment);
-}
-.unlock-copy{
-  font-size: 0.86rem;
-  color: var(--parchment-dim);
-  margin: 0 0 1.4rem;
-}
-.unlock-card form{ display: flex; flex-direction: column; gap: 0; }
-.unlock-card input{ text-align: center; }
 .icon-btn{
   width: 34px;
   height: 34px;

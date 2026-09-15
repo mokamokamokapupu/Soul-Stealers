@@ -82,22 +82,6 @@
     <div class="chat-main">
 
     <div class="messages-wrap">
-      <div class="unlock-overlay" id="unlock-overlay" hidden>
-        <div class="unlock-card">
-          <svg viewBox="0 0 24 24" class="sigil" aria-hidden="true">
-            <path d="M12 2c1.2 2.6 3.6 4.8 3.6 8.2 0 3-1.8 5.3-3.6 6.5-1.8-1.2-3.6-3.5-3.6-6.5C8.4 6.8 10.8 4.6 12 2z"/>
-            <circle cx="12" cy="19.5" r="1.6"/>
-          </svg>
-          <p class="eyebrow small">Messages are locked</p>
-          <h2>Enter the site password to unlock this room</h2>
-          <p class="unlock-copy">Messages here are encrypted with a key built from the site password. This browser tab doesn't have that key cached yet. Nothing is sent to the server for this — it just rebuilds the key locally.</p>
-          <form id="unlock-form" autocomplete="off">
-            <input type="password" id="unlock-password" aria-label="Site password" autocomplete="current-password" required>
-            <p class="error-msg" id="unlock-error" role="alert"></p>
-            <button type="submit">Unlock</button>
-          </form>
-        </div>
-      </div>
 
       <div class="messages" id="messages">
         <p class="empty-state">It's quiet. Say something.</p>

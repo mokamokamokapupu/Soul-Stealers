@@ -48,7 +48,8 @@ const ENTRY_CHORD = Array.from(new Set(
 const sha256Hex = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 const ENTRY_CHECK = ENTRY_CHORD.length >= 3 ? sha256Hex(ENTRY_CHORD + '|a') : '';
 const ENTRY_PROOF = ENTRY_CHORD.length >= 3 ? sha256Hex(ENTRY_CHORD + '|b') : '';
-// A chord or a login earns one page load, which has to happen promptly.
+// A chord earns one load of the entry form, a correct password one load of
+// the room, and either has to happen promptly.
 const ENTRY_GRANT_MS = 2 * 60 * 1000;
 // How long the entry form's own files and the login call stay reachable.
 const GATE_WINDOW_MS = 15 * 60 * 1000;
@@ -388,6 +389,7 @@ function loadSessions() {
       lastSeen: typeof s.lastSeen === 'number' ? s.lastSeen : now,
       ip: typeof s.ip === 'string' ? s.ip : 'unknown',
       deviceId: DEVICE_ID_RE.test(s.deviceId || '') ? s.deviceId : null,
+      roomOpen: s.roomOpen === true && s.stage !== 'none',
     };
     sessions.set(sid, session);
     // Re-claim the username slot in its room so a second person can't grab
@@ -1148,16 +1150,17 @@ function logSpotifyIssue(context, status, json) {
   console.error('[spotify] ' + context + ' -> HTTP ' + status + ' ' + snippet);
 }
 
-// A Spotify 403 is one of three things: account not allowlisted (most common),
-// genuinely not Premium (reason PREMIUM_REQUIRED), or a token missing a scope.
-// /v1/search needs neither scope nor Premium, so a 403 there is never Premium.
+// An account that is not allowlisted is already turned away at the callback,
+// so a bare 403 on a connected account is Spotify refusing that call to apps
+// in development mode, not a membership problem.
 function spotifyForbiddenKind(json) {
   const err = (json && json.error) || {};
   const reason = typeof err.reason === 'string' ? err.reason : '';
   const message = typeof err.message === 'string' ? err.message : '';
   if (reason === 'PREMIUM_REQUIRED' || /premium/i.test(message)) return 'premium';
   if (/scope/i.test(message)) return 'scope';
-  return 'allowlist';
+  if (/not registered|developer dashboard|allowlist/i.test(message)) return 'allowlist';
+  return 'blocked';
 }
 
 const SPOTIFY_NOT_ALLOWED_MSG = 'This Spotify account is not approved for this app yet. Whoever set up the Spotify app has to add it under User Management in the Spotify developer dashboard — Spotify only lets a handful of accounts use an app until then. (Nothing to do with Premium.)';
@@ -1166,8 +1169,11 @@ function spotifyForbiddenMessage(action, json) {
   const kind = spotifyForbiddenKind(json);
   if (kind === 'premium') return action + ' needs Spotify Premium.';
   if (kind === 'scope') return 'Reconnect Spotify — this connection is missing a permission it now needs.';
-  return SPOTIFY_NOT_ALLOWED_MSG;
+  if (kind === 'allowlist') return SPOTIFY_NOT_ALLOWED_MSG;
+  return action + ' is not something Spotify lets this app do.';
 }
+
+const SPOTIFY_PLAYLIST_LOCKED_MSG = 'Spotify only lets this app list the songs in playlists you made or collaborate on. You can still press Play to listen to this one.';
 
 function sendSpotifyForbidden(res, context, action, status, json) {
   logSpotifyIssue(context + ' (403 forbidden)', status, json);
@@ -1265,7 +1271,50 @@ function spotifyDjEntry() {
 function spotifyMarket(roomState, key) {
   const rec = roomState && roomState.spotifyTokens[key];
   const c = rec && typeof rec.country === 'string' ? rec.country : '';
-  return /^[A-Z]{2}$/.test(c) ? c : 'US';
+  return /^[A-Z]{2}$/.test(c) ? c : 'from_token';
+}
+
+// Spotify no longer offers an artist's top tracks to apps in development
+// mode. Its search ranks an artist's own tracks by popularity, which is the
+// same list in all but name. Search pages are capped at 10.
+async function spotifyArtistTopTracks(artist, market, token) {
+  const name = String(artist.name || '').replace(/"/g, '');
+  if (!name) return [];
+  const pages = await Promise.all([0, 10].map((offset) => spotifyApiRequest('GET', '/v1/search?' + new URLSearchParams({
+    q: 'artist:"' + name + '"', type: 'track', limit: '10', offset: String(offset), market,
+  }).toString(), token).catch(() => null)));
+  const seen = new Set();
+  const out = [];
+  for (const r of pages) {
+    if (!r || r.status !== 200 || !r.json || !r.json.tracks) {
+      if (r) logSpotifyIssue('artist ' + artist.id + ' top tracks search', r.status, r.json);
+      continue;
+    }
+    for (const t of r.json.tracks.items || []) {
+      if (!t || !Array.isArray(t.artists) || !t.artists.some((a) => a && a.id === artist.id)) continue;
+      const k = String(t.name || '').toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(simplifyTrack(t));
+    }
+  }
+  return out.filter(Boolean).slice(0, 10);
+}
+
+// Artist album pages are capped at 10 as well.
+async function spotifyArtistAlbums(artistId, groups, market, token) {
+  const items = [];
+  for (let offset = 0; offset < 50; offset += 10) {
+    const qs = new URLSearchParams({ include_groups: groups, limit: '10', offset: String(offset), market }).toString();
+    const r = await spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?' + qs, token).catch(() => null);
+    if (!r || r.status !== 200 || !r.json || !Array.isArray(r.json.items)) {
+      if (r) logSpotifyIssue('artist ' + artistId + ' albums ' + groups + ' offset=' + offset, r.status, r.json);
+      break;
+    }
+    items.push(...r.json.items);
+    if (!r.json.next || r.json.items.length < 10) break;
+  }
+  return items;
 }
 
 function spotifyRedirectUri(req) {
@@ -1294,6 +1343,13 @@ function simplifyTrack(t) {
   };
 }
 
+function playlistTotal(p) {
+  for (const box of [p.items, p.tracks]) {
+    if (box && !Array.isArray(box) && typeof box.total === 'number') return box.total;
+  }
+  return null;
+}
+
 function simplifyPlaylist(p) {
   if (!p) return null;
   const images = Array.isArray(p.images) ? p.images : [];
@@ -1304,7 +1360,7 @@ function simplifyPlaylist(p) {
     name: p.name,
     owner: p.owner ? (p.owner.display_name || p.owner.id || '') : '',
     // null, not 0: "0 songs" is a claim, and an absent total isn't one.
-    trackCount: p.tracks && typeof p.tracks.total === 'number' ? p.tracks.total : null,
+    trackCount: playlistTotal(p),
     image: art ? '/api/spotify/image?u=' + encodeURIComponent(art) : null,
   };
 }
@@ -1343,7 +1399,7 @@ function simplifyAlbum(al) {
 
 function simplifyPlaylistItem(entry) {
   if (!entry || entry.is_local) return null;
-  const t = entry.track || entry.item;
+  const t = entry.item || entry.track;
   if (!t || (t.type && t.type !== 'track')) return null;
   return simplifyTrack(t);
 }
@@ -1489,10 +1545,14 @@ function notFound(res) {
   res.end('Not found');
 }
 
+function roomIsOpen(session) {
+  return !!(session && session.stage !== 'none' && session.roomOpen);
+}
+
 function mayHave(who, session) {
   if (who === 'anyone') return true;
   if (!session) return false;
-  if (session.stage !== 'none') return true;
+  if (roomIsOpen(session)) return true;
   return who === 'entering' && (session.gateUntil || 0) > Date.now();
 }
 
@@ -1521,9 +1581,15 @@ function readPrivate(name) {
   try { return fs.readFileSync(path.join(PRIVATE_DIR, name), 'utf8'); } catch (e) { return ''; }
 }
 
+function grantPage(session, to) {
+  session.grantAt = Date.now();
+  session.grantTo = to;
+}
+
 // One URL, three possible pages. The essay is the default for everyone,
-// signed in or not; the other two are handed out for exactly one load, right
-// after the entry chord or a login, so a refresh or a new tab is the essay.
+// signed in or not. The chord earns the entry form, even for someone already
+// signed in, and only a correct password on that form earns the room, each
+// for exactly one load. Loading the essay closes the room again.
 function serveDocument(req, res) {
   let page;
   try {
@@ -1535,11 +1601,17 @@ function serveDocument(req, res) {
   const found = getSession(req);
   const session = found && found.session;
   const now = Date.now();
+  // Browser prerenders and prefetches are not someone opening the page.
+  const speculative = /prefetch|prerender/i.test(String(req.headers['sec-purpose'] || req.headers.purpose || ''));
   let kind = 'essay';
-  if (session && session.entryGrantedAt && now - session.entryGrantedAt < ENTRY_GRANT_MS) {
-    session.entryGrantedAt = 0;
-    session.gateUntil = now + GATE_WINDOW_MS;
-    kind = session.stage === 'none' ? 'gate' : 'app';
+  if (session && !speculative) {
+    if (session.grantAt && now - session.grantAt < ENTRY_GRANT_MS) {
+      kind = session.grantTo === 'app' && session.stage !== 'none' ? 'app' : 'gate';
+    }
+    session.grantAt = 0;
+    session.grantTo = null;
+    session.roomOpen = kind === 'app';
+    session.gateUntil = kind === 'gate' ? now + GATE_WINDOW_MS : 0;
   }
 
   const gate = readPrivate('gate.html');
@@ -1600,8 +1672,7 @@ async function handleEntry(req, res) {
     setSessionCookie(res, sid, req);
   }
   ensureDeviceId(req, res);
-  session.lastSeen = Date.now();
-  session.entryGrantedAt = Date.now();
+  grantPage(session, 'gate');
   return done();
 }
 
@@ -1616,6 +1687,16 @@ async function handleApi(req, res, pathname) {
     sid = created.sid;
     session = created.session;
     setSessionCookie(res, sid, req);
+  }
+  // Nothing answers a session whose room is not open in front of it — not
+  // even one that signed in earlier — except the login call while an entry
+  // form is open, and the address Spotify sends people back to.
+  if (!roomIsOpen(session) && !(session.roomOpen && session.bannedFrom)) {
+    const gateOpen = (session.gateUntil || 0) > Date.now();
+    const allowed =
+      (pathname === '/api/login' && req.method === 'POST' && gateOpen) ||
+      pathname === '/api/spotify/callback';
+    if (!allowed) return notFound(res);
   }
   session.lastSeen = Date.now();
 
@@ -1642,16 +1723,6 @@ async function handleApi(req, res, pathname) {
     }
     // Ban lifted — stop holding it against them.
     if (session.bannedFrom) session.bannedFrom = null;
-  }
-
-  // Same wall for a session that exists but was never let in: the login call
-  // only answers while an entry form is open, and nothing else answers at all.
-  if (session.stage === 'none') {
-    const gateOpen = (session.gateUntil || 0) > Date.now();
-    const allowed =
-      (pathname === '/api/login' && req.method === 'POST' && gateOpen) ||
-      pathname === '/api/spotify/callback';
-    if (!allowed) return notFound(res);
   }
 
   // Any API call may carry ?activity=. Unknown values are dropped.
@@ -1713,11 +1784,23 @@ async function handleApi(req, res, pathname) {
         return sendJson(res, 403, { error: BANNED_MESSAGE, banned: true });
       }
       recordLoginSuccess(ip);
-      session.stage = 'password_ok';
+      const staying = session.stage === 'active' && session.room === matchedRoom && !!session.username;
+      if (!staying) {
+        releaseUsername(sid, session);
+        session.username = null;
+        session.stage = 'password_ok';
+      }
       session.room = matchedRoom;
-      session.entryGrantedAt = Date.now();
+      if (!session.roomOpen) grantPage(session, 'app');
       session.csrfToken = crypto.randomBytes(16).toString('hex'); // rotate on privilege change
-      return sendJson(res, 200, { ok: true, csrfToken: session.csrfToken, room: matchedRoom });
+      return sendJson(res, 200, {
+        ok: true,
+        csrfToken: session.csrfToken,
+        room: matchedRoom,
+        stage: session.stage,
+        username: session.username,
+        isAdmin: session.stage === 'active' && isAdminName(session.username),
+      });
     } else {
       recordLoginFailure(ip);
       return sendJson(res, 401, { error: 'Incorrect password' });
@@ -2237,7 +2320,7 @@ async function handleApi(req, res, pathname) {
     const url = new URL(req.url, 'http://internal');
     const CODES = { connected: '1', denied: '2', notallowed: '3', error: '4' };
     const redirectHome = (flag) => {
-      if (session.stage !== 'none') session.entryGrantedAt = Date.now();
+      if (roomIsOpen(session)) grantPage(session, 'app');
       res.writeHead(302, { Location: '/?r=' + (CODES[flag] || '4') });
       res.end();
     };
@@ -2531,13 +2614,8 @@ async function handleApi(req, res, pathname) {
 
     try {
       const market = spotifyMarket(roomState, key);
-      const [artistRes, topRes, albumsRes, singlesRes] = await Promise.all([
-        spotifyApiRequest('GET', '/v1/artists/' + artistId, token),
-        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/top-tracks?market=' + market, token),
-        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?include_groups=album&limit=50&market=' + market, token),
-        spotifyApiRequest('GET', '/v1/artists/' + artistId + '/albums?include_groups=single,compilation&limit=50&market=' + market, token),
-      ]);
-      if (artistRes.status === 401 || topRes.status === 401 || albumsRes.status === 401) {
+      const artistRes = await spotifyApiRequest('GET', '/v1/artists/' + artistId, token);
+      if (artistRes.status === 401) {
         dropSpotifyConnection(roomState, key);
         return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false });
       }
@@ -2546,8 +2624,11 @@ async function handleApi(req, res, pathname) {
         logSpotifyIssue('artist ' + artistId, artistRes.status, artistRes.json);
         return sendJson(res, 502, { error: 'Could not load that artist.' });
       }
-      if (topRes.status !== 200) logSpotifyIssue('artist ' + artistId + ' top-tracks', topRes.status, topRes.json);
-      const pick = (r) => (r.status === 200 && r.json ? (r.json.items || []) : []);
+      const [topTracks, albums, singles] = await Promise.all([
+        spotifyArtistTopTracks(artistRes.json, market, token),
+        spotifyArtistAlbums(artistId, 'album', market, token),
+        spotifyArtistAlbums(artistId, 'single,compilation', market, token),
+      ]);
       const seen = new Set();
       const dedupe = (list) => list.filter(Boolean).map(simplifyAlbum).filter((al) => {
         if (!al || !al.id || seen.has(al.id)) return false;
@@ -2556,9 +2637,9 @@ async function handleApi(req, res, pathname) {
       });
       return sendJson(res, 200, {
         artist: simplifyArtist(artistRes.json),
-        topTracks: topRes.status === 200 && topRes.json ? (topRes.json.tracks || []).map(simplifyTrack).filter(Boolean) : [],
-        albums: dedupe(pick(albumsRes)),
-        singles: dedupe(pick(singlesRes)),
+        topTracks,
+        albums: dedupe(albums),
+        singles: dedupe(singles),
       });
     } catch (e) {
       console.error('[spotify] artist ' + artistId + ' threw', e && e.message);
@@ -2728,14 +2809,16 @@ async function handleApi(req, res, pathname) {
 
     const url = new URL(req.url, 'http://internal');
     const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
-    const fields = 'total,next,items(is_local,track(id,uri,name,type,duration_ms,artists(id,name),album(id,name,images)))';
 
     try {
-      const qs = new URLSearchParams({ limit: '50', offset: String(offset), fields, market: spotifyMarket(roomState, key) }).toString();
-      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/tracks?' + qs, token);
+      const qs = new URLSearchParams({ limit: '50', offset: String(offset), market: spotifyMarket(roomState, key) }).toString();
+      const { status, json } = await spotifyApiRequest('GET', '/v1/playlists/' + playlistId + '/items?' + qs, token);
       if (status === 401) { dropSpotifyConnection(roomState, key); return sendJson(res, 401, { error: 'Not connected to Spotify.', connected: false }); }
       if (status === 404) return sendJson(res, 404, { error: 'Playlist not found.' });
       if (status === 429) return sendJson(res, 429, { error: 'Spotify is rate-limiting this connection — try again in a moment.' });
+      if (status === 403 && spotifyForbiddenKind(json) === 'blocked') {
+        return sendJson(res, 409, { error: SPOTIFY_PLAYLIST_LOCKED_MSG, locked: true });
+      }
       if (status === 403) return sendSpotifyForbidden(res, 'playlist ' + playlistId + ' items offset=' + offset, 'Loading that playlist', status, json);
       if (status !== 200 || !json || !Array.isArray(json.items)) {
         logSpotifyIssue('playlist ' + playlistId + ' items offset=' + offset, status, json);
