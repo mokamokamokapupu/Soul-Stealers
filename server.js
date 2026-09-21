@@ -228,7 +228,14 @@ function seededBanDevices() {
 }
 
 function loadBans(roomId) {
-  const empty = { devices: Object.create(null), ips: Object.create(null), usernames: Object.create(null) };
+  const empty = {
+    devices: Object.create(null), ips: Object.create(null), usernames: Object.create(null),
+    // Which devices each name has been used on, so banning someone who is
+    // already gone still blocks the device they used.
+    seen: Object.create(null),
+    // Everyone who has ever signed in here, for the admin's list.
+    roster: Object.create(null),
+  };
   let stored;
   try {
     stored = JSON.parse(fs.readFileSync(bansPathFor(roomId), 'utf8'));
@@ -240,7 +247,26 @@ function loadBans(roomId) {
       const from = stored[bucket];
       if (!from || typeof from !== 'object') continue;
       for (const key of Object.keys(from)) {
-        if (typeof key === 'string' && key.length <= 200) empty[bucket][key] = from[bucket] || from[key];
+        if (typeof key === 'string' && key.length <= 200) empty[bucket][key] = from[key];
+      }
+    }
+    const seen = stored.seen;
+    if (seen && typeof seen === 'object') {
+      for (const key of Object.keys(seen)) {
+        const ids = Array.isArray(seen[key]) ? seen[key].filter((d) => DEVICE_ID_RE.test(d || '')) : [];
+        if (ids.length) empty.seen[key] = ids.slice(-DEVICES_REMEMBERED);
+      }
+    }
+    const roster = stored.roster;
+    if (roster && typeof roster === 'object') {
+      for (const key of Object.keys(roster)) {
+        const rec = roster[key];
+        if (!rec || typeof rec !== 'object' || !USERNAME_RE.test(rec.username || '')) continue;
+        empty.roster[key] = {
+          username: rec.username,
+          firstAt: Number(rec.firstAt) || 0,
+          lastAt: Number(rec.lastAt) || 0,
+        };
       }
     }
   }
@@ -248,6 +274,40 @@ function loadBans(roomId) {
     if (!empty.devices[device]) empty.devices[device] = { by: 'config', at: 0, username: null };
   }
   return empty;
+}
+
+// How many devices are remembered per name, newest last.
+const DEVICES_REMEMBERED = 10;
+
+// Everyone who has ever signed in, and every device each name was used on.
+function rememberUser(roomState, username, deviceId) {
+  if (!roomState || !username) return;
+  const key = username.toLowerCase();
+  const roster = roomState.bans.roster;
+  const now = Date.now();
+  const rec = roster[key];
+  if (rec) {
+    rec.username = username;
+    rec.lastAt = now;
+  } else {
+    roster[key] = { username, firstAt: now, lastAt: now };
+    const names = Object.keys(roster);
+    if (names.length > MAX_BANS_KEPT) delete roster[names[0]];
+  }
+  roomState.bansDirty = true;
+  rememberDevice(roomState, key, deviceId);
+}
+
+function rememberDevice(roomState, usernameKey, deviceId) {
+  if (!roomState || !usernameKey || !DEVICE_ID_RE.test(deviceId || '')) return;
+  const seen = roomState.bans.seen;
+  const list = seen[usernameKey] || [];
+  const at = list.indexOf(deviceId);
+  if (at !== -1) list.splice(at, 1);
+  list.push(deviceId);
+  seen[usernameKey] = list.slice(-DEVICES_REMEMBERED);
+  if (Object.keys(seen).length > MAX_BANS_KEPT) delete seen[Object.keys(seen)[0]];
+  roomState.bansDirty = true;
 }
 
 function messagesPathFor(roomId) {
@@ -484,6 +544,8 @@ for (const room of ROOMS) {
     avatarExtByUser,
     chatImageExtById,
     usernameOwners: new Map(),
+    avatarTokens: new Map(),
+    avatarNameByToken: new Map(),
     spotifyDropped: new Set(),
     feed: [],
     bans: loadBans(room.id),
@@ -624,6 +686,7 @@ function activeUsernamesInRoom(roomId) {
         activity: fresh ? s.activity : null,
         listening: np ? { name: np.name, artists: np.artists } : null,
         avatarVersion: avatarVersionFor(roomState, key),
+        avatarToken: avatarTokenFor(roomState, key),
       });
     }
   }
@@ -635,7 +698,9 @@ function avatarVersionsInRoom(roomId) {
   const roomState = rooms[roomId];
   if (!roomState) return {};
   const out = Object.create(null);
-  for (const [key, rec] of roomState.avatarExtByUser) out[key] = rec.v || 0;
+  for (const [key, rec] of roomState.avatarExtByUser) {
+    out[key] = { v: rec.v || 0, t: avatarTokenFor(roomState, key) };
+  }
   return out;
 }
 
@@ -981,27 +1046,19 @@ function escapeXml(str) {
   }[c]));
 }
 
-const AVATAR_PALETTE = ['#8b7355', '#6f8f76', '#93b89a', '#a65b4b', '#5b7fa6', '#a68b5b'];
-
-function letterAvatarSvg(username) {
-  const letter = escapeXml((username.charAt(0) || '?').toUpperCase());
-  let hash = 0;
-  for (let i = 0; i < username.length; i++) hash = (hash * 31 + username.charCodeAt(i)) >>> 0;
-  const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
-  return (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
-    '<rect width="64" height="64" rx="14" fill="' + color + '"/>' +
-    '<text x="32" y="43" font-family="Georgia, serif" font-size="26" fill="#0f1219" ' +
-    'text-anchor="middle">' + letter + '</text></svg>'
-  );
-}
-
-function sendSvg(res, svg, cacheControl) {
-  res.writeHead(200, {
-    'Content-Type': 'image/svg+xml; charset=utf-8',
-    'Cache-Control': cacheControl || 'private, max-age=120',
-  });
-  res.end(svg);
+// A name never appears in a picture's address. This handle does instead:
+// it cannot be turned back into the name without the server's secret, and
+// the bytes it leads to are sealed with the room's key anyway.
+function avatarTokenFor(roomState, usernameKey) {
+  if (!roomState || !usernameKey) return '';
+  let token = roomState.avatarTokens.get(usernameKey);
+  if (!token) {
+    token = crypto.createHmac('sha256', PREFS_SECRET)
+      .update('avatar:' + roomState.id + '|' + usernameKey).digest('hex').slice(0, 32);
+    roomState.avatarTokens.set(usernameKey, token);
+    roomState.avatarNameByToken.set(token, usernameKey);
+  }
+  return token;
 }
 
 function requireCsrf(req, session) {
@@ -1829,12 +1886,18 @@ async function handleApi(req, res, pathname) {
     // Without a key configured the admin name is claimable like any other,
     // which is fine for a private room but worth knowing.
     if (ADMIN_KEY && ADMIN_USERNAMES.has(key)) {
+      const rl = checkRateLimit(session.ip);
+      if (!rl.allowed) {
+        return sendJson(res, 429, { error: 'Too many attempts. Try again later.', retryAfterSec: rl.retryAfterSec });
+      }
       const offered = typeof body.adminKey === 'string' ? body.adminKey : '';
       const a = Buffer.from(offered);
       const b = Buffer.from(ADMIN_KEY);
       if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        recordLoginFailure(session.ip);
         return sendJson(res, 403, { error: 'That name needs its key.', needsAdminKey: true });
       }
+      recordLoginSuccess(session.ip);
     }
     // A name is only held while its session is alive and recently seen.
     const owner = roomState.usernameOwners.get(key);
@@ -1854,6 +1917,7 @@ async function handleApi(req, res, pathname) {
     }
     releaseUsername(sid, session);
     roomState.usernameOwners.set(key, sid);
+    rememberUser(roomState, username, session.deviceId);
     session.username = username;
     session.stage = 'active';
     session.csrfToken = crypto.randomBytes(16).toString('hex'); // rotate on privilege change
@@ -2082,9 +2146,18 @@ async function handleApi(req, res, pathname) {
     // blocking one can lock out a whole household — including the admin.
     const blockIp = body.blockIp === true;
 
-    // Every live session under that name in this room, so a second tab does
-    // not survive the ban.
+    // Every device that name has ever been used on here, so someone who left
+    // before the ban landed is blocked too, whatever name they come back as.
     let devices = 0, ips = 0, kicked = 0;
+    for (const deviceId of (roomState.bans.seen[targetKey] || [])) {
+      if (deviceId === session.deviceId) continue;
+      if (!roomState.bans.devices[deviceId]) {
+        roomState.bans.devices[deviceId] = record;
+        devices++;
+      }
+    }
+    // Plus every live session under that name, so a second tab does not
+    // survive the ban.
     for (const [otherSid, other] of sessions) {
       if (other.room !== session.room) continue;
       if (!other.username || other.username.toLowerCase() !== targetKey) continue;
@@ -2156,6 +2229,46 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, removed });
   }
 
+  // GET /api/admin/people — everyone who has ever signed in to this room.
+  if (pathname === '/api/admin/people' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!isAdminName(session.username)) return sendJson(res, 403, { error: 'Not authorized' });
+    const roomState = rooms[session.room];
+    const bans = roomState.bans;
+    const online = new Set(activeUsernamesInRoom(session.room).map((u) => u.name.toLowerCase()));
+    const live = new Map();
+    for (const [, other] of sessions) {
+      if (other.room !== session.room || !other.username) continue;
+      live.set(other.username.toLowerCase(), other);
+    }
+    const counts = Object.create(null);
+    for (const m of roomState.messages) {
+      const k = (m.username || '').toLowerCase();
+      counts[k] = (counts[k] || 0) + 1;
+    }
+    const people = Object.keys(bans.roster).map((key) => {
+      const rec = bans.roster[key];
+      const now = live.get(key);
+      const np = now && now.nowPlaying && Date.now() - now.nowPlaying.ts < ACTIVITY_STALE_MS ? now.nowPlaying : null;
+      return {
+        username: rec.username,
+        firstAt: rec.firstAt || 0,
+        lastAt: Math.max(rec.lastAt || 0, (now && now.lastSeen) || 0),
+        devices: (bans.seen[key] || []).length,
+        messages: counts[key] || 0,
+        banned: !!bans.usernames[key],
+        online: online.has(key),
+        inRoom: !!now,
+        activity: now && now.activity && Date.now() - (now.activityAt || 0) < ACTIVITY_STALE_MS ? now.activity : null,
+        listening: np ? { name: np.name, artists: np.artists } : null,
+        spotify: !!(roomState.spotifyTokens && roomState.spotifyTokens[key]),
+        isAdmin: isAdminName(key),
+      };
+    });
+    people.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+    return sendJson(res, 200, { people });
+  }
+
   // GET /api/admin/bans — who is currently blocked from this room.
   if (pathname === '/api/admin/bans' && req.method === 'GET') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
@@ -2204,64 +2317,66 @@ async function handleApi(req, res, pathname) {
     }
     if (!buf || buf.length === 0) return sendJson(res, 400, { error: 'No image received.' });
 
-    // The client-declared Content-Type and any filename are never trusted.
-    // The real file type is determined ONLY by sniffing the file's magic
-    // bytes, and only JPEG/PNG/WebP are accepted.
-    const detected = detectImageType(buf);
-    if (!detected) {
-      return sendJson(res, 400, { error: 'Only JPEG, PNG, or WebP images are allowed.' });
+    // ?enc=1: sealed in the browser, so the magic bytes were checked there
+    // instead. Anything else is sniffed here, and only JPEG/PNG/WebP pass.
+    const encrypted = new URL(req.url, 'http://internal').searchParams.get('enc') === '1';
+    let ext;
+    if (encrypted) {
+      if (buf.length < 29) return sendJson(res, 400, { error: 'That image looks corrupted.' });
+      ext = 'enc';
+    } else {
+      const detected = detectImageType(buf);
+      if (!detected) {
+        return sendJson(res, 400, { error: 'Only JPEG, PNG, or WebP images are allowed.' });
+      }
+      ext = detected.ext;
     }
 
     const roomState = rooms[session.room];
     const key = session.username.toLowerCase();
     const version = Date.now();
     try {
-      saveAvatarFile(roomState.avatarsDir, key, detected.ext, buf);
-      roomState.avatarExtByUser.set(key, { ext: detected.ext, base: userFileBase(key), v: version });
+      saveAvatarFile(roomState.avatarsDir, key, ext, buf);
+      roomState.avatarExtByUser.set(key, { ext, base: userFileBase(key), v: version });
     } catch (e) {
       return sendJson(res, 500, { error: 'Could not save image.' });
     }
     return sendJson(res, 200, {
       ok: true,
       avatarVersion: version,
-      avatarUrl: '/api/avatar/' + encodeURIComponent(session.username) + '?v=' + version,
+      avatarToken: avatarTokenFor(roomState, key),
     });
   }
 
-  // GET /api/avatar/<username>
-  if (pathname.startsWith('/api/avatar/') && req.method === 'GET') {
-    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+  // GET /api/a/<handle> — a profile picture, under a handle that says
+  // nothing about whose it is. Sealed uploads are served as raw bytes; the
+  // browser unseals them with the room key.
+  if (pathname.startsWith('/api/a/') && req.method === 'GET') {
+    if (session.stage !== 'active') return notFound(res);
     const roomState = rooms[session.room];
+    const token = pathname.slice('/api/a/'.length);
+    if (!/^[0-9a-f]{32}$/.test(token)) return notFound(res);
+    const key = roomState.avatarNameByToken.get(token);
+    const rec = key && roomState.avatarExtByUser.get(key);
+    if (!rec) return notFound(res);
 
-    const raw = pathname.slice('/api/avatar/'.length);
-    let username;
-    try { username = decodeURIComponent(raw); } catch (e) { username = raw; }
-    if (!USERNAME_RE.test(username)) return sendJson(res, 400, { error: 'Invalid username' });
-
-    const key = username.toLowerCase();
-    const rec = roomState.avatarExtByUser.get(key);
-    // A ?v= URL names one exact upload, so it can be cached hard. A bare one
-    // must revalidate, or a changed picture keeps showing up as the old one.
+    // A ?v= address names one exact upload, so it can be cached hard. A bare
+    // one must revalidate, or a changed picture keeps showing as the old one.
     const askedVersion = new URL(req.url, 'http://internal').searchParams.get('v');
     const cacheControl = askedVersion
       ? 'private, max-age=31536000, immutable'
       : 'private, no-cache, must-revalidate';
-    if (rec) {
-      const filePath = path.join(roomState.avatarsDir, rec.base + '.' + rec.ext);
-      fs.readFile(filePath, (err, data) => {
-        if (err) {
-          return sendSvg(res, letterAvatarSvg(username), cacheControl);
-        }
-        res.writeHead(200, {
-          'Content-Type': AVATAR_MIME[rec.ext],
-          'Cache-Control': cacheControl,
-          'ETag': '"' + (rec.v || 0) + '"',
-        });
-        res.end(data);
+    const filePath = path.join(roomState.avatarsDir, rec.base + '.' + rec.ext);
+    fs.readFile(filePath, (err, data) => {
+      if (err) return notFound(res);
+      res.writeHead(200, {
+        'Content-Type': rec.ext === 'enc' ? 'application/octet-stream' : (AVATAR_MIME[rec.ext] || 'application/octet-stream'),
+        'Cache-Control': cacheControl,
+        'ETag': '"' + (rec.v || 0) + '"',
       });
-      return;
-    }
-    return sendSvg(res, letterAvatarSvg(username), cacheControl);
+      res.end(data);
+    });
+    return;
   }
 
   // GET /api/games/scores — leaderboard for this session's room

@@ -418,7 +418,7 @@
   function enterAs(name) {
     myUsername = name;
     whoNameEl.textContent = myUsername || '—';
-    myAvatarEl.src = avatarUrl(myUsername);
+    setAvatar(myAvatarEl, myUsername);
     updateRoomTag();
   }
 
@@ -610,34 +610,90 @@
     }
   }
 
-  // username (lowercased) -> upload version, so a new picture is a new URL.
-  var avatarVersions = Object.create(null);
+  // Pictures are fetched under a handle that carries no name, and arrive
+  // sealed like everything else, so the browser unseals them here.
+  // username (lowercased) -> { v: upload version, t: handle }
+  var avatarInfo = Object.create(null);
+  var avatarObjectUrls = Object.create(null);
+  var avatarPending = Object.create(null);
 
-  function avatarUrl(username) {
-    var name = username || '';
-    var v = avatarVersions[name.toLowerCase()];
-    return '/api/avatar/' + encodeURIComponent(name) + (v ? '?v=' + v : '');
+  var LETTER_COLORS = ['#8b7355', '#6f8f76', '#93b89a', '#a65b4b', '#5b7fa6', '#a68b5b'];
+
+  function letterAvatar(username) {
+    var name = username || '?';
+    var hash = 0;
+    for (var i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+      '<rect width="64" height="64" rx="14" fill="' + LETTER_COLORS[hash % LETTER_COLORS.length] + '"/>' +
+      '<text x="32" y="43" font-family="Georgia, serif" font-size="26" fill="#0f1219" ' +
+      'text-anchor="middle">' + name.charAt(0).toUpperCase().replace(/[<>&]/g, '') + '</text></svg>';
+    return 'data:image/svg+xml;base64,' + btoa(svg);
+  }
+
+  function avatarCacheKey(info) { return info.t + ':' + (info.v || 0); }
+
+  async function loadAvatar(key, info) {
+    var cacheKey = avatarCacheKey(info);
+    if (avatarObjectUrls[cacheKey] !== undefined) return avatarObjectUrls[cacheKey];
+    if (avatarPending[cacheKey]) return avatarPending[cacheKey];
+    avatarPending[cacheKey] = (async function () {
+      var url = null;
+      try {
+        var res = await fetch('/api/a/' + info.t + (info.v ? '?v=' + info.v : ''), { credentials: 'same-origin' });
+        if (res.ok) {
+          var raw = new Uint8Array(await res.arrayBuffer());
+          var plain = sniffImageMime(raw) ? raw : await decryptBytes(raw);
+          var mime = plain && sniffImageMime(plain);
+          if (mime) url = URL.createObjectURL(new Blob([plain], { type: mime }));
+        }
+      } catch (e) { /* the letter stands in */ }
+      avatarObjectUrls[cacheKey] = url;
+      delete avatarPending[cacheKey];
+      return url;
+    })();
+    return avatarPending[cacheKey];
+  }
+
+  function releaseAvatarUrls() {
+    Object.keys(avatarObjectUrls).forEach(function (k) {
+      if (avatarObjectUrls[k]) { try { URL.revokeObjectURL(avatarObjectUrls[k]); } catch (e) { /* gone */ } }
+    });
+    avatarObjectUrls = Object.create(null);
+    avatarPending = Object.create(null);
+  }
+
+  // Sets the picture without ever flashing: whatever is known now goes on
+  // straight away, and the unsealed one replaces it when it arrives.
+  function setAvatar(img, username) {
+    var key = (username || '').toLowerCase();
+    img.dataset.who = key;
+    var info = avatarInfo[key];
+    if (!info || !info.t) { img.src = letterAvatar(username); return; }
+    var ready = avatarObjectUrls[avatarCacheKey(info)];
+    if (ready !== undefined) { img.src = ready || letterAvatar(username); return; }
+    if (!img.src) img.src = letterAvatar(username);
+    loadAvatar(key, info).then(function (url) {
+      if (img.dataset.who !== key) return;
+      var now = avatarInfo[key];
+      if (now && now.t === info.t && now.v === info.v && url) img.src = url;
+    });
   }
 
   function applyAvatarVersions(map) {
     if (!map) return;
     Object.keys(map).forEach(function (key) {
-      var v = map[key];
-      if (!v || avatarVersions[key] === v) return;
-      avatarVersions[key] = v;
+      var next = map[key];
+      if (!next || !next.t) return;
+      var have = avatarInfo[key];
+      if (have && have.t === next.t && have.v === next.v) return;
+      avatarInfo[key] = { v: next.v || 0, t: next.t };
       refreshAvatarImages(key);
     });
   }
 
   function refreshAvatarImages(usernameKey) {
-    var prefix = '/api/avatar/';
-    var imgs = document.querySelectorAll('img[src^="' + prefix + '"]');
-    Array.prototype.forEach.call(imgs, function (img) {
-      var raw = img.getAttribute('src').slice(prefix.length).split('?')[0];
-      var name;
-      try { name = decodeURIComponent(raw); } catch (e) { name = raw; }
-      if (name.toLowerCase() === usernameKey) img.src = avatarUrl(name);
-    });
+    var imgs = document.querySelectorAll('img[data-who="' + usernameKey.replace(/"/g, '') + '"]');
+    Array.prototype.forEach.call(imgs, function (img) { setAvatar(img, img.dataset.who); });
   }
 
   function chatImageUrl(imageId) {
@@ -785,7 +841,7 @@
       lead = document.createElement('img');
       lead.className = 'avatar';
       lead.alt = '';
-      lead.src = avatarUrl(m.username);
+      setAvatar(lead, m.username);
       lead.loading = 'lazy';
     }
 
@@ -1380,17 +1436,31 @@
 
     setAvatarStatus('Uploading…');
     try {
-      var res = await fetch('/api/avatar', {
+      // Sealed before it leaves, like every other picture here.
+      var body = file;
+      var contentType = file.type;
+      var enc = false;
+      if (cryptoAvailable && roomKey) {
+        var rawBytes = new Uint8Array(await file.arrayBuffer());
+        if (!sniffImageMime(rawBytes)) {
+          setAvatarStatus('Use a JPEG, PNG, or WebP image.', true);
+          return;
+        }
+        body = await encryptBytes(rawBytes);
+        contentType = 'application/octet-stream';
+        enc = true;
+      }
+      var res = await fetch('/api/avatar?enc=' + (enc ? '1' : '0'), {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Content-Type': file.type, 'X-CSRF-Token': csrfToken },
-        body: file,
+        headers: { 'Content-Type': contentType, 'X-CSRF-Token': csrfToken },
+        body: body,
       });
       var data = await res.json();
       if (res.ok) {
         var key = (myUsername || '').toLowerCase();
-        avatarVersions[key] = data.avatarVersion || Date.now();
-        myAvatarEl.src = avatarUrl(myUsername);
+        avatarInfo[key] = { v: data.avatarVersion || Date.now(), t: data.avatarToken || (avatarInfo[key] || {}).t };
+        setAvatar(myAvatarEl, myUsername);
         refreshAvatarImages(key);
         setAvatarStatus('Profile picture updated.');
         setTimeout(function () { setAvatarStatus(''); }, 2500);
@@ -1404,9 +1474,11 @@
     }
   });
 
-  logoutBtn.addEventListener('click', async function () {
+  // Signing out drops the name on the server too, so getting back in means
+  // the password again, not just the chord.
+  async function signOutAndLeave() {
     try {
-      await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+      await fetch('/api/logout', { method: 'POST', credentials: 'same-origin', keepalive: true });
     } catch (e) { /* best effort */ }
     stopChatPolling();
     stopPresence();
@@ -1422,11 +1494,14 @@
     csrfToken = null;
     clearRoomKey();
     releaseDecryptedImageUrls();
+    releaseAvatarUrls();
     cancelReply();
     updateRoomTag();
     lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
-    leaveForEssay();
-  });
+    await leaveForEssay();
+  }
+
+  logoutBtn.addEventListener('click', signOutAndLeave);
 
   var SCALE_KEY = 'ss_ui_scale';
   var SKIN_KEY = 'ss_chat_skin';
@@ -1546,7 +1621,7 @@
     img.className = 'avatar';
     img.alt = '';
     img.loading = 'lazy';
-    img.src = avatarUrl(who.name);
+    setAvatar(img, who.name);
 
     var info = document.createElement('span');
     info.className = 'active-user-info';
@@ -1642,9 +1717,9 @@
     // people sitting in the arcade with chat polling stopped.
     var versions = null;
     (list || []).forEach(function (entry) {
-      if (entry && entry.name && entry.avatarVersion) {
+      if (entry && entry.name && entry.avatarVersion && entry.avatarToken) {
         if (!versions) versions = Object.create(null);
-        versions[entry.name.toLowerCase()] = entry.avatarVersion;
+        versions[entry.name.toLowerCase()] = { v: entry.avatarVersion, t: entry.avatarToken };
       }
     });
     applyAvatarVersions(versions);
@@ -1680,7 +1755,7 @@
   // Moderation — only the admin sees any of this
   // -------------------------------------------------------------------
 
-  function confirmBan(name) {
+  function confirmBan(name, afterBan) {
     if (!iAmAdmin || !name || name === myUsername) return;
 
     var overlay = document.createElement('div');
@@ -1779,10 +1854,11 @@
         }
         close();
         setChatStatus(data.noDevice
-          ? name + ' was banned by name — they were already offline, so no device was blocked.'
-          : name + ' was banned and blocked.');
+          ? name + ' was banned by name — no device of theirs was on record to block.'
+          : name + ' was banned, along with ' + data.devices + (data.devices === 1 ? ' device' : ' devices') + '.');
         setTimeout(function () { setChatStatus(''); }, 4000);
         poll();
+        if (typeof afterBan === 'function') afterBan();
       } catch (e2) {
         err.textContent = 'Could not reach the server.';
         err.hidden = false;
@@ -1805,7 +1881,7 @@
     var head = document.createElement('div');
     head.className = 'history-head';
     var title = document.createElement('h3');
-    title.textContent = 'Banned';
+    title.textContent = 'Everyone who has been here';
     var closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'history-close';
@@ -1827,64 +1903,95 @@
     document.body.appendChild(overlay);
     requestAnimationFrame(function () { overlay.classList.add('is-open'); });
 
+    function note(text) {
+      var li = document.createElement('li');
+      li.className = 'history-item';
+      li.textContent = text;
+      list.appendChild(li);
+    }
+
     async function refresh() {
       list.innerHTML = '';
       var data;
       try {
-        var res = await fetch('/api/admin/bans', { credentials: 'same-origin' });
+        var res = await fetch('/api/admin/people', { credentials: 'same-origin' });
         data = await res.json();
         if (!res.ok) throw new Error();
       } catch (e) {
-        var oops = document.createElement('li');
-        oops.className = 'history-item';
-        oops.textContent = 'Could not load the ban list.';
-        list.appendChild(oops);
+        note('Could not load the list.');
         return;
       }
-      if (!data.bans.length) {
-        var none = document.createElement('li');
-        none.className = 'history-item';
-        none.textContent = 'Nobody is banned from this room.';
-        list.appendChild(none);
+      if (!data.people || !data.people.length) {
+        note('Nobody has signed in yet.');
         return;
       }
-      data.bans.forEach(function (b) {
+      data.people.forEach(function (person) {
         var li = document.createElement('li');
         li.className = 'history-item ban-row';
+
         var meta = document.createElement('div');
         meta.className = 'history-meta';
-        meta.textContent = (b.by ? 'by ' + b.by : 'from config') + (b.at ? ' · ' + fmtTime(b.at) : '');
+        meta.textContent = (person.online ? 'here now' : 'last seen ' + relativeTime(person.lastAt)) +
+          ' · first seen ' + relativeTime(person.firstAt) +
+          ' · ' + person.devices + (person.devices === 1 ? ' device' : ' devices') +
+          ' · ' + person.messages + (person.messages === 1 ? ' message' : ' messages');
+
         var who = document.createElement('div');
         who.className = 'ban-row-name';
-        who.textContent = b.username;
+        who.textContent = person.username + (person.isAdmin ? ' · admin' : '');
+
+        var bits = [];
+        if (person.banned) bits.push('blocked from this room');
+        if (person.activity) bits.push(ACTIVITY_LABELS[person.activity] || 'in the room');
+        if (person.listening) bits.push('♪ ' + person.listening.name + (person.listening.artists ? ' — ' + person.listening.artists : ''));
+        if (person.spotify) bits.push('Spotify connected');
         var detail = document.createElement('div');
         detail.className = 'ban-row-detail';
-        detail.textContent = b.devices + (b.devices === 1 ? ' device' : ' devices') +
-          ', ' + b.ips + (b.ips === 1 ? ' address' : ' addresses');
-        var lift = document.createElement('button');
-        lift.type = 'button';
-        lift.className = 'msg-edit-cancel ban-lift-btn';
-        lift.textContent = 'Lift';
-        lift.addEventListener('click', async function () {
-          lift.disabled = true;
-          try {
-            await fetch('/api/admin/unban', {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-              body: JSON.stringify({ username: b.username }),
-            });
-          } catch (e) { /* the refresh below will show it is still there */ }
-          refresh();
-        });
+        detail.textContent = bits.join(' · ');
+
         li.appendChild(meta);
         li.appendChild(who);
         li.appendChild(detail);
-        li.appendChild(lift);
+
+        if (person.banned) {
+          var lift = document.createElement('button');
+          lift.type = 'button';
+          lift.className = 'msg-edit-cancel ban-lift-btn';
+          lift.textContent = 'Lift';
+          lift.addEventListener('click', async function () {
+            lift.disabled = true;
+            try {
+              await fetch('/api/admin/unban', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+                body: JSON.stringify({ username: person.username }),
+              });
+            } catch (e2) { /* the refresh below shows whether it took */ }
+            refresh();
+          });
+          li.appendChild(lift);
+        } else if (!person.isAdmin && person.username !== myUsername) {
+          var ban = document.createElement('button');
+          ban.type = 'button';
+          ban.className = 'msg-edit-cancel ban-lift-btn';
+          ban.textContent = 'Ban';
+          ban.addEventListener('click', function () {
+            close();
+            confirmBan(person.username, refreshAfterBan);
+          });
+          li.appendChild(ban);
+        }
         list.appendChild(li);
       });
     }
+    function refreshAfterBan() { openBanList(); }
     refresh();
+    // Keeps pace with the room while it is open.
+    var timer = setInterval(function () {
+      if (!document.body.contains(overlay)) { clearInterval(timer); return; }
+      refresh();
+    }, 5000);
   }
 
   // The room says no. Stop everything and say so plainly. The notice has to be
@@ -1946,7 +2053,7 @@
     img.className = 'avatar';
     img.alt = '';
     img.loading = 'lazy';
-    img.src = avatarUrl(e.username);
+    setAvatar(img, e.username);
 
     var body = document.createElement('span');
     body.className = 'sidebar-feed-body';
@@ -2082,7 +2189,7 @@
       var img = document.createElement('img');
       img.className = 'podium-avatar';
       img.alt = '';
-      img.src = avatarUrl(row.username);
+      setAvatar(img, row.username);
       var name = document.createElement('span');
       name.className = 'podium-name';
       name.textContent = row.username;
@@ -5457,7 +5564,7 @@
             });
           } catch (err) { /* leaving anyway */ }
         }
-        leaveForEssay();
+        signOutAndLeave();
       }
       return;
     }
