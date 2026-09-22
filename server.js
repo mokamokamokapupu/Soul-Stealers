@@ -13,6 +13,9 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = path.join(ROOT, 'data');
 const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
 const CHAT_IMAGES_DIR = path.join(DATA_DIR, 'chat-images');
+// Every message ever sent, a file per day, read only by the admin. The live
+// room keeps its short window in memory; this is what outlives it.
+const ARCHIVE_DIR = path.join(DATA_DIR, 'archive');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const PORT = process.env.PORT || 3000;
 
@@ -310,6 +313,62 @@ function rememberDevice(roomState, usernameKey, deviceId) {
   roomState.bansDirty = true;
 }
 
+function archiveDirFor(roomId) {
+  return path.join(ARCHIVE_DIR, roomId);
+}
+
+function dayKeyFor(ts) {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function loadArchiveIndex(roomId) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(archiveDirFor(roomId), 'index.json'), 'utf8'));
+    return raw && typeof raw === 'object' ? raw : Object.create(null);
+  } catch (e) {
+    return Object.create(null);
+  }
+}
+
+// One line per message, appended as it is sent. The text is the same sealed
+// blob the room holds, so the file is no more readable than the wire is.
+function archiveMessage(roomState, msg) {
+  const day = dayKeyFor(msg.ts || Date.now());
+  const dir = archiveDirFor(roomState.id);
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, day + '.jsonl'), JSON.stringify(msg) + '\n');
+  } catch (e) {
+    return; // a full disk must not cost anyone their message
+  }
+  const index = roomState.archiveIndex;
+  const rec = index[day] || (index[day] = { messages: 0, images: 0, edits: 0, users: Object.create(null) });
+  if (msg.kind === 'edit') rec.edits++;
+  else {
+    rec.messages++;
+    if (msg.type === 'image') rec.images++;
+    const key = (msg.username || '').toLowerCase();
+    if (key) rec.users[key] = (rec.users[key] || 0) + 1;
+  }
+  roomState.archiveDirty = true;
+}
+
+function readArchiveDay(roomId, day, offset, limit) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(archiveDirFor(roomId), day + '.jsonl'), 'utf8');
+  } catch (e) {
+    return { messages: [], nextOffset: null };
+  }
+  const lines = text.split('\n').filter(Boolean);
+  const slice = lines.slice(offset, offset + limit);
+  const messages = [];
+  for (const line of slice) {
+    try { messages.push(JSON.parse(line)); } catch (e) { /* skip a torn line */ }
+  }
+  return { messages, nextOffset: offset + slice.length < lines.length ? offset + slice.length : null };
+}
+
 function messagesPathFor(roomId) {
   return path.join(DATA_DIR, 'messages-' + roomId + '.json');
 }
@@ -372,6 +431,15 @@ function loadScores(roomId) {
     }
   }
   return scores;
+}
+
+function bestScoresFor(roomState, usernameKey) {
+  const out = Object.create(null);
+  for (const game of GAME_IDS) {
+    const rec = roomState.scores[game] && roomState.scores[game][usernameKey];
+    if (rec && rec.score) out[game] = rec.score;
+  }
+  return out;
 }
 
 function topScores(roomState) {
@@ -536,6 +604,9 @@ for (const room of ROOMS) {
     dirty: false,
     clearedAt: 0,
     scores: loadScores(room.id),
+    id: room.id,
+    archiveIndex: loadArchiveIndex(room.id),
+    archiveDirty: false,
     scoresDirty: false,
     spotifyTokens: loadSpotifyTokens(room.id),
     spotifyDirty: false,
@@ -613,6 +684,11 @@ setInterval(() => {
     if (r.bansDirty) {
       r.bansDirty = false;
       fs.writeFile(bansPathFor(roomId), JSON.stringify(r.bans), { mode: 0o600 }, () => {});
+    }
+    if (r.archiveDirty) {
+      r.archiveDirty = false;
+      try { fs.mkdirSync(archiveDirFor(roomId), { recursive: true }); } catch (e) { /* already there */ }
+      fs.writeFile(path.join(archiveDirFor(roomId), 'index.json'), JSON.stringify(r.archiveIndex), { mode: 0o600 }, () => {});
     }
   }
   fs.writeFile(sessionsPath(), JSON.stringify(Array.from(sessions.entries())), { mode: 0o600 }, () => {});
@@ -1980,6 +2056,7 @@ async function handleApi(req, res, pathname) {
     if (replyTo) msg.replyTo = replyTo;
     roomState.messages.push(msg);
     roomState.byId.set(msg.id, msg);
+    archiveMessage(roomState, msg);
     if (roomState.messages.length > MAX_MESSAGES_KEPT) {
       roomState.messages.splice(0, roomState.messages.length - MAX_MESSAGES_KEPT);
       roomState.byId.clear();
@@ -2015,6 +2092,7 @@ async function handleApi(req, res, pathname) {
     }
     msg.text = text;
     msg.editedAt = Date.now();
+    archiveMessage(roomState, { kind: 'edit', id: msg.id, username: msg.username, text, ts: msg.editedAt });
 
     // A reply quoting this message keeps its own snapshot, so refresh those
     // too rather than leaving the old wording quoted around the room.
@@ -2083,6 +2161,7 @@ async function handleApi(req, res, pathname) {
     if (replyTo) msg.replyTo = replyTo;
     roomState.messages.push(msg);
     roomState.byId.set(msg.id, msg);
+    archiveMessage(roomState, msg);
     if (roomState.messages.length > MAX_MESSAGES_KEPT) {
       roomState.messages.splice(0, roomState.messages.length - MAX_MESSAGES_KEPT);
       roomState.byId.clear();
@@ -2241,10 +2320,26 @@ async function handleApi(req, res, pathname) {
       if (other.room !== session.room || !other.username) continue;
       live.set(other.username.toLowerCase(), other);
     }
-    const counts = Object.create(null);
-    for (const m of roomState.messages) {
-      const k = (m.username || '').toLowerCase();
-      counts[k] = (counts[k] || 0) + 1;
+    // Counted from the archive, so it covers everything ever said, not just
+    // what the room still holds in memory.
+    const index = roomState.archiveIndex;
+    const today = dayKeyFor(Date.now());
+    const weekAgo = dayKeyFor(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const totals = Object.create(null);
+    const todayCounts = Object.create(null);
+    const weekCounts = Object.create(null);
+    let messagesToday = 0, messagesWeek = 0, messagesEver = 0, imagesEver = 0;
+    for (const d of Object.keys(index)) {
+      const rec = index[d];
+      messagesEver += rec.messages || 0;
+      imagesEver += rec.images || 0;
+      if (d === today) messagesToday += rec.messages || 0;
+      if (d >= weekAgo) messagesWeek += rec.messages || 0;
+      for (const k of Object.keys(rec.users || {})) {
+        totals[k] = (totals[k] || 0) + rec.users[k];
+        if (d === today) todayCounts[k] = (todayCounts[k] || 0) + rec.users[k];
+        if (d >= weekAgo) weekCounts[k] = (weekCounts[k] || 0) + rec.users[k];
+      }
     }
     const people = Object.keys(bans.roster).map((key) => {
       const rec = bans.roster[key];
@@ -2255,7 +2350,10 @@ async function handleApi(req, res, pathname) {
         firstAt: rec.firstAt || 0,
         lastAt: Math.max(rec.lastAt || 0, (now && now.lastSeen) || 0),
         devices: (bans.seen[key] || []).length,
-        messages: counts[key] || 0,
+        messages: totals[key] || 0,
+        messagesToday: todayCounts[key] || 0,
+        messagesWeek: weekCounts[key] || 0,
+        best: bestScoresFor(roomState, key),
         banned: !!bans.usernames[key],
         online: online.has(key),
         inRoom: !!now,
@@ -2266,7 +2364,55 @@ async function handleApi(req, res, pathname) {
       };
     });
     people.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
-    return sendJson(res, 200, { people });
+    const busiest = Object.keys(weekCounts).sort((a, b) => weekCounts[b] - weekCounts[a])[0];
+    return sendJson(res, 200, {
+      people,
+      room: {
+        hereNow: online.size,
+        knownPeople: people.length,
+        banned: people.filter((p) => p.banned).length,
+        messagesToday,
+        messagesWeek,
+        messagesEver,
+        imagesEver,
+        days: Object.keys(index).length,
+        spotifyConnected: people.filter((p) => p.spotify).length,
+        busiestThisWeek: busiest ? { username: (bans.roster[busiest] || {}).username || busiest, messages: weekCounts[busiest] } : null,
+        newThisWeek: people.filter((p) => p.firstAt && Date.now() - p.firstAt < 7 * 24 * 60 * 60 * 1000).length,
+      },
+    });
+  }
+
+  // GET /api/admin/history — the days the room has been talking, or one
+  // day's messages. Sealed exactly as the room holds them.
+  if (pathname === '/api/admin/history' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!isAdminName(session.username)) return sendJson(res, 403, { error: 'Not authorized' });
+    const roomState = rooms[session.room];
+    const url = new URL(req.url, 'http://internal');
+    const day = url.searchParams.get('day');
+    if (day) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'Invalid day' });
+      const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+      const { messages, nextOffset } = readArchiveDay(session.room, day, offset, 500);
+      return sendJson(res, 200, { day, messages, nextOffset });
+    }
+    const index = roomState.archiveIndex;
+    const days = Object.keys(index).sort().reverse().map((d) => ({
+      day: d,
+      messages: index[d].messages || 0,
+      images: index[d].images || 0,
+      edits: index[d].edits || 0,
+      people: Object.keys(index[d].users || {}).length,
+    }));
+    return sendJson(res, 200, {
+      days,
+      totals: {
+        messages: days.reduce((n, d) => n + d.messages, 0),
+        images: days.reduce((n, d) => n + d.images, 0),
+        days: days.length,
+      },
+    });
   }
 
   // GET /api/admin/bans — who is currently blocked from this room.

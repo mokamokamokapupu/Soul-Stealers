@@ -16,43 +16,136 @@
     "Entries are records people actually set. Don't invent them.",
     "",
     "Not seeded, because the standings they came from listed no score:",
-    "snake/fatty (6th), tetris/x (10th), cookie/Dr goon (10th). Add a",
-    "score for any of them here and they'll appear."
+    "snake/y (7th), tetris/Doom (10th), cookie/sigmachan (10th, though an",
+    "older 415 of theirs is kept below). Add a score for any of them here",
+    "and they'll appear."
   ],
   "overwatch": {
     "snake": [
-      { "username": "sparks", "score": 500 },
-      { "username": "x", "score": 230 },
-      { "username": "doom", "score": 210 },
-      { "username": "spraks", "score": 150 },
-      { "username": "copper", "score": 140 }
+      {
+        "username": "copper",
+        "score": 540
+      },
+      {
+        "username": "sparks",
+        "score": 530
+      },
+      {
+        "username": "x",
+        "score": 430
+      },
+      {
+        "username": "Doom",
+        "score": 370
+      },
+      {
+        "username": "spraks",
+        "score": 150
+      },
+      {
+        "username": "ab",
+        "score": 100
+      }
     ],
     "tetris": [
-      { "username": "Dr goon", "score": 2400000 },
-      { "username": "sss", "score": 247000 },
-      { "username": "Kaban", "score": 168000 },
-      { "username": "sigmchan", "score": 137000 },
-      { "username": "sigmachan", "score": 93000 },
-      { "username": "Tkana", "score": 68000 },
-      { "username": "Jumpyboy20", "score": 45000 },
-      { "username": "fly", "score": 34000 },
-      { "username": "Takan", "score": 30000 }
+      {
+        "username": "Dr goon",
+        "score": 2400000
+      },
+      {
+        "username": "sss",
+        "score": 247000
+      },
+      {
+        "username": "Kaban",
+        "score": 168000
+      },
+      {
+        "username": "sigmchan",
+        "score": 137000
+      },
+      {
+        "username": "sigmachan",
+        "score": 93000
+      },
+      {
+        "username": "Tkana",
+        "score": 68000
+      },
+      {
+        "username": "Jumpyboy20",
+        "score": 45000
+      },
+      {
+        "username": "fly",
+        "score": 34000
+      },
+      {
+        "username": "Takan",
+        "score": 30000
+      }
+    ],
+    "mines": [
+      {
+        "username": "copper",
+        "score": 814
+      }
     ],
     "poker": [
-      { "username": "copper", "score": 12000 },
-      { "username": "jamorant", "score": 1540 },
-      { "username": "sss", "score": 1000 }
+      {
+        "username": "copper",
+        "score": 12000
+      },
+      {
+        "username": "jamorant",
+        "score": 1540
+      },
+      {
+        "username": "sss",
+        "score": 1000
+      }
     ],
     "cookie": [
-      { "username": "copper", "score": 48700000 },
-      { "username": "fatty", "score": 18100000 },
-      { "username": "Kaban", "score": 1500000 },
-      { "username": "doom", "score": 633000 },
-      { "username": "sparks", "score": 319000 },
-      { "username": "sss", "score": 98000 },
-      { "username": "Jamorant", "score": 84000 },
-      { "username": "x", "score": 10000 },
-      { "username": "sigmachan", "score": 415 }
+      {
+        "username": "copper",
+        "score": 181400000
+      },
+      {
+        "username": "fatty",
+        "score": 18100000
+      },
+      {
+        "username": "sparks",
+        "score": 16900000
+      },
+      {
+        "username": "Kaban",
+        "score": 4800000
+      },
+      {
+        "username": "Doom",
+        "score": 1600000
+      },
+      {
+        "username": "Jamorant",
+        "score": 165000
+      },
+      {
+        "username": "sss",
+        "score": 98000
+      },
+      {
+        "username": "x",
+        "score": 16000
+      },
+      {
+        "username": "Dr goon",
+        "score": 3592
+      },
+      {
+        "username": "sigmachan",
+        "score": 415
+      }
     ]
   }
 }

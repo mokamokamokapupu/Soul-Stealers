@@ -1872,16 +1872,19 @@
     go.focus();
   }
 
+  var adminPanel = null;
+
   async function openBanList() {
-    if (!iAmAdmin) return;
+    if (!iAmAdmin || adminPanel) return;
+
     var overlay = document.createElement('div');
     overlay.className = 'history-overlay';
     var card = document.createElement('div');
-    card.className = 'history-card';
+    card.className = 'history-card admin-card';
     var head = document.createElement('div');
     head.className = 'history-head';
     var title = document.createElement('h3');
-    title.textContent = 'Everyone who has been here';
+    title.textContent = 'The room, from the inside';
     var closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'history-close';
@@ -1889,108 +1892,308 @@
     closeBtn.textContent = '×';
     head.appendChild(title);
     head.appendChild(closeBtn);
+
+    var summary = document.createElement('p');
+    summary.className = 'admin-summary';
+
+    var tabs = document.createElement('div');
+    tabs.className = 'admin-tabs';
+    var peopleTab = document.createElement('button');
+    peopleTab.type = 'button';
+    peopleTab.className = 'admin-tab is-active';
+    peopleTab.textContent = 'People';
+    var historyTab = document.createElement('button');
+    historyTab.type = 'button';
+    historyTab.className = 'admin-tab';
+    historyTab.textContent = 'Every day';
+    tabs.appendChild(peopleTab);
+    tabs.appendChild(historyTab);
+
     var list = document.createElement('ol');
     list.className = 'history-list';
+    var historyPane = document.createElement('div');
+    historyPane.className = 'admin-history';
+    historyPane.hidden = true;
+
     card.appendChild(head);
+    card.appendChild(summary);
+    card.appendChild(tabs);
     card.appendChild(list);
+    card.appendChild(historyPane);
     overlay.appendChild(card);
 
-    function close() { overlay.remove(); document.removeEventListener('keydown', esc); }
+    var timer = null;
+    function close() {
+      if (timer) clearInterval(timer);
+      overlay.remove();
+      document.removeEventListener('keydown', esc);
+      adminPanel = null;
+    }
     function esc(e) { if (e.key === 'Escape') close(); }
     closeBtn.addEventListener('click', close);
     overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
     document.addEventListener('keydown', esc);
     document.body.appendChild(overlay);
     requestAnimationFrame(function () { overlay.classList.add('is-open'); });
+    adminPanel = { close: close };
 
-    function note(text) {
-      var li = document.createElement('li');
-      li.className = 'history-item';
-      li.textContent = text;
-      list.appendChild(li);
+    peopleTab.addEventListener('click', function () { showPeople(true); });
+    historyTab.addEventListener('click', function () { showHistory(); });
+
+    function showPeople(refreshNow) {
+      peopleTab.classList.add('is-active');
+      historyTab.classList.remove('is-active');
+      historyPane.hidden = true;
+      list.hidden = false;
+      if (refreshNow) refresh();
     }
 
-    async function refresh() {
-      list.innerHTML = '';
-      var data;
-      try {
-        var res = await fetch('/api/admin/people', { credentials: 'same-origin' });
-        data = await res.json();
-        if (!res.ok) throw new Error();
-      } catch (e) {
-        note('Could not load the list.');
-        return;
-      }
-      if (!data.people || !data.people.length) {
-        note('Nobody has signed in yet.');
-        return;
-      }
-      data.people.forEach(function (person) {
+    // Rows are kept and updated in place: rebuilding the list every few
+    // seconds threw away the scroll position and made it jump.
+    var rows = Object.create(null);
+
+    function rowFor(person) {
+      var key = person.username.toLowerCase();
+      var row = rows[key];
+      if (!row) {
         var li = document.createElement('li');
         li.className = 'history-item ban-row';
-
         var meta = document.createElement('div');
         meta.className = 'history-meta';
-        meta.textContent = (person.online ? 'here now' : 'last seen ' + relativeTime(person.lastAt)) +
-          ' · first seen ' + relativeTime(person.firstAt) +
-          ' · ' + person.devices + (person.devices === 1 ? ' device' : ' devices') +
-          ' · ' + person.messages + (person.messages === 1 ? ' message' : ' messages');
-
         var who = document.createElement('div');
         who.className = 'ban-row-name';
-        who.textContent = person.username + (person.isAdmin ? ' · admin' : '');
+        var detail = document.createElement('div');
+        detail.className = 'ban-row-detail';
+        var action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'msg-edit-cancel ban-lift-btn';
+        li.appendChild(meta);
+        li.appendChild(who);
+        li.appendChild(detail);
+        li.appendChild(action);
+        row = rows[key] = { li: li, meta: meta, who: who, detail: detail, action: action, wired: '' };
+      }
+      return row;
+    }
+
+    function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+    function bestLine(best) {
+      var names = { snake: 'Snake', tetris: 'Tetris', mines: 'Mines', poker: 'Poker', cookie: 'Cookie' };
+      return Object.keys(best || {}).map(function (g) {
+        return (names[g] || g) + ' ' + formatCount(best[g]);
+      }).join(', ');
+    }
+
+    function formatCount(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + 'm';
+      if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+      return String(n);
+    }
+
+    function renderPeople(data) {
+      var people = data.people || [];
+      var seen = Object.create(null);
+      people.forEach(function (person) {
+        var key = person.username.toLowerCase();
+        seen[key] = true;
+        var row = rowFor(person);
+
+        setText(row.meta, (person.online ? 'here now' : 'last seen ' + relativeTime(person.lastAt)) +
+          ' · first seen ' + relativeTime(person.firstAt) +
+          ' · ' + person.devices + (person.devices === 1 ? ' device' : ' devices') +
+          ' · ' + person.messages + (person.messages === 1 ? ' message' : ' messages') +
+          (person.messagesToday ? ' (' + person.messagesToday + ' today)' : ''));
+        setText(row.who, person.username + (person.isAdmin ? ' · admin' : ''));
 
         var bits = [];
         if (person.banned) bits.push('blocked from this room');
         if (person.activity) bits.push(ACTIVITY_LABELS[person.activity] || 'in the room');
         if (person.listening) bits.push('♪ ' + person.listening.name + (person.listening.artists ? ' — ' + person.listening.artists : ''));
         if (person.spotify) bits.push('Spotify connected');
-        var detail = document.createElement('div');
-        detail.className = 'ban-row-detail';
-        detail.textContent = bits.join(' · ');
+        var best = bestLine(person.best);
+        if (best) bits.push(best);
+        setText(row.detail, bits.join(' · '));
 
-        li.appendChild(meta);
-        li.appendChild(who);
-        li.appendChild(detail);
-
-        if (person.banned) {
-          var lift = document.createElement('button');
-          lift.type = 'button';
-          lift.className = 'msg-edit-cancel ban-lift-btn';
-          lift.textContent = 'Lift';
-          lift.addEventListener('click', async function () {
-            lift.disabled = true;
-            try {
-              await fetch('/api/admin/unban', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-                body: JSON.stringify({ username: person.username }),
-              });
-            } catch (e2) { /* the refresh below shows whether it took */ }
-            refresh();
-          });
-          li.appendChild(lift);
-        } else if (!person.isAdmin && person.username !== myUsername) {
-          var ban = document.createElement('button');
-          ban.type = 'button';
-          ban.className = 'msg-edit-cancel ban-lift-btn';
-          ban.textContent = 'Ban';
-          ban.addEventListener('click', function () {
-            close();
-            confirmBan(person.username, refreshAfterBan);
-          });
-          li.appendChild(ban);
+        var wants = person.banned ? 'lift' : ((person.isAdmin || person.username === myUsername) ? '' : 'ban');
+        if (row.wired !== wants) {
+          row.wired = wants;
+          row.action.hidden = !wants;
+          setText(row.action, wants === 'lift' ? 'Lift' : 'Ban');
+          row.action.onclick = wants === 'lift' ? function () {
+            row.action.disabled = true;
+            liftBan(person.username);
+          } : function () { confirmBan(person.username, refresh); };
+          row.action.disabled = false;
         }
-        list.appendChild(li);
+        list.appendChild(row.li); // moves it into order without a rebuild
+      });
+      Object.keys(rows).forEach(function (key) {
+        if (!seen[key]) { rows[key].li.remove(); delete rows[key]; }
+      });
+      if (!people.length) {
+        var none = document.createElement('li');
+        none.className = 'history-item';
+        none.textContent = 'Nobody has signed in yet.';
+        list.appendChild(none);
+      }
+    }
+
+    async function liftBan(username) {
+      try {
+        await fetch('/api/admin/unban', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify({ username: username }),
+        });
+      } catch (e) { /* the next refresh shows whether it took */ }
+      refresh();
+    }
+
+    function renderSummary(room) {
+      if (!room) return;
+      var bits = [
+        room.hereNow + ' here now',
+        room.knownPeople + (room.knownPeople === 1 ? ' person known' : ' people known'),
+        room.messagesToday + ' messages today',
+        room.messagesWeek + ' this week',
+        room.messagesEver + ' in all',
+        room.imagesEver + (room.imagesEver === 1 ? ' picture' : ' pictures'),
+        room.days + (room.days === 1 ? ' day talking' : ' days talking'),
+      ];
+      if (room.busiestThisWeek) bits.push('busiest: ' + room.busiestThisWeek.username + ' (' + room.busiestThisWeek.messages + ')');
+      if (room.newThisWeek) bits.push(room.newThisWeek + ' new this week');
+      if (room.banned) bits.push(room.banned + ' blocked');
+      if (room.spotifyConnected) bits.push(room.spotifyConnected + ' on Spotify');
+      setText(summary, bits.join(' · '));
+    }
+
+    async function refresh() {
+      var keepScroll = card.scrollTop;
+      var data;
+      try {
+        var res = await fetch('/api/admin/people', { credentials: 'same-origin' });
+        data = await res.json();
+        if (!res.ok) throw new Error();
+      } catch (e) {
+        setText(summary, 'Could not load the room.');
+        return;
+      }
+      renderSummary(data.room);
+      renderPeople(data);
+      card.scrollTop = keepScroll;
+    }
+
+    // ---- every day the room has talked ----
+    var daysLoaded = false;
+
+    async function showHistory() {
+      historyTab.classList.add('is-active');
+      peopleTab.classList.remove('is-active');
+      list.hidden = true;
+      historyPane.hidden = false;
+      if (daysLoaded) return;
+      daysLoaded = true;
+      historyPane.textContent = 'Loading…';
+      var data;
+      try {
+        var res = await fetch('/api/admin/history', { credentials: 'same-origin' });
+        data = await res.json();
+        if (!res.ok) throw new Error();
+      } catch (e) {
+        historyPane.textContent = 'Could not load the history.';
+        daysLoaded = false;
+        return;
+      }
+      historyPane.textContent = '';
+      if (!data.days.length) {
+        historyPane.textContent = 'Nothing has been said yet.';
+        return;
+      }
+      var kept = document.createElement('p');
+      kept.className = 'admin-note';
+      kept.textContent = data.totals.messages + ' messages kept across ' + data.totals.days +
+        (data.totals.days === 1 ? ' day' : ' days') + '. Only you can read this.';
+      historyPane.appendChild(kept);
+
+      data.days.forEach(function (d) {
+        var row = document.createElement('div');
+        row.className = 'admin-day';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'admin-day-btn';
+        btn.textContent = d.day + ' · ' + d.messages + (d.messages === 1 ? ' message' : ' messages') +
+          (d.images ? ' · ' + d.images + (d.images === 1 ? ' picture' : ' pictures') : '') +
+          ' · ' + d.people + (d.people === 1 ? ' person' : ' people');
+        var body = document.createElement('ol');
+        body.className = 'admin-day-messages';
+        body.hidden = true;
+        var loaded = false;
+        btn.addEventListener('click', async function () {
+          body.hidden = !body.hidden;
+          if (loaded || body.hidden) return;
+          loaded = true;
+          body.textContent = 'Opening…';
+          await loadDay(d.day, body);
+        });
+        row.appendChild(btn);
+        row.appendChild(body);
+        historyPane.appendChild(row);
       });
     }
-    function refreshAfterBan() { openBanList(); }
+
+    async function loadDay(day, body) {
+      var messages = [];
+      var offset = 0;
+      try {
+        for (var page = 0; page < 20; page++) {
+          var res = await fetch('/api/admin/history?day=' + encodeURIComponent(day) + '&offset=' + offset, { credentials: 'same-origin' });
+          var data = await res.json();
+          if (!res.ok) throw new Error();
+          messages = messages.concat(data.messages || []);
+          if (data.nextOffset == null) break;
+          offset = data.nextOffset;
+        }
+      } catch (e) {
+        body.textContent = 'Could not open that day.';
+        return;
+      }
+      body.textContent = '';
+      var edits = Object.create(null);
+      messages.forEach(function (m) { if (m.kind === 'edit') edits[m.id] = m; });
+      for (var i = 0; i < messages.length; i++) {
+        var m = messages[i];
+        if (m.kind === 'edit') continue;
+        var li = document.createElement('li');
+        li.className = 'admin-message';
+        var when = document.createElement('span');
+        when.className = 'admin-message-when';
+        when.textContent = fmtTime(m.ts) + ' ';
+        var who = document.createElement('span');
+        who.className = 'admin-message-who';
+        who.textContent = m.username + ': ';
+        var text = document.createElement('span');
+        if (m.type === 'image') text.textContent = '[picture]';
+        else text.textContent = (await plaintextOf(m.text)) || '[could not be read]';
+        li.appendChild(when);
+        li.appendChild(who);
+        li.appendChild(text);
+        if (edits[m.id]) {
+          var edited = document.createElement('span');
+          edited.className = 'admin-message-edited';
+          edited.textContent = ' (later edited to: ' + ((await plaintextOf(edits[m.id].text)) || '…') + ')';
+          li.appendChild(edited);
+        }
+        body.appendChild(li);
+      }
+      if (!body.children.length) body.textContent = 'Nothing that day.';
+    }
+
     refresh();
-    // Keeps pace with the room while it is open.
-    var timer = setInterval(function () {
+    timer = setInterval(function () {
       if (!document.body.contains(overlay)) { clearInterval(timer); return; }
-      refresh();
+      if (!list.hidden) refresh();
     }, 5000);
   }
 
