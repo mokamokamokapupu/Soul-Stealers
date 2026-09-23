@@ -817,17 +817,21 @@
     return Math.max(m.ts, m.editedAt || 0);
   }
 
-  async function renderOne(m) {
+  async function renderOne(m, olderBatch) {
     if (renderedIds[m.id]) {
-      since = Math.max(since, msgStamp(m));
-      await applyEditToRendered(m);
+      if (!olderBatch) {
+        since = Math.max(since, msgStamp(m));
+        await applyEditToRendered(m);
+      }
       return;
     }
     renderedIds[m.id] = true;
 
     // Consecutive messages from the same person render as one stream: no
     // repeated avatar or name, just the bubble, aligned under the first.
-    var grouped = lastAuthor !== null && m.username === lastAuthor;
+    var grouped = olderBatch
+      ? olderBatch.lastAuthor !== null && m.username === olderBatch.lastAuthor
+      : lastAuthor !== null && m.username === lastAuthor;
 
     var wrap = document.createElement('div');
     wrap.className = 'msg msg-enter' + (m.username === myUsername ? ' self' : '') + (grouped ? ' grouped' : '');
@@ -935,9 +939,21 @@
 
     wrap.appendChild(lead);
     wrap.appendChild(body);
+
+    // Older messages slide in above what is already there, and skip the
+    // arrival animation: they are not arriving, they were always there.
+    if (olderBatch) {
+      wrap.classList.remove('msg-enter');
+      messagesEl.insertBefore(wrap, olderBatch.anchor);
+      olderBatch.lastAuthor = m.username;
+      oldestShown = Math.min(oldestShown || m.ts, m.ts);
+      return;
+    }
+
     messagesEl.appendChild(wrap);
     lastAuthor = m.username;
     since = Math.max(since, msgStamp(m));
+    oldestShown = Math.min(oldestShown || m.ts, m.ts);
 
     requestAnimationFrame(function () {
       requestAnimationFrame(function () { wrap.classList.add('msg-enter-active'); });
@@ -1153,6 +1169,59 @@
     requestAnimationFrame(function () { overlay.classList.add('is-open'); });
   }
 
+  // Everything ever said is still there, in the day files. This pulls it
+  // back a page at a time rather than holding it all in memory.
+  var oldestShown = 0;
+  var olderBusy = false;
+  var olderDone = false;
+
+  async function loadOlderMessages() {
+    if (olderBusy || olderDone || !oldestShown) return;
+    olderBusy = true;
+    setOlderLabel('Looking further back…');
+    try {
+      var res = await fetch('/api/chat/older?before=' + oldestShown + '&limit=60', { credentials: 'same-origin' });
+      if (res.status === 404) { roomClosed(); return; }
+      if (!res.ok) { setOlderLabel('Could not look further back.'); return; }
+      var data = await res.json();
+      var list = data.messages || [];
+      if (!list.length) {
+        olderDone = true;
+        setOlderLabel('');
+        return;
+      }
+      // Keep the reader where they were: the page grows upward, so the
+      // scroll position has to grow with it.
+      var beforeHeight = messagesEl.scrollHeight;
+      var beforeTop = messagesEl.scrollTop;
+      var batch = { anchor: messagesEl.firstChild, lastAuthor: null };
+      for (var i = 0; i < list.length; i++) await renderOne(list[i], batch);
+      messagesEl.scrollTop = beforeTop + (messagesEl.scrollHeight - beforeHeight);
+      olderDone = !data.hasMore;
+      setOlderLabel(olderDone ? '' : null);
+    } catch (e) {
+      setOlderLabel('Could not look further back.');
+    } finally {
+      olderBusy = false;
+    }
+  }
+
+  function setOlderLabel(text) {
+    if (!olderBtn) return;
+    olderBtn.hidden = olderDone;
+    olderBtn.disabled = olderBusy;
+    olderBtn.textContent = text || 'Earlier messages';
+  }
+
+  var olderBtn = document.getElementById('load-older');
+  if (olderBtn) {
+    olderBtn.addEventListener('click', loadOlderMessages);
+    // Scrolling to the very top asks for more on its own.
+    messagesEl.addEventListener('scroll', function () {
+      if (messagesEl.scrollTop < 40) loadOlderMessages();
+    }, { passive: true });
+  }
+
   async function renderMessages(list) {
     if (list.length === 0) return;
     var wasEmpty = messagesEl.querySelector('.empty-state');
@@ -1184,6 +1253,9 @@
     renderedIds = Object.create(null);
     rendered = Object.create(null);
     lastAuthor = null;
+    oldestShown = 0;
+    olderDone = true;
+    setOlderLabel('');
     cancelReply();
   }
 
@@ -1223,8 +1295,14 @@
     renderedIds = Object.create(null);
     rendered = Object.create(null);
     lastAuthor = null;
+    oldestShown = 0;
+    olderDone = false;
+    olderBusy = false;
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
-    poll().then(function () { scrollToBottom(false); });
+    poll().then(function () {
+      scrollToBottom(false);
+      setOlderLabel('');
+    });
     pollTimer = setInterval(poll, 1800);
   }
 

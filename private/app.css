@@ -2357,3 +2357,17 @@ body.is-admin #banlist-btn{ color: var(--danger); }
 .admin-message-when{ opacity: 0.6; font-size: 0.74rem; }
 .admin-message-who{ color: var(--parchment); }
 .admin-message-edited{ opacity: 0.75; font-style: italic; }
+
+.load-older{
+  width: auto;
+  margin: 0 auto 0.3rem;
+  padding: 0.25rem 0.9rem;
+  font-size: 0.74rem;
+  background: transparent;
+  color: var(--parchment-dim);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  display: block;
+}
+.load-older:hover{ color: var(--parchment); }
+.load-older[hidden]{ display: none; }

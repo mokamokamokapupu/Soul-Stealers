@@ -369,6 +369,40 @@ function readArchiveDay(roomId, day, offset, limit) {
   return { messages, nextOffset: offset + slice.length < lines.length ? offset + slice.length : null };
 }
 
+// Older messages, read back out of the day files so the room can scroll
+// past what it keeps in memory. Walks days backwards until it has enough.
+function olderFromArchive(roomState, before, limit) {
+  const days = Object.keys(roomState.archiveIndex).sort().reverse();
+  const beforeDay = dayKeyFor(before);
+  const collected = [];
+  let hasMore = false;
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i];
+    if (day > beforeDay) continue;
+    const { messages } = readArchiveDay(roomState.id, day, 0, Number.MAX_SAFE_INTEGER);
+    const edits = new Map();
+    for (const m of messages) if (m.kind === 'edit') edits.set(m.id, m);
+    const older = messages.filter((m) => m.kind !== 'edit' && m.ts < before);
+    for (const m of older) {
+      const edit = edits.get(m.id);
+      if (edit) { m.text = edit.text; m.editedAt = edit.ts; }
+    }
+    const room = limit - collected.length;
+    if (older.length > room) {
+      collected.unshift(...older.slice(older.length - room));
+      hasMore = true;
+      break;
+    }
+    collected.unshift(...older);
+    if (collected.length >= limit) {
+      // Filled up exactly; anything earlier is in the days not reached yet.
+      hasMore = days.slice(i + 1).some((d) => (roomState.archiveIndex[d].messages || 0) > 0);
+      break;
+    }
+  }
+  return { messages: collected, hasMore };
+}
+
 function messagesPathFor(roomId) {
   return path.join(DATA_DIR, 'messages-' + roomId + '.json');
 }
@@ -2000,6 +2034,24 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, {
       ok: true, username, room: session.room, csrfToken: session.csrfToken,
       isAdmin: isAdminName(username),
+    });
+  }
+
+  // GET /api/chat/older?before= — scrolling back past what the room keeps
+  // in memory. Read from the day files, so history costs disk, not memory.
+  if (pathname === '/api/chat/older' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const roomState = rooms[session.room];
+    const url = new URL(req.url, 'http://internal');
+    const before = Number(url.searchParams.get('before')) || Date.now();
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 60));
+    const cleared = roomState.clearedAt || 0;
+    const { messages, hasMore } = olderFromArchive(roomState, before, limit);
+    // A cleared room stays cleared: nothing from before the wipe comes back.
+    const kept = cleared ? messages.filter((m) => m.ts > cleared) : messages;
+    return sendJson(res, 200, {
+      messages: kept,
+      hasMore: cleared ? hasMore && kept.length === messages.length : hasMore,
     });
   }
 
