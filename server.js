@@ -10,6 +10,16 @@ const { URL } = require('url');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const REACTION_EMOJI = (() => {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(ROOT, 'private', 'emoji.json'), 'utf8'));
+    return new Set(data.e.map((row) => row[0]));
+  } catch (e) {
+    return new Set();
+  }
+})();
+const MAX_REACTION_KINDS = 20;
+const MAX_REACTED_MESSAGES = 50000;
 const DATA_DIR = path.join(ROOT, 'data');
 const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
 const CHAT_IMAGES_DIR = path.join(DATA_DIR, 'chat-images');
@@ -37,6 +47,12 @@ const ADMIN_USERNAMES = new Set(
 // Optional. When set, claiming an admin name requires it, so nobody can grab
 // the name while its owner is offline and inherit the ban powers with it.
 const ADMIN_KEY = process.env.SOUL_STUDIES_ADMIN_KEY || '';
+// GIF search. The server asks GIPHY and passes the videos straight through,
+// so the browser only ever talks to this site and nothing is stored here.
+const GIPHY_KEY = process.env.GIPHY_API_KEY || '';
+const GIFS_ENABLED = Boolean(GIPHY_KEY);
+const GIF_CACHE_MAX = 3000;
+const gifCache = new Map();
 // A per-browser id in a long-lived cookie: the closest thing to "this device"
 // available to a site with no accounts.
 const DEVICE_ID_RE = /^[0-9a-f]{32}$/;
@@ -321,6 +337,17 @@ function dayKeyFor(ts) {
   return new Date(ts).toISOString().slice(0, 10);
 }
 
+// Every reaction, by message id, so a reaction outlives the message leaving
+// the room's memory. Only reacted-to messages are here, so it stays small.
+function loadReactions(roomId) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(archiveDirFor(roomId), 'reactions.json'), 'utf8'));
+    return raw && typeof raw === 'object' ? raw : Object.create(null);
+  } catch (e) {
+    return Object.create(null);
+  }
+}
+
 function loadArchiveIndex(roomId) {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(archiveDirFor(roomId), 'index.json'), 'utf8'));
@@ -344,6 +371,7 @@ function archiveMessage(roomState, msg) {
   const index = roomState.archiveIndex;
   const rec = index[day] || (index[day] = { messages: 0, images: 0, edits: 0, users: Object.create(null) });
   if (msg.kind === 'edit') rec.edits++;
+  else if (msg.kind === 'react') rec.reactions = (rec.reactions || 0) + 1;
   else {
     rec.messages++;
     if (msg.type === 'image') rec.images++;
@@ -382,10 +410,12 @@ function olderFromArchive(roomState, before, limit) {
     const { messages } = readArchiveDay(roomState.id, day, 0, Number.MAX_SAFE_INTEGER);
     const edits = new Map();
     for (const m of messages) if (m.kind === 'edit') edits.set(m.id, m);
-    const older = messages.filter((m) => m.kind !== 'edit' && m.ts < before);
+    const older = messages.filter((m) => !m.kind && m.ts < before);
     for (const m of older) {
       const edit = edits.get(m.id);
       if (edit) { m.text = edit.text; m.editedAt = edit.ts; }
+      const reactions = roomState.reactions[m.id];
+      if (reactions) m.reactions = reactions;
     }
     const room = limit - collected.length;
     if (older.length > room) {
@@ -401,6 +431,83 @@ function olderFromArchive(roomState, before, limit) {
     }
   }
   return { messages: collected, hasMore };
+}
+
+function rememberGif(g) {
+  const imgs = g && g.images;
+  if (!imgs || typeof g.id !== 'string' || !/^[A-Za-z0-9]{1,64}$/.test(g.id)) return null;
+  const small = imgs.fixed_width_small || imgs.fixed_height_small || imgs.fixed_width;
+  const full = imgs.fixed_width || imgs.downsized_small || small;
+  const rec = {
+    id: g.id,
+    small: (small && small.mp4) || '',
+    full: (full && full.mp4) || (full && full.url) || '',
+    w: Number((full && full.width) || (small && small.width)) || 200,
+    h: Number((full && full.height) || (small && small.height)) || 200,
+    title: String(g.title || '').slice(0, 120),
+  };
+  if (!rec.small && !rec.full) return null;
+  gifCache.delete(rec.id);
+  gifCache.set(rec.id, rec);
+  if (gifCache.size > GIF_CACHE_MAX) gifCache.delete(gifCache.keys().next().value);
+  return rec;
+}
+
+function giphyRequest(pathAndQuery) {
+  return httpsRequestJson({ hostname: 'api.giphy.com', path: pathAndQuery, method: 'GET' });
+}
+
+async function gifById(id) {
+  if (gifCache.has(id)) return gifCache.get(id);
+  const { status, json } = await giphyRequest('/v1/gifs/' + id + '?' + new URLSearchParams({ api_key: GIPHY_KEY }));
+  if (status !== 200 || !json || !json.data) return null;
+  return rememberGif(json.data);
+}
+
+function isGiphyMediaUrl(u) {
+  try {
+    const url = new URL(u);
+    return url.protocol === 'https:' && /^(media\d*|i)\.giphy\.com$/.test(url.hostname);
+  } catch (e) {
+    return false;
+  }
+}
+
+// Streams one GIPHY video to the browser. Range requests are passed along,
+// which Safari needs before it will play a video at all.
+function pipeGif(src, req, res, hops) {
+  const url = new URL(src);
+  const headers = {};
+  if (req.headers.range) headers.Range = req.headers.range;
+  const up = https.request({ hostname: url.hostname, path: url.pathname + url.search, method: 'GET', headers }, (upstream) => {
+    const status = upstream.statusCode || 502;
+    if ((status === 301 || status === 302) && upstream.headers.location && (hops || 0) < 2 &&
+        isGiphyMediaUrl(new URL(upstream.headers.location, src).toString())) {
+      upstream.resume();
+      return pipeGif(new URL(upstream.headers.location, src).toString(), req, res, (hops || 0) + 1);
+    }
+    if (status !== 200 && status !== 206) {
+      upstream.resume();
+      return notFound(res);
+    }
+    const out = {
+      'Content-Type': 'video/mp4',
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      'Accept-Ranges': 'bytes',
+    };
+    if (upstream.headers['content-length']) out['Content-Length'] = upstream.headers['content-length'];
+    if (upstream.headers['content-range']) out['Content-Range'] = upstream.headers['content-range'];
+    res.writeHead(status, out);
+    upstream.pipe(res);
+  });
+  up.on('error', () => { if (!res.headersSent) notFound(res); else res.destroy(); });
+  up.setTimeout(15000, () => up.destroy(new Error('GIF timed out')));
+  up.end();
+}
+
+// The last time anything about a message changed: sent, edited, reacted to.
+function msgChangedAt(m) {
+  return Math.max(m.ts, m.editedAt || 0, m.reactedAt || 0);
 }
 
 function messagesPathFor(roomId) {
@@ -641,6 +748,8 @@ for (const room of ROOMS) {
     id: room.id,
     archiveIndex: loadArchiveIndex(room.id),
     archiveDirty: false,
+    reactions: loadReactions(room.id),
+    reactionsDirty: false,
     scoresDirty: false,
     spotifyTokens: loadSpotifyTokens(room.id),
     spotifyDirty: false,
@@ -723,6 +832,11 @@ setInterval(() => {
       r.archiveDirty = false;
       try { fs.mkdirSync(archiveDirFor(roomId), { recursive: true }); } catch (e) { /* already there */ }
       fs.writeFile(path.join(archiveDirFor(roomId), 'index.json'), JSON.stringify(r.archiveIndex), { mode: 0o600 }, () => {});
+    }
+    if (r.reactionsDirty) {
+      r.reactionsDirty = false;
+      try { fs.mkdirSync(archiveDirFor(roomId), { recursive: true }); } catch (e) { /* already there */ }
+      fs.writeFile(path.join(archiveDirFor(roomId), 'reactions.json'), JSON.stringify(r.reactions), { mode: 0o600 }, () => {});
     }
   }
   fs.writeFile(sessionsPath(), JSON.stringify(Array.from(sessions.entries())), { mode: 0o600 }, () => {});
@@ -1705,6 +1819,7 @@ const ASSETS = {
   '/assets/app.css': { file: path.join(PRIVATE_DIR, 'app.css'), who: 'member' },
   '/assets/app.js': { file: path.join(PRIVATE_DIR, 'app.js'), who: 'member' },
   '/assets/doom.wasm': { file: path.join(PRIVATE_DIR, 'doom.wasm'), who: 'member' },
+  '/assets/e.json': { file: path.join(PRIVATE_DIR, 'emoji.json'), who: 'member' },
 };
 
 function notFound(res) {
@@ -2061,9 +2176,17 @@ async function handleApi(req, res, pathname) {
     const roomState = rooms[session.room];
     const url = new URL(req.url, 'http://internal');
     const since = Number(url.searchParams.get('since')) || 0;
-    const recent = roomState.messages.filter((m) => Math.max(m.ts, m.editedAt || 0) > since).slice(-100);
+    const recent = roomState.messages.filter((m) => msgChangedAt(m) > since).slice(-100);
+    // On first load, say whether there is anything further back to fetch.
+    let hasOlder;
+    if (!since) {
+      const oldest = recent.length ? recent[0].ts : Date.now();
+      hasOlder = roomState.messages.length > recent.length ||
+        olderFromArchive(roomState, oldest, 1).messages.some((m) => m.ts > (roomState.clearedAt || 0));
+    }
     return sendJson(res, 200, {
       messages: recent,
+      hasOlder,
       serverTime: Date.now(),
       clearedAt: roomState.clearedAt,
       activeUsers: activeUsernamesInRoom(session.room),
@@ -2086,8 +2209,103 @@ async function handleApi(req, res, pathname) {
       try { fs.unlinkSync(path.join(roomState.chatImagesDir, imgId + '.' + ext)); } catch (e) { /* best effort */ }
     }
     roomState.chatImageExtById.clear();
+    roomState.reactions = Object.create(null);
+    roomState.reactionsDirty = true;
     scheduleSave(session.room);
     return sendJson(res, 200, { ok: true, clearedAt: roomState.clearedAt });
+  }
+
+  // GET /api/gifs?q=&offset= — GIF search, or what is trending when q is empty.
+  if (pathname === '/api/gifs' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!GIFS_ENABLED) return sendJson(res, 503, { error: 'GIFs are not set up on this server yet.' });
+    const url = new URL(req.url, 'http://internal');
+    const q = sanitizeText(url.searchParams.get('q') || '', 100);
+    const offset = Math.min(4999, Math.max(0, Number(url.searchParams.get('offset')) || 0));
+    const params = { api_key: GIPHY_KEY, limit: '24', offset: String(offset), rating: 'r' };
+    if (q) params.q = q;
+    try {
+      const { status, json } = await giphyRequest('/v1/gifs/' + (q ? 'search' : 'trending') + '?' + new URLSearchParams(params));
+      if (status === 429) return sendJson(res, 429, { error: 'Too many GIF searches for now. Try again in a bit.' });
+      if (status !== 200 || !json || !Array.isArray(json.data)) {
+        console.error('[gifs] HTTP ' + status);
+        return sendJson(res, 502, { error: 'GIF search failed.' });
+      }
+      const gifs = json.data.map(rememberGif).filter(Boolean).map((g) => ({ id: g.id, w: g.w, h: g.h, title: g.title }));
+      const page = json.pagination || {};
+      const next = offset + (page.count || gifs.length);
+      return sendJson(res, 200, {
+        gifs,
+        nextOffset: gifs.length && (page.total_count == null || next < page.total_count) ? next : null,
+      });
+    } catch (e) {
+      return sendJson(res, 502, { error: 'Could not reach GIF search.' });
+    }
+  }
+
+  // GET /api/gif/<id>?s=1 — the GIF itself, as a small looping video.
+  if (pathname.startsWith('/api/gif/') && req.method === 'GET') {
+    if (session.stage !== 'active' || !GIFS_ENABLED) return notFound(res);
+    const id = pathname.slice('/api/gif/'.length);
+    if (!/^[A-Za-z0-9]{1,64}$/.test(id)) return notFound(res);
+    const small = new URL(req.url, 'http://internal').searchParams.get('s') === '1';
+    let rec = null;
+    try { rec = await gifById(id); } catch (e) { rec = null; }
+    const src = rec && (small ? rec.small || rec.full : rec.full || rec.small);
+    if (!src || !isGiphyMediaUrl(src)) return notFound(res);
+    return pipeGif(src, req, res, 0);
+  }
+
+  // POST /api/chat/react — add or take back one emoji reaction on a message.
+  if (pathname === '/api/chat/react' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    const now = Date.now();
+    if (session.lastReactAt && now - session.lastReactAt < 150) return sendJson(res, 429, { error: 'Slow down a little.' });
+    session.lastReactAt = now;
+
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const id = typeof body.id === 'string' ? body.id : '';
+    const emoji = typeof body.emoji === 'string' ? body.emoji : '';
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return sendJson(res, 400, { error: 'Invalid message' });
+    if (!REACTION_EMOJI.has(emoji)) return sendJson(res, 400, { error: 'That is not something you can react with.' });
+
+    const roomState = rooms[session.room];
+    const live = roomState.byId.get(id);
+    if (live && live.ts <= (roomState.clearedAt || 0)) return sendJson(res, 404, { error: 'That message is gone.' });
+    const map = roomState.reactions;
+    const rec = map[id] || {};
+    const users = rec[emoji] || [];
+    const me = session.username;
+    const at = users.findIndex((u) => u.toLowerCase() === me.toLowerCase());
+    let on;
+    if (at === -1) {
+      if (!rec[emoji] && Object.keys(rec).length >= MAX_REACTION_KINDS) {
+        return sendJson(res, 400, { error: 'That message has all the reactions it can hold.' });
+      }
+      users.push(me);
+      on = true;
+    } else {
+      users.splice(at, 1);
+      on = false;
+    }
+    if (users.length) rec[emoji] = users; else delete rec[emoji];
+    if (Object.keys(rec).length) {
+      map[id] = rec;
+      const ids = Object.keys(map);
+      if (ids.length > MAX_REACTED_MESSAGES) delete map[ids[0]];
+    } else {
+      delete map[id];
+    }
+    roomState.reactionsDirty = true;
+    if (live) {
+      if (map[id]) live.reactions = map[id]; else delete live.reactions;
+      live.reactedAt = now;
+      scheduleSave(session.room);
+    }
+    archiveMessage(roomState, { kind: 'react', id, username: me, emoji, on, ts: now });
+    return sendJson(res, 200, { ok: true, id, reactions: map[id] || {} });
   }
 
   // POST /api/chat/send
@@ -2447,7 +2665,11 @@ async function handleApi(req, res, pathname) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'Invalid day' });
       const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0);
       const { messages, nextOffset } = readArchiveDay(session.room, day, offset, 500);
-      return sendJson(res, 200, { day, messages, nextOffset });
+      const reactions = {};
+      for (const m of messages) {
+        if (!m.kind && roomState.reactions[m.id]) reactions[m.id] = roomState.reactions[m.id];
+      }
+      return sendJson(res, 200, { day, messages, nextOffset, reactions });
     }
     const index = roomState.archiveIndex;
     const days = Object.keys(index).sort().reverse().map((d) => ({

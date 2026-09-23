@@ -730,28 +730,393 @@
 
   replyPreviewCancelBtn.addEventListener('click', cancelReply);
 
-  var EMOJI_SET = ['😀','😄','😁','😂','🤣','😊','🙂','😉','😍','🥰','😘','😎','🤔','🙄','😴',
-    '😭','😢','😅','😳','😱','🥺','😡','🤯','🤗','🤩','😇','🙃','😬','😏','🫠',
-    '👍','👎','👏','🙌','🙏','🤝','💪','✌️','🤞','👋',
-    '❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','💯',
-    '🔥','✨','🎉','🎊','💡','⭐','🌟','☀️','🌙','🌈',
-    '🐱','🐶','🦋','🌸','🍀','☕','🍕','🎵','📚','🧠'];
+  // The whole emoji set, fetched the first time anyone reaches for it.
+  // [emoji, name, category index, shortcodes]
+  var emojiData = null;
+  var emojiLoading = null;
+  var emojiByCode = Object.create(null);
+  var EMOJI_CATS = [
+    { key: 'recent', icon: '🕘', label: 'Recent' },
+    { key: 'smileys', icon: '😀', label: 'Smileys' },
+    { key: 'people', icon: '👋', label: 'People' },
+    { key: 'nature', icon: '🐶', label: 'Animals & nature' },
+    { key: 'food', icon: '🍎', label: 'Food & drink' },
+    { key: 'activity', icon: '⚽', label: 'Activities' },
+    { key: 'travel', icon: '🚗', label: 'Travel & places' },
+    { key: 'objects', icon: '💡', label: 'Objects' },
+    { key: 'symbols', icon: '❤️', label: 'Symbols' },
+    { key: 'flags', icon: '🏁', label: 'Flags' },
+  ];
+  var RECENT_EMOJI_KEY = 'ss_recent_emoji';
 
-  var emojiPopulated = false;
-  function populateEmojiPicker() {
-    if (emojiPopulated) return;
-    emojiPopulated = true;
-    EMOJI_SET.forEach(function (emoji) {
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'emoji-option';
-      btn.textContent = emoji;
-      btn.addEventListener('click', function () {
-        insertAtCursor(msgInput, emoji);
-        autoGrowComposer();
-      });
-      emojiPopover.appendChild(btn);
+  function loadEmojiData() {
+    if (emojiData) return Promise.resolve(emojiData);
+    if (!emojiLoading) {
+      emojiLoading = fetch('/assets/e.json', { credentials: 'same-origin' })
+        .then(function (res) { if (!res.ok) throw new Error(); return res.json(); })
+        .then(function (data) {
+          emojiData = data;
+          data.e.forEach(function (row) {
+            row[1] = row[1].toLowerCase();
+            row[3].forEach(function (code) { emojiByCode[code] = row[0]; });
+          });
+          return data;
+        })
+        .catch(function () { emojiLoading = null; return null; });
+    }
+    return emojiLoading;
+  }
+
+  function recentEmoji() {
+    try {
+      var list = JSON.parse(prefs.get(RECENT_EMOJI_KEY) || '[]');
+      return Array.isArray(list) ? list.filter(function (e) { return typeof e === 'string'; }) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function rememberEmoji(emoji) {
+    var list = recentEmoji().filter(function (e) { return e !== emoji; });
+    list.unshift(emoji);
+    prefs.set(RECENT_EMOJI_KEY, JSON.stringify(list.slice(0, 32)));
+  }
+
+  function emojiCode(emoji) {
+    if (!emojiData) return '';
+    for (var i = 0; i < emojiData.e.length; i++) {
+      if (emojiData.e[i][0] === emoji) return emojiData.e[i][3][0] || '';
+    }
+    return '';
+  }
+
+  var pickerBuilt = false;
+  var pickerSearch, pickerBody, pickerResults, pickerCats, pickerSections = Object.create(null);
+  var pickerTabs, emojiPane, gifPane;
+
+  var lastPickerPane = 'emoji';
+
+  function setPickerPane(name) {
+    if (!pickerBuilt) return;
+    var gif = name === 'gif' && !reactTargetId;
+    if (!reactTargetId) lastPickerPane = gif ? 'gif' : 'emoji';
+    emojiPane.hidden = gif;
+    gifPane.hidden = !gif;
+    Array.prototype.forEach.call(pickerTabs.children, function (b) {
+      b.classList.toggle('is-active', b.dataset.pane === (gif ? 'gif' : 'emoji'));
     });
+    if (gif) {
+      buildGifPane();
+      if (!gifGrid.children.length && !gifBusy) startGifSearch(gifSearch.value.trim());
+      gifSearch.focus({ preventScroll: true });
+    } else {
+      pickerSearch.focus({ preventScroll: true });
+    }
+  }
+
+  // GIFs: trending until something is typed, then search. Tiles are small
+  // looping videos that only load and play while scrolled into view.
+  var gifBuilt = false;
+  var gifSearch, gifScroll, gifGrid, gifStatus, gifSentinel;
+  var gifPaneObserver = null;
+  var gifQuery = '';
+  var gifNext = 0;
+  var gifBusy = false;
+  var gifDone = false;
+  var gifTurn = 0;
+  var gifDebounce = null;
+
+  function buildGifPane() {
+    if (gifBuilt) return;
+    gifBuilt = true;
+    gifSearch = document.createElement('input');
+    gifSearch.type = 'text';
+    gifSearch.inputMode = 'search';
+    gifSearch.className = 'emoji-search';
+    gifSearch.placeholder = 'Search GIFs';
+    gifSearch.setAttribute('aria-label', 'Search GIFs');
+    gifSearch.autocomplete = 'off';
+    gifSearch.spellcheck = false;
+    gifScroll = document.createElement('div');
+    gifScroll.className = 'gif-scroll';
+    gifGrid = document.createElement('div');
+    gifGrid.className = 'gif-grid';
+    gifStatus = document.createElement('p');
+    gifStatus.className = 'gif-status';
+    gifSentinel = document.createElement('div');
+    gifSentinel.className = 'gif-sentinel';
+    gifScroll.appendChild(gifGrid);
+    gifScroll.appendChild(gifStatus);
+    gifScroll.appendChild(gifSentinel);
+    gifPane.appendChild(gifSearch);
+    gifPane.appendChild(gifScroll);
+
+    gifPaneObserver = watchVideos(gifScroll);
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries) {
+        if (entries.some(function (en) { return en.isIntersecting; })) loadMoreGifs();
+      }, { root: gifScroll, rootMargin: '200px 0px' }).observe(gifSentinel);
+    }
+    gifSearch.addEventListener('input', function () {
+      clearTimeout(gifDebounce);
+      gifDebounce = setTimeout(function () { startGifSearch(gifSearch.value.trim()); }, 350);
+    });
+    gifGrid.addEventListener('click', function (e) {
+      var tile = e.target.closest('.gif-tile');
+      if (!tile) return;
+      setEmojiPopoverOpen(false);
+      sendGif({ id: tile.dataset.id, w: Number(tile.dataset.w), h: Number(tile.dataset.h) });
+    });
+  }
+
+  function clearGifGrid() {
+    Array.prototype.forEach.call(gifGrid.querySelectorAll('video'), function (v) {
+      if (gifPaneObserver) gifPaneObserver.unobserve(v);
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+    });
+    gifGrid.textContent = '';
+  }
+
+  function startGifSearch(q) {
+    gifQuery = q;
+    gifNext = 0;
+    gifDone = false;
+    gifTurn++;
+    gifBusy = false;
+    clearGifGrid();
+    gifScroll.scrollTop = 0;
+    loadMoreGifs();
+  }
+
+  async function loadMoreGifs() {
+    if (gifBusy || gifDone || !gifBuilt) return;
+    gifBusy = true;
+    var turn = gifTurn;
+    gifStatus.textContent = 'Loading…';
+    try {
+      var res = await fetch('/api/gifs?q=' + encodeURIComponent(gifQuery) + '&offset=' + gifNext, { credentials: 'same-origin' });
+      if (turn !== gifTurn) return;
+      if (res.status === 404) { roomClosed(); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (!res.ok) {
+        gifStatus.textContent = data.error || 'GIF search failed.';
+        gifDone = true;
+        return;
+      }
+      var frag = document.createDocumentFragment();
+      (data.gifs || []).forEach(function (g) {
+        var tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'gif-tile';
+        tile.dataset.id = g.id;
+        tile.dataset.w = g.w;
+        tile.dataset.h = g.h;
+        tile.title = g.title || 'GIF';
+        tile.style.aspectRatio = g.w + ' / ' + g.h;
+        var v = gifVideo(g.id, true);
+        tile.appendChild(v);
+        frag.appendChild(tile);
+        if (gifPaneObserver) gifPaneObserver.observe(v);
+        else { v.src = v.dataset.src; v.autoplay = true; }
+      });
+      gifGrid.appendChild(frag);
+      gifNext = data.nextOffset;
+      gifDone = data.nextOffset == null;
+      gifStatus.textContent = gifGrid.children.length ? '' : (gifQuery ? 'No GIFs for “' + gifQuery + '”' : 'Nothing trending right now.');
+    } catch (e) {
+      if (turn === gifTurn) gifStatus.textContent = 'Could not reach GIF search.';
+    } finally {
+      if (turn === gifTurn) gifBusy = false;
+    }
+  }
+
+  function pickerButton(row) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'emoji-option';
+    btn.textContent = row[0];
+    btn.title = row[3][0] ? ':' + row[3][0] + ':' : row[1];
+    return btn;
+  }
+
+  function buildPicker() {
+    if (pickerBuilt || !emojiData) return;
+    pickerBuilt = true;
+    emojiPopover.textContent = '';
+
+    pickerSearch = document.createElement('input');
+    pickerSearch.type = 'text';
+    pickerSearch.inputMode = 'search';
+    pickerSearch.className = 'emoji-search';
+    pickerSearch.placeholder = 'Search emoji';
+    pickerSearch.setAttribute('aria-label', 'Search emoji');
+    pickerSearch.autocomplete = 'off';
+    pickerSearch.spellcheck = false;
+
+    pickerBody = document.createElement('div');
+    pickerBody.className = 'emoji-body';
+    pickerResults = document.createElement('div');
+    pickerResults.className = 'emoji-grid';
+    pickerResults.hidden = true;
+    pickerBody.appendChild(pickerResults);
+
+    EMOJI_CATS.forEach(function (cat, ci) {
+      var section = document.createElement('section');
+      section.className = 'emoji-section';
+      var h = document.createElement('h4');
+      h.textContent = cat.label;
+      var grid = document.createElement('div');
+      grid.className = 'emoji-grid';
+      section.appendChild(h);
+      section.appendChild(grid);
+      pickerBody.appendChild(section);
+      pickerSections[cat.key] = { section: section, grid: grid };
+      if (cat.key === 'recent') return;
+      var frag = document.createDocumentFragment();
+      emojiData.e.forEach(function (row) {
+        if (emojiData.c[row[2]] === cat.key) frag.appendChild(pickerButton(row));
+      });
+      grid.appendChild(frag);
+    });
+
+    pickerCats = document.createElement('div');
+    pickerCats.className = 'emoji-cats';
+    EMOJI_CATS.forEach(function (cat) {
+      var tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'emoji-cat';
+      tab.textContent = cat.icon;
+      tab.title = cat.label;
+      tab.dataset.cat = cat.key;
+      pickerCats.appendChild(tab);
+    });
+
+    pickerTabs = document.createElement('div');
+    pickerTabs.className = 'picker-tabs';
+    [['emoji', 'Emoji'], ['gif', 'GIF']].forEach(function (t) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'picker-tab' + (t[0] === 'emoji' ? ' is-active' : '');
+      b.dataset.pane = t[0];
+      b.textContent = t[1];
+      pickerTabs.appendChild(b);
+    });
+    pickerTabs.addEventListener('click', function (e) {
+      var b = e.target.closest('.picker-tab');
+      if (b) setPickerPane(b.dataset.pane);
+    });
+
+    emojiPane = document.createElement('div');
+    emojiPane.className = 'emoji-pane';
+    emojiPane.appendChild(pickerSearch);
+    emojiPane.appendChild(pickerBody);
+    emojiPane.appendChild(pickerCats);
+    gifPane = document.createElement('div');
+    gifPane.className = 'gif-pane';
+    gifPane.hidden = true;
+
+    emojiPopover.appendChild(pickerTabs);
+    emojiPopover.appendChild(emojiPane);
+    emojiPopover.appendChild(gifPane);
+
+    // One listener for every emoji, rather than two thousand.
+    pickerBody.addEventListener('click', function (e) {
+      var btn = e.target.closest('.emoji-option');
+      if (!btn) return;
+      if (reactTargetId) {
+        var target = reactTargetId;
+        setEmojiPopoverOpen(false);
+        toggleReaction(target, btn.textContent);
+        return;
+      }
+      insertAtCursor(msgInput, btn.textContent);
+      rememberEmoji(btn.textContent);
+      autoGrowComposer();
+    });
+    pickerCats.addEventListener('click', function (e) {
+      var tab = e.target.closest('.emoji-cat');
+      if (!tab) return;
+      if (pickerSearch.value) { pickerSearch.value = ''; runEmojiSearch(); }
+      var target = pickerSections[tab.dataset.cat];
+      if (target && !target.section.hidden) pickerBody.scrollTop = target.section.offsetTop - pickerBody.offsetTop;
+    });
+    pickerBody.addEventListener('scroll', markCurrentCat, { passive: true });
+    pickerSearch.addEventListener('input', runEmojiSearch);
+    pickerSearch.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var first = pickerResults.querySelector('.emoji-option');
+        if (first) first.click();
+      }
+    });
+  }
+
+  function fillRecent() {
+    var slot = pickerSections.recent;
+    if (!slot) return;
+    var list = recentEmoji();
+    slot.grid.textContent = '';
+    slot.section.hidden = !list.length;
+    list.forEach(function (emoji) {
+      slot.grid.appendChild(pickerButton([emoji, '', 0, [emojiCode(emoji)].filter(Boolean)]));
+    });
+  }
+
+  function markCurrentCat() {
+    var top = pickerBody.scrollTop + pickerBody.offsetTop + 8;
+    var current = null;
+    EMOJI_CATS.forEach(function (cat) {
+      var s = pickerSections[cat.key];
+      if (s && !s.section.hidden && s.section.offsetTop <= top) current = cat.key;
+    });
+    Array.prototype.forEach.call(pickerCats.children, function (tab) {
+      tab.classList.toggle('is-active', tab.dataset.cat === current);
+    });
+  }
+
+  function searchEmoji(query, limit) {
+    var q = query.toLowerCase().replace(/^:|:$/g, '').trim();
+    if (!q || !emojiData) return [];
+    var starts = [], contains = [];
+    for (var i = 0; i < emojiData.e.length; i++) {
+      var row = emojiData.e[i];
+      var hitStart = row[1].indexOf(q) === 0;
+      var hitCode = false, hitAny = hitStart || row[1].indexOf(q) !== -1;
+      for (var j = 0; j < row[3].length; j++) {
+        if (row[3][j].indexOf(q) === 0) { hitCode = true; break; }
+        if (row[3][j].indexOf(q) !== -1) hitAny = true;
+      }
+      if (hitStart || hitCode) starts.push(row);
+      else if (hitAny) contains.push(row);
+      if (starts.length >= limit) break;
+    }
+    return starts.concat(contains).slice(0, limit);
+  }
+
+  function runEmojiSearch() {
+    var q = pickerSearch.value.trim();
+    var searching = q.length > 0;
+    pickerResults.hidden = !searching;
+    EMOJI_CATS.forEach(function (cat) {
+      var s = pickerSections[cat.key];
+      s.section.hidden = searching || (cat.key === 'recent' && !recentEmoji().length);
+    });
+    pickerResults.textContent = '';
+    if (!searching) return;
+    var hits = searchEmoji(q, 120);
+    if (!hits.length) {
+      var none = document.createElement('p');
+      none.className = 'emoji-none';
+      none.textContent = 'No emoji for “' + q + '”';
+      pickerResults.appendChild(none);
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    hits.forEach(function (row) { frag.appendChild(pickerButton(row)); });
+    pickerResults.appendChild(frag);
+    pickerBody.scrollTop = 0;
   }
 
   function insertAtCursor(input, str) {
@@ -764,14 +1129,135 @@
   }
 
   function setEmojiPopoverOpen(open) {
-    populateEmojiPicker();
     emojiPopover.hidden = !open;
     emojiBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    emojiBtn.classList.toggle('is-active', open);
+    emojiBtn.classList.toggle('is-active', open && !reactTargetId);
+    if (!open) {
+      reactTargetId = null;
+      emojiPopover.classList.remove('is-floating');
+      emojiPopover.style.left = '';
+      emojiPopover.style.top = '';
+      return;
+    }
+    if (!emojiData) emojiPopover.textContent = 'Loading…';
+    loadEmojiData().then(function (data) {
+      if (!data) { emojiPopover.textContent = 'Could not load emoji.'; return; }
+      buildPicker();
+      pickerTabs.hidden = !!reactTargetId;
+      fillRecent();
+      if (pickerSearch.value) { pickerSearch.value = ''; runEmojiSearch(); }
+      pickerBody.scrollTop = 0;
+      markCurrentCat();
+      setPickerPane(reactTargetId ? 'emoji' : lastPickerPane);
+    });
   }
+
+  // :shortcode: as in Discord — suggestions after two letters, and a code
+  // turns into its emoji the moment its closing colon is typed.
+  var suggestEl = document.createElement('div');
+  suggestEl.className = 'emoji-suggest';
+  suggestEl.hidden = true;
+  suggestEl.setAttribute('role', 'listbox');
+  composer.appendChild(suggestEl);
+  var suggestHits = [];
+  var suggestIndex = 0;
+
+  function shortcodeBeforeCaret() {
+    var pos = msgInput.selectionStart;
+    if (pos == null || pos !== msgInput.selectionEnd) return null;
+    var m = /(^|[\s(])(:([a-z0-9_+\-]{2,40}))$/i.exec(msgInput.value.slice(0, pos));
+    if (!m) return null;
+    return { start: pos - m[2].length, end: pos, query: m[3].toLowerCase() };
+  }
+
+  function hideSuggestions() {
+    suggestEl.hidden = true;
+    suggestHits = [];
+  }
+
+  function renderSuggestions() {
+    suggestEl.textContent = '';
+    suggestHits.forEach(function (row, i) {
+      var item = document.createElement('div');
+      item.className = 'emoji-suggest-item' + (i === suggestIndex ? ' is-active' : '');
+      item.setAttribute('role', 'option');
+      var glyph = document.createElement('span');
+      glyph.className = 'emoji-suggest-glyph';
+      glyph.textContent = row[0];
+      var code = document.createElement('span');
+      code.textContent = ':' + (row[3][0] || row[1]) + ':';
+      item.appendChild(glyph);
+      item.appendChild(code);
+      // mousedown, so the composer keeps its focus and caret
+      item.addEventListener('mousedown', function (e) { e.preventDefault(); pickSuggestion(i); });
+      suggestEl.appendChild(item);
+    });
+    suggestEl.hidden = !suggestHits.length;
+  }
+
+  function updateSuggestions() {
+    var at = shortcodeBeforeCaret();
+    if (!at) { hideSuggestions(); return; }
+    if (!emojiData) {
+      loadEmojiData().then(function (d) { if (d) updateSuggestions(); });
+      return;
+    }
+    suggestHits = searchEmoji(at.query, 8);
+    suggestIndex = 0;
+    renderSuggestions();
+  }
+
+  function pickSuggestion(i) {
+    var at = shortcodeBeforeCaret();
+    var row = suggestHits[i];
+    hideSuggestions();
+    if (!at || !row) return;
+    replaceRange(at.start, at.end, row[0]);
+    rememberEmoji(row[0]);
+  }
+
+  function replaceRange(start, end, str) {
+    msgInput.value = msgInput.value.slice(0, start) + str + msgInput.value.slice(end);
+    var pos = start + str.length;
+    msgInput.setSelectionRange(pos, pos);
+    autoGrowComposer();
+  }
+
+  function convertFinishedShortcode() {
+    var pos = msgInput.selectionStart;
+    if (pos == null || pos !== msgInput.selectionEnd) return;
+    var m = /(^|[\s(]):([a-z0-9_+\-]{1,40}):$/i.exec(msgInput.value.slice(0, pos));
+    if (!m) return;
+    var emoji = emojiByCode[m[2].toLowerCase()];
+    if (!emoji) return;
+    replaceRange(pos - m[2].length - 2, pos, emoji);
+    rememberEmoji(emoji);
+    hideSuggestions();
+  }
+
+  // Anything still written as :code: when the message goes, pasted text
+  // included, is sent as the emoji.
+  async function expandShortcodes(text) {
+    if (!/:[a-z0-9_+\-]+:/i.test(text)) return text;
+    await loadEmojiData();
+    return text.replace(/:([a-z0-9_+\-]{1,40}):/gi, function (whole, code) {
+      return emojiByCode[code.toLowerCase()] || whole;
+    });
+  }
+
+  msgInput.addEventListener('input', function () {
+    if (emojiData) convertFinishedShortcode();
+    else if (/:[a-z0-9_+\-]+:$/i.test(msgInput.value.slice(0, msgInput.selectionStart || 0))) {
+      loadEmojiData().then(function (d) { if (d) convertFinishedShortcode(); });
+    }
+    updateSuggestions();
+  });
+  msgInput.addEventListener('blur', function () { setTimeout(hideSuggestions, 120); });
+  msgInput.addEventListener('click', updateSuggestions);
 
   emojiBtn.addEventListener('click', function (e) {
     e.stopPropagation();
+    if (reactTargetId) { setEmojiPopoverOpen(false); setEmojiPopoverOpen(true); return; }
     setEmojiPopoverOpen(emojiPopover.hidden);
   });
   document.addEventListener('click', function (e) {
@@ -796,7 +1282,7 @@
       quoteText.textContent = '📷 Photo';
     } else if (cryptoAvailable) {
       var decrypted = await decryptText(replyTo.cipher);
-      quoteText.textContent = decrypted === null ? '🔒 message' : truncate(decrypted, 80);
+      quoteText.textContent = decrypted === null ? '🔒 message' : (parseGif(decrypted) ? '🎞 GIF' : truncate(decrypted, 80));
     } else {
       quoteText.textContent = truncate(replyTo.cipher || '', 80);
     }
@@ -814,7 +1300,7 @@
   }
 
   function msgStamp(m) {
-    return Math.max(m.ts, m.editedAt || 0);
+    return Math.max(m.ts, m.editedAt || 0, m.reactedAt || 0);
   }
 
   async function renderOne(m, olderBatch) {
@@ -851,6 +1337,7 @@
 
     var body = document.createElement('div');
     body.className = 'body';
+    var isGif = false;
 
     if (!grouped) {
       var meta = document.createElement('div');
@@ -903,31 +1390,54 @@
       previewForReply = '📷 Photo';
       rendered[m.id] = { el: wrap, body: body, textEl: null, msg: m };
     } else {
-      var text = document.createElement('div');
-      text.className = 'text';
       var plain = m.text;
       if (cryptoAvailable) {
         var decrypted = await decryptText(m.text);
         plain = decrypted === null ? null : decrypted;
         wrap.setAttribute('data-cipher', m.text);
       }
-      text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
-      if (plain === null) text.classList.add('is-locked');
-      body.appendChild(text);
-      body.appendChild(buildEditedBadge(m));
-      previewForReply = plain === null ? '🔒 message' : plain;
-      rendered[m.id] = { el: wrap, body: body, textEl: text, msg: m };
+      var gif = parseGif(plain);
+      if (gif) {
+        isGif = true;
+        body.appendChild(buildGifEl(gif));
+        previewForReply = '🎞 GIF';
+        rendered[m.id] = { el: wrap, body: body, textEl: null, msg: m };
+      } else {
+        var text = document.createElement('div');
+        text.className = 'text';
+        text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
+        if (plain === null) text.classList.add('is-locked');
+        body.appendChild(text);
+        body.appendChild(buildEditedBadge(m));
+        previewForReply = plain === null ? '🔒 message' : plain;
+        rendered[m.id] = { el: wrap, body: body, textEl: text, msg: m };
+      }
     }
+
+    var reactionsEl = document.createElement('div');
+    reactionsEl.className = 'msg-reactions';
+    body.appendChild(reactionsEl);
+    rendered[m.id].reactionsEl = reactionsEl;
+    renderReactions(m.id);
 
     var actions = document.createElement('div');
     actions.className = 'msg-actions';
+    var reactBtn = document.createElement('button');
+    reactBtn.type = 'button';
+    reactBtn.className = 'msg-action-btn';
+    reactBtn.textContent = '☺ React';
+    reactBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openQuickReact(m.id, reactBtn);
+    });
+    actions.appendChild(reactBtn);
     var replyBtn = document.createElement('button');
     replyBtn.type = 'button';
     replyBtn.className = 'msg-action-btn';
     replyBtn.textContent = '↩ Reply';
     replyBtn.addEventListener('click', function () { startReply(m.id, m.username, truncate(String(previewForReply).replace(/\s+/g, ' '), 80)); });
     actions.appendChild(replyBtn);
-    if (m.type === 'text' && m.username === myUsername) {
+    if (m.type === 'text' && m.username === myUsername && !isGif) {
       var editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'msg-action-btn';
@@ -985,11 +1495,269 @@
     return badge;
   }
 
+  // A GIF travels as an ordinary sealed message holding only its id and
+  // shape. It plays as a small looping video, and only while on screen.
+  var GIF_MARK = '⁣gif:';
+
+  function parseGif(plain) {
+    if (typeof plain !== 'string' || plain.indexOf(GIF_MARK) !== 0) return null;
+    var m = /^⁣gif:([A-Za-z0-9]{1,64}):(\d{1,4}):(\d{1,4})$/.exec(plain);
+    return m ? { id: m[1], w: Number(m[2]) || 200, h: Number(m[3]) || 200 } : null;
+  }
+
+  function watchVideos(root) {
+    if (!('IntersectionObserver' in window)) return null;
+    return new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        var v = en.target;
+        if (en.isIntersecting && !document.hidden) {
+          if (!v.getAttribute('src')) v.src = v.dataset.src;
+          var p = v.play();
+          if (p && p.catch) p.catch(function () { /* not ready yet */ });
+        } else {
+          v.pause();
+        }
+      });
+    }, { root: root, rootMargin: '120px 0px', threshold: 0.01 });
+  }
+
+  var chatGifs = watchVideos(messagesEl);
+
+  function gifVideo(id, small) {
+    var v = document.createElement('video');
+    v.muted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.setAttribute('muted', '');
+    v.setAttribute('playsinline', '');
+    v.preload = 'none';
+    v.dataset.src = '/api/gif/' + id + (small ? '?s=1' : '');
+    return v;
+  }
+
+  function buildGifEl(g) {
+    var box = document.createElement('div');
+    box.className = 'msg-gif';
+    box.style.width = Math.min(260, g.w) + 'px';
+    box.style.aspectRatio = g.w + ' / ' + g.h;
+    var v = gifVideo(g.id, false);
+    box.appendChild(v);
+    if (chatGifs) chatGifs.observe(v);
+    else { v.src = v.dataset.src; v.autoplay = true; }
+    return box;
+  }
+
+  // Nothing plays in a tab nobody is looking at; coming back wakes only
+  // what is actually on screen.
+  document.addEventListener('visibilitychange', function () {
+    var vids = document.querySelectorAll('video[data-src]');
+    Array.prototype.forEach.call(vids, function (v) {
+      if (document.hidden) { v.pause(); return; }
+      var obs = v.closest('.gif-pane') ? gifPaneObserver : chatGifs;
+      if (obs) { obs.unobserve(v); obs.observe(v); }
+    });
+  });
+
+  async function sendGif(g) {
+    if (cryptoAvailable && !roomKey) { leaveForEssay(); return; }
+    var pendingReplyTo = replyingTo ? replyingTo.id : undefined;
+    cancelReply();
+    var marker = GIF_MARK + g.id + ':' + g.w + ':' + g.h;
+    try {
+      var payloadText = cryptoAvailable ? await encryptText(marker) : marker;
+      var res = await fetch('/api/chat/send', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ text: payloadText, replyTo: pendingReplyTo }),
+      });
+      if (res.status === 403 || res.status === 404) { roomClosed(); return; }
+      var data = await res.json().catch(function () { return {}; });
+      if (res.ok && data.message) {
+        await renderMessages([data.message]);
+        scrollToBottom(true);
+      } else {
+        setChatStatus(data.error || 'Could not send that GIF.', true);
+        setTimeout(function () { setChatStatus(''); }, 3000);
+      }
+    } catch (e) {
+      setChatStatus('Could not send that GIF.', true);
+      setTimeout(function () { setChatStatus(''); }, 3000);
+    }
+  }
+
+  // Reactions, Discord-style: one chip per emoji with its count, click to
+  // join in or take yours back, hover to see who.
+  var QUICK_REACTIONS = [['❤️', 'Love'], ['👍', 'Like'], ['👎', 'Dislike'], ['😂', 'Haha'], ['‼️', 'Emphasize'], ['❓', 'Question']];
+
+  function isMe(name) {
+    return !!myUsername && String(name).toLowerCase() === myUsername.toLowerCase();
+  }
+
+  function renderReactions(id) {
+    var entry = rendered[id];
+    if (!entry || !entry.reactionsEl) return;
+    var r = entry.msg.reactions || {};
+    var el = entry.reactionsEl;
+    el.textContent = '';
+    Object.keys(r).forEach(function (emoji) {
+      var users = r[emoji];
+      if (!users || !users.length) return;
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'reaction' + (users.some(isMe) ? ' is-mine' : '');
+      chip.dataset.emoji = emoji;
+      var glyph = document.createElement('span');
+      glyph.className = 'reaction-emoji';
+      glyph.textContent = emoji;
+      var count = document.createElement('span');
+      count.className = 'reaction-count';
+      count.textContent = users.length;
+      chip.appendChild(glyph);
+      chip.appendChild(count);
+      el.appendChild(chip);
+    });
+    el.hidden = !el.children.length;
+  }
+
+  function describeReactors(users) {
+    var names = users.map(function (u) { return isMe(u) ? 'you' : u; });
+    names.sort(function (a, b) { return (a === 'you' ? -1 : 0) - (b === 'you' ? -1 : 0); });
+    if (names.length === 1) return names[0];
+    if (names.length <= 3) return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+    var others = names.length - 2;
+    return names.slice(0, 2).join(', ') + ' and ' + others + (others === 1 ? ' other' : ' others');
+  }
+
+  async function toggleReaction(id, emoji) {
+    var entry = rendered[id];
+    if (!entry || !myUsername) return;
+    // Shown straight away; the server's answer settles it a moment later.
+    var r = Object.assign({}, entry.msg.reactions || {});
+    var users = (r[emoji] || []).slice();
+    var mine = users.findIndex(isMe);
+    if (mine === -1) { users.push(myUsername); rememberEmoji(emoji); } else users.splice(mine, 1);
+    if (users.length) r[emoji] = users; else delete r[emoji];
+    entry.msg = Object.assign({}, entry.msg, { reactions: r });
+    renderReactions(id);
+    try {
+      var res = await fetch('/api/chat/react', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ id: id, emoji: emoji }),
+      });
+      var data = await res.json().catch(function () { return null; });
+      if (res.ok && data && rendered[id]) {
+        rendered[id].msg = Object.assign({}, rendered[id].msg, { reactions: data.reactions });
+        renderReactions(id);
+      } else if (!res.ok) {
+        if (data && data.error) { setChatStatus(data.error, true); setTimeout(function () { setChatStatus(''); }, 2500); }
+        poll();
+      }
+    } catch (e) { /* the next poll puts it right */ }
+  }
+
+  var reactTip = document.createElement('div');
+  reactTip.className = 'reaction-tip';
+  reactTip.hidden = true;
+  document.body.appendChild(reactTip);
+
+  messagesEl.addEventListener('click', function (e) {
+    var chip = e.target.closest('.reaction');
+    if (!chip) return;
+    var msgEl = chip.closest('.msg');
+    if (msgEl) toggleReaction(msgEl.dataset.msgId, chip.dataset.emoji);
+  });
+  messagesEl.addEventListener('mouseover', function (e) {
+    var chip = e.target.closest('.reaction');
+    if (!chip) return;
+    var msgEl = chip.closest('.msg');
+    var entry = msgEl && rendered[msgEl.dataset.msgId];
+    var users = entry && entry.msg.reactions && entry.msg.reactions[chip.dataset.emoji];
+    if (!users || !users.length) return;
+    reactTip.textContent = describeReactors(users) + ' reacted with ' + chip.dataset.emoji;
+    reactTip.hidden = false;
+    var rect = chip.getBoundingClientRect();
+    var left = Math.min(window.innerWidth - reactTip.offsetWidth - 8, Math.max(8, rect.left + rect.width / 2 - reactTip.offsetWidth / 2));
+    reactTip.style.left = left + 'px';
+    reactTip.style.top = Math.max(8, rect.top - reactTip.offsetHeight - 6) + 'px';
+  });
+  messagesEl.addEventListener('mouseout', function (e) {
+    if (e.target.closest('.reaction')) reactTip.hidden = true;
+  });
+  messagesEl.addEventListener('scroll', function () { reactTip.hidden = true; closeQuickReact(); }, { passive: true });
+
+  var quickEl = document.createElement('div');
+  quickEl.className = 'quick-react';
+  quickEl.hidden = true;
+  QUICK_REACTIONS.forEach(function (q) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'quick-react-btn';
+    b.textContent = q[0];
+    b.title = q[1];
+    b.dataset.emoji = q[0];
+    quickEl.appendChild(b);
+  });
+  var quickMore = document.createElement('button');
+  quickMore.type = 'button';
+  quickMore.className = 'quick-react-btn quick-react-more';
+  quickMore.textContent = '+';
+  quickMore.title = 'Any emoji';
+  quickEl.appendChild(quickMore);
+  document.body.appendChild(quickEl);
+
+  function openQuickReact(id, anchor) {
+    quickEl.dataset.msgId = id;
+    quickEl.hidden = false;
+    var rect = anchor.getBoundingClientRect();
+    var left = Math.min(window.innerWidth - quickEl.offsetWidth - 8, Math.max(8, rect.left));
+    quickEl.style.left = left + 'px';
+    quickEl.style.top = Math.max(8, rect.top - quickEl.offsetHeight - 6) + 'px';
+  }
+
+  function closeQuickReact() { quickEl.hidden = true; }
+
+  quickEl.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var btn = e.target.closest('.quick-react-btn');
+    if (!btn) return;
+    var id = quickEl.dataset.msgId;
+    if (btn === quickMore) {
+      var rect = quickEl.getBoundingClientRect();
+      closeQuickReact();
+      openReactionPicker(id, rect);
+      return;
+    }
+    closeQuickReact();
+    toggleReaction(id, btn.dataset.emoji);
+  });
+  document.addEventListener('click', function (e) {
+    if (!quickEl.hidden && !quickEl.contains(e.target)) closeQuickReact();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeQuickReact();
+  });
+
+  // The full picker, opened beside a message, reacts instead of typing.
+  var reactTargetId = null;
+
+  function openReactionPicker(id, rect) {
+    reactTargetId = id;
+    emojiPopover.classList.add('is-floating');
+    var width = Math.min(330, window.innerWidth - 16);
+    emojiPopover.style.left = Math.min(window.innerWidth - width - 8, Math.max(8, rect.left)) + 'px';
+    emojiPopover.style.top = Math.max(8, Math.min(window.innerHeight - 368, rect.top - 368)) + 'px';
+    setEmojiPopoverOpen(true);
+  }
+
   async function applyEditToRendered(m) {
     var entry = rendered[m.id];
     if (!entry) return;
     var prev = entry.msg;
     entry.msg = m;
+    if (JSON.stringify(prev.reactions || {}) !== JSON.stringify(m.reactions || {})) renderReactions(m.id);
     if (m.type !== 'text' || !entry.textEl) return;
     if (prev && prev.text === m.text && prev.editedAt === m.editedAt) return;
 
@@ -1196,7 +1964,9 @@
       var beforeTop = messagesEl.scrollTop;
       var batch = { anchor: messagesEl.firstChild, lastAuthor: null };
       for (var i = 0; i < list.length; i++) await renderOne(list[i], batch);
+      messagesEl.style.scrollBehavior = 'auto';
       messagesEl.scrollTop = beforeTop + (messagesEl.scrollHeight - beforeHeight);
+      messagesEl.style.scrollBehavior = '';
       olderDone = !data.hasMore;
       setOlderLabel(olderDone ? '' : null);
     } catch (e) {
@@ -1272,6 +2042,10 @@
       }
       if (res.status === 404) { roomClosed(); return; }
       var data = await res.json();
+      if (typeof data.hasOlder === 'boolean') {
+        olderDone = !data.hasOlder;
+        setOlderLabel('');
+      }
       if (typeof data.clearedAt === 'number') {
         if (roomClearedAt === null) {
           roomClearedAt = data.clearedAt;
@@ -1296,13 +2070,11 @@
     rendered = Object.create(null);
     lastAuthor = null;
     oldestShown = 0;
-    olderDone = false;
+    olderDone = true;
     olderBusy = false;
+    setOlderLabel('');
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
-    poll().then(function () {
-      scrollToBottom(false);
-      setOlderLabel('');
-    });
+    poll().then(function () { scrollToBottom(false); });
     pollTimer = setInterval(poll, 1800);
   }
 
@@ -1325,6 +2097,24 @@
   }
 
   msgInput.addEventListener('keydown', function (e) {
+    if (!suggestEl.hidden && suggestHits.length) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        suggestIndex = (suggestIndex + (e.key === 'ArrowDown' ? 1 : -1) + suggestHits.length) % suggestHits.length;
+        renderSuggestions();
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        pickSuggestion(suggestIndex);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideSuggestions();
+        return;
+      }
+    }
     if (e.key !== 'Enter') return;
     if (e.isComposing || e.keyCode === 229) return;
     if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1368,12 +2158,14 @@
     if (cryptoAvailable && !roomKey) { leaveForEssay(); return; }
 
     msgInput.value = ''; autoGrowComposer();
+    hideSuggestions();
     sendBtn.disabled = true;
     sendBtn.classList.add('is-sending');
     var pendingReplyTo = replyingTo ? replyingTo.id : undefined;
     cancelReply();
 
     try {
+      text = await expandShortcodes(text);
       var payloadText = cryptoAvailable ? await encryptText(text) : text;
       var res = await fetch('/api/chat/send', {
         method: 'POST',
@@ -2223,6 +3015,7 @@
 
     async function loadDay(day, body) {
       var messages = [];
+      var reactionsById = {};
       var offset = 0;
       try {
         for (var page = 0; page < 20; page++) {
@@ -2230,6 +3023,7 @@
           var data = await res.json();
           if (!res.ok) throw new Error();
           messages = messages.concat(data.messages || []);
+          Object.assign(reactionsById, data.reactions || {});
           if (data.nextOffset == null) break;
           offset = data.nextOffset;
         }
@@ -2242,7 +3036,7 @@
       messages.forEach(function (m) { if (m.kind === 'edit') edits[m.id] = m; });
       for (var i = 0; i < messages.length; i++) {
         var m = messages[i];
-        if (m.kind === 'edit') continue;
+        if (m.kind) continue;
         var li = document.createElement('li');
         li.className = 'admin-message';
         var when = document.createElement('span');
@@ -2253,10 +3047,22 @@
         who.textContent = m.username + ': ';
         var text = document.createElement('span');
         if (m.type === 'image') text.textContent = '[picture]';
-        else text.textContent = (await plaintextOf(m.text)) || '[could not be read]';
+        else {
+          var said = await plaintextOf(m.text);
+          text.textContent = parseGif(said) ? '[GIF]' : (said || '[could not be read]');
+        }
         li.appendChild(when);
         li.appendChild(who);
         li.appendChild(text);
+        var rx = reactionsById[m.id];
+        if (rx) {
+          var chips = document.createElement('span');
+          chips.className = 'admin-message-edited';
+          chips.textContent = '  ' + Object.keys(rx).map(function (e) {
+            return e + ' ' + rx[e].join(', ');
+          }).join('  ·  ');
+          li.appendChild(chips);
+        }
         if (edits[m.id]) {
           var edited = document.createElement('span');
           edited.className = 'admin-message-edited';
