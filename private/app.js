@@ -2347,6 +2347,8 @@
   // Signing out drops the name on the server too, so getting back in means
   // the password again, not just the chord.
   async function signOutAndLeave() {
+    var pending = ckLeave();
+    if (pending) await Promise.race([pending, new Promise(function (r) { setTimeout(r, 600); })]);
     try {
       await fetch('/api/logout', { method: 'POST', credentials: 'same-origin', keepalive: true });
     } catch (e) { /* best effort */ }
@@ -2367,7 +2369,7 @@
     releaseAvatarUrls();
     cancelReply();
     updateRoomTag();
-    lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
+    lastSubmitted = {};
     await leaveForEssay();
   }
 
@@ -2849,13 +2851,14 @@
     function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
 
     function bestLine(best) {
-      var names = { snake: 'Snake', tetris: 'Tetris', mines: 'Mines', poker: 'Poker', cookie: 'Cookie' };
+      var names = { snake: 'Snake', tetris: 'Tetris', mines: 'Mines', poker: 'Poker', cookie: 'Cookie', sprint: '40L', cheese18: 'Cheese 18', cheese100: 'Cheese 100' };
       return Object.keys(best || {}).map(function (g) {
-        return (names[g] || g) + ' ' + formatCount(best[g]);
+        return (names[g] || g) + ' ' + (TIMED_BOARDS[g] ? fmtRaceTime(best[g]) : formatCount(best[g]));
       }).join(', ');
     }
 
     function formatCount(n) {
+      if (n >= 1e9) return fmtScore(n).replace(/\.0(?=[a-z])/, '');
       if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + 'm';
       if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
       return String(n);
@@ -2869,8 +2872,8 @@
         seen[key] = true;
         var row = rowFor(person);
 
-        setText(row.meta, (person.online ? 'here now' : 'last seen ' + relativeTime(person.lastAt)) +
-          ' · first seen ' + relativeTime(person.firstAt) +
+        setText(row.meta, (person.online ? 'here now' : 'last seen ' + (person.lastAt ? relativeTime(person.lastAt) : 'earlier')) +
+          ' · first seen ' + (person.firstAt ? relativeTime(person.firstAt) : 'earlier') +
           ' · ' + person.devices + (person.devices === 1 ? ' device' : ' devices') +
           ' · ' + person.messages + (person.messages === 1 ? ' message' : ' messages') +
           (person.messagesToday ? ' (' + person.messagesToday + ' today)' : ''));
@@ -3128,7 +3131,9 @@
     if (secs < 45) return 'just now';
     var mins = Math.round(secs / 60);
     if (mins < 60) return mins + 'm ago';
-    return Math.round(mins / 60) + 'h ago';
+    var hours = Math.round(mins / 60);
+    if (hours < 48) return hours + 'h ago';
+    return Math.round(hours / 24) + 'd ago';
   }
 
   function buildFeedRow(e) {
@@ -3230,17 +3235,30 @@
   var lbRest = document.getElementById('lb-rest');
   var lbEmpty = document.getElementById('lb-empty');
   var GAME_LABELS = { snake: 'Snake', tetris: 'Tetris', mines: 'Minesweeper', doom: 'Doom', poker: 'Poker', cookie: 'Cookie Clicker' };
+  var TIMED_BOARDS = { sprint: true, cheese18: true, cheese100: true };
   var activeGame = 'snake';
   var lastScores = {};
-  var lastSubmitted = { snake: 0, tetris: 0, mines: 0, poker: 0, cookie: 0 };
+  var lastSubmitted = {};
 
   gamesBack.addEventListener('click', function () { showView('chat'); });
 
+  var SHORT_SUFFIXES = ['', 'k', 'm', 'b', 't', 'qa', 'qi', 'sx', 'sp', 'oc', 'no', 'dc', 'ud', 'dd', 'td', 'qad', 'qid', 'sxd', 'spd', 'ocd', 'nod', 'vg'];
+
   function fmtScore(n) {
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'b';
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'm';
-    if (n >= 1e4) return Math.round(n / 1e3) + 'k';
-    return String(Math.floor(n));
+    if (!(n >= 1e4)) return String(Math.floor(n || 0));
+    if (n < 999500) return Math.round(n / 1e3) + 'k';
+    var tier = Math.min(Math.floor(Math.log10(n) / 3), SHORT_SUFFIXES.length - 1);
+    var v = n / Math.pow(1000, tier);
+    if (v >= 999.95 && tier < SHORT_SUFFIXES.length - 1) { tier++; v /= 1000; }
+    return v.toFixed(1) + SHORT_SUFFIXES[tier];
+  }
+
+  function lbBoard() {
+    return activeGame === 'tetris' ? T_MODES[tCfg.mode].board : activeGame;
+  }
+
+  function fmtBoardScore(board, n) {
+    return TIMED_BOARDS[board] ? fmtRaceTime(n) : fmtScore(n);
   }
 
   function isMe(name) {
@@ -3253,7 +3271,10 @@
   }
 
   function renderActiveLb() {
-    lbGameLabel.textContent = GAME_LABELS[activeGame] || activeGame;
+    var board = lbBoard();
+    lbGameLabel.textContent = activeGame === 'tetris' && board !== 'tetris'
+      ? 'Tetris · ' + T_MODES[tCfg.mode].label
+      : GAME_LABELS[activeGame] || activeGame;
     lbPodium.innerHTML = '';
     lbRest.innerHTML = '';
     if (activeGame === 'doom') {
@@ -3262,7 +3283,7 @@
       return;
     }
     lbEmpty.innerHTML = 'No champions yet.<br>Set the first score.';
-    var list = lastScores[activeGame] || [];
+    var list = lastScores[board] || [];
     lbEmpty.hidden = list.length > 0;
 
     [1, 0, 2].forEach(function (idx) {
@@ -3282,7 +3303,7 @@
       name.textContent = row.username;
       var val = document.createElement('b');
       val.className = 'podium-score';
-      val.textContent = fmtScore(row.score);
+      val.textContent = fmtBoardScore(board, row.score);
       card.appendChild(medal);
       card.appendChild(img);
       card.appendChild(name);
@@ -3300,7 +3321,7 @@
       name.className = 'lb-name';
       name.textContent = row.username;
       var val = document.createElement('b');
-      val.textContent = fmtScore(row.score);
+      val.textContent = fmtBoardScore(board, row.score);
       li.appendChild(rank);
       li.appendChild(name);
       li.appendChild(val);
@@ -3319,7 +3340,9 @@
 
   async function submitScore(game, score) {
     score = Math.floor(score);
-    if (!(score > 0) || score <= lastSubmitted[game]) return;
+    if (!(score > 0)) return;
+    var prev = lastSubmitted[game];
+    if (prev && (TIMED_BOARDS[game] ? score >= prev : score <= prev)) return;
     lastSubmitted[game] = score;
     try {
       var res = await fetch('/api/games/score', {
@@ -3345,11 +3368,14 @@
       bindCapture = null;
     }
     activeGame = name;
+    document.body.dataset.game = name;
     gameTabs.forEach(function (t) { t.classList.toggle('is-active', t.dataset.game === name); });
     ['snake', 'tetris', 'mines', 'doom', 'poker', 'cookie'].forEach(function (g) {
       document.getElementById('stage-' + g).hidden = g !== name;
     });
     renderActiveLb();
+    if (name === 'cookie' && ck) ckRenderAll();
+    else ckHideTip();
     nudgePresence();
   }
 
@@ -3359,8 +3385,7 @@
 
   function enterGames() {
     gamesWho.textContent = myUsername || '—';
-    loadCookieState();
-    startCookieLoop();
+    ckEnter();
     loadTetrisCfg();
     initPoker();
     if (!minesBuilt) newMines();
@@ -3374,8 +3399,7 @@
     stopMines();
     stopDoom();
     stopPoker(true);
-    submitScore('cookie', cookie.total);
-    stopCookieLoop();
+    ckLeave();
     stopSpotifyPolling();
   }
 
@@ -4987,6 +5011,17 @@
   var tDasVal = document.getElementById('t-das-val');
   var tArrInput = document.getElementById('t-arr');
   var tArrVal = document.getElementById('t-arr-val');
+  var tSdfInput = document.getElementById('t-sdf');
+  var tSdfVal = document.getElementById('t-sdf-val');
+  var tModesEl = document.getElementById('t-modes');
+  var tetrisTimeEl = document.getElementById('tetris-time');
+  var tetrisLeftEl = document.getElementById('tetris-left');
+  var tetrisLeftLabel = document.getElementById('tetris-left-label');
+  var tetrisSurvivedEl = document.getElementById('tetris-survived');
+  var tetrisPiecesEl = document.getElementById('tetris-pieces');
+  var tetrisPpsEl = document.getElementById('tetris-pps');
+  var tetrisFinesseEl = document.getElementById('tetris-finesse');
+  var tModeRows = Array.prototype.slice.call(document.querySelectorAll('#stage-tetris [data-modes]'));
 
   var T_COLS = 10;
   var T_ROWS = 20;
@@ -4998,6 +5033,16 @@
   // to how far the piece has actually fallen, spamming rotate ratchets it up
   // the board: every kick lifts it, and being airborne again clears the lock.
   var T_MAX_KICK_RISE = 2;
+
+  var T_MODES = {
+    survival: { label: 'Survival', board: 'tetris', hint: 'survive as long as you can · clears, combos, b2b and T-spins score big' },
+    sprint: { label: '40 Lines', board: 'sprint', lines: 40, hint: 'clear 40 lines as fast as you can' },
+    cheese18: { label: 'Cheese 18', board: 'cheese18', garbage: 18, hint: 'dig out 18 rows of garbage as fast as you can' },
+    cheese100: { label: 'Cheese 100', board: 'cheese100', garbage: 100, hint: 'dig out 100 rows of garbage · ten on screen at a time' },
+  };
+  var T_GARBAGE_COLOR = '#646a78';
+  var T_CHEESE_ON_SCREEN = 10;
+  var T_SURVIVAL_POINTS = 10;
 
   var T_DEFS = {
     I: { color: '#41c6d8', size: 4, cells: [[0, 1], [1, 1], [2, 1], [3, 1]] },
@@ -5057,7 +5102,7 @@
     left: 'ArrowLeft', right: 'ArrowRight', soft: 'ArrowDown', hard: 'Space',
     cw: 'ArrowUp', ccw: 'KeyZ', r180: 'KeyA', hold: 'CapsLock',
   };
-  var tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33 };
+  var tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33, sdf: 20, mode: 'survival', best: {} };
   var bindCapture = null;
 
   function tetrisCfgKey() {
@@ -5065,7 +5110,7 @@
   }
 
   function loadTetrisCfg() {
-    tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33 };
+    tCfg = { binds: Object.assign({}, T_DEFAULT_BINDS), das: 170, arr: 33, sdf: 20, mode: 'survival', best: {} };
     try {
       var raw = prefs.get(tetrisCfgKey());
       if (raw) {
@@ -5078,12 +5123,20 @@
           }
           if (p.das >= 67 && p.das <= 300) tCfg.das = p.das;
           if (p.arr >= 0 && p.arr <= 83) tCfg.arr = p.arr;
+          if (p.sdf >= 5 && p.sdf <= 41) tCfg.sdf = p.sdf;
+          if (T_MODES[p.mode]) tCfg.mode = p.mode;
+          if (p.best && typeof p.best === 'object') {
+            Object.keys(T_MODES).forEach(function (m) {
+              if (p.best[m] > 0) tCfg.best[m] = p.best[m];
+            });
+          }
         }
       }
     } catch (e) { /* defaults */ }
     tKeysUserEl.textContent = myUsername || '';
     buildBindRows();
     refreshTuning();
+    setTetrisMode(tCfg.mode);
   }
 
   function saveTetrisCfg() {
@@ -5135,9 +5188,58 @@
   function refreshTuning() {
     tDasInput.value = String(tCfg.das);
     tArrInput.value = String(tCfg.arr);
+    tSdfInput.value = String(tCfg.sdf);
     tDasVal.textContent = tCfg.das + 'ms';
     tArrVal.textContent = tCfg.arr + 'ms';
+    tSdfVal.textContent = sdfLabel(tCfg.sdf);
   }
+
+  function sdfLabel(v) { return v > 40 ? '∞' : v + '×'; }
+
+  function fmtRaceTime(ms) {
+    ms = Math.max(0, Math.floor(ms));
+    var m = Math.floor(ms / 60000);
+    var sec = Math.floor(ms / 1000) % 60;
+    var milli = ms % 1000;
+    return m + ':' + (sec < 10 ? '0' : '') + sec + '.' + ('00' + milli).slice(-3);
+  }
+
+  function fmtClock(ms) {
+    var total = Math.floor(ms / 1000);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor(total / 60) % 60;
+    var sec = total % 60;
+    return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+
+  function tModeHint(mode) {
+    var best = tCfg.best[mode];
+    return T_MODES[mode].hint + (best ? ' · your best ' + fmtRaceTime(best) : '');
+  }
+
+  function setTetrisMode(mode) {
+    if (!T_MODES[mode]) mode = 'survival';
+    tCfg.mode = mode;
+    Array.prototype.forEach.call(tModesEl.querySelectorAll('button'), function (b) {
+      b.classList.toggle('is-active', b.dataset.mode === mode);
+    });
+    tModeRows.forEach(function (row) {
+      row.hidden = row.dataset.modes.split(' ').indexOf(mode) === -1;
+    });
+    tetrisLeftLabel.textContent = T_MODES[mode].garbage ? 'garbage' : 'left';
+    if (!tetris) {
+      tetrisMsg.textContent = tModeHint(mode);
+      updateTetrisHud();
+    }
+    if (activeGame === 'tetris') renderActiveLb();
+  }
+
+  tModesEl.addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-mode]');
+    if (!btn || tetris) return;
+    setTetrisMode(btn.dataset.mode);
+    saveTetrisCfg();
+  });
 
   tDasInput.addEventListener('input', function () {
     tCfg.das = Number(tDasInput.value);
@@ -5147,6 +5249,11 @@
   tArrInput.addEventListener('input', function () {
     tCfg.arr = Number(tArrInput.value);
     tArrVal.textContent = tCfg.arr + 'ms';
+    saveTetrisCfg();
+  });
+  tSdfInput.addEventListener('input', function () {
+    tCfg.sdf = Number(tSdfInput.value);
+    tSdfVal.textContent = sdfLabel(tCfg.sdf);
     saveTetrisCfg();
   });
 
@@ -5230,6 +5337,7 @@
     tetris.lockAcc = 0;
     tetris.lockResets = 0;
     tetris.lastMoveRotation = false;
+    tetris.pieceInputs = 0;
     if (tCollide(tetris.piece.x, tetris.piece.y, 0)) {
       endTetris();
       return false;
@@ -5307,6 +5415,119 @@
     return out;
   }
 
+  // Fewest key presses that put each piece in each column and orientation on an
+  // open board: taps, a DAS to either wall, and the three rotations, each one
+  // press. Orientations that make the same shape (S, Z, I and O) count as one.
+  var T_FINESSE = null;
+
+  function tShapeKey(type, rot) {
+    var cells = T_SHAPES[type][rot];
+    var minX = 9, minY = 9;
+    cells.forEach(function (c) { minX = Math.min(minX, c[0]); minY = Math.min(minY, c[1]); });
+    return cells.map(function (c) { return (c[0] - minX) + ',' + (c[1] - minY); }).sort().join(' ');
+  }
+
+  function tLeftEdge(type, rot) {
+    return Math.min.apply(null, T_SHAPES[type][rot].map(function (c) { return c[0]; }));
+  }
+
+  function buildFinesse() {
+    T_FINESSE = {};
+    Object.keys(T_DEFS).forEach(function (type) {
+      var fits = function (x, rot) {
+        return T_SHAPES[type][rot].every(function (c) { return x + c[0] >= 0 && x + c[0] < T_COLS; });
+      };
+      var turn = function (x, rot, delta) {
+        var newRot = (rot + delta + 4) % 4;
+        var kicks = delta === 2 ? KICKS_180 : (type === 'I' ? KICKS_I : KICKS_JLSTZ)[rot + '>' + newRot];
+        for (var i = 0; i < kicks.length; i++) {
+          if (fits(x + kicks[i][0], newRot)) return [x + kicks[i][0], newRot];
+        }
+        return null;
+      };
+      var table = {};
+      var start = [type === 'O' ? 4 : 3, 0];
+      var seen = {};
+      seen[start.join(':')] = true;
+      var queue = [[start[0], start[1], 0]];
+      while (queue.length) {
+        var st = queue.shift();
+        var x = st[0], rot = st[1], cost = st[2];
+        var key = tShapeKey(type, rot) + '@' + (x + tLeftEdge(type, rot));
+        if (!(key in table)) table[key] = cost;
+        var next = [];
+        if (fits(x - 1, rot)) next.push([x - 1, rot]);
+        if (fits(x + 1, rot)) next.push([x + 1, rot]);
+        var lx = x; while (fits(lx - 1, rot)) lx--;
+        var rx = x; while (fits(rx + 1, rot)) rx++;
+        next.push([lx, rot], [rx, rot]);
+        if (type !== 'O') {
+          [1, -1, 2].forEach(function (d) { var r = turn(x, rot, d); if (r) next.push(r); });
+        }
+        next.forEach(function (n) {
+          var k = n[0] + ':' + n[1];
+          if (!seen[k]) { seen[k] = true; queue.push([n[0], n[1], cost + 1]); }
+        });
+      }
+      T_FINESSE[type] = table;
+    });
+  }
+
+  // Only pieces that could have been hard-dropped straight into place are
+  // judged; a tuck or a spin under an overhang has no finesse to fault.
+  function tCheckFinesse() {
+    var t = tetris;
+    var p = t.piece;
+    if (!T_FINESSE) buildFinesse();
+    var tops = {};
+    T_SHAPES[p.type][p.rot].forEach(function (c) {
+      var bx = p.x + c[0];
+      var by = p.y + c[1];
+      if (!(bx in tops) || by < tops[bx]) tops[bx] = by;
+    });
+    for (var col in tops) {
+      for (var y = 0; y < tops[col]; y++) {
+        if (t.grid[y][Number(col)]) return;
+      }
+    }
+    var best = T_FINESSE[p.type][tShapeKey(p.type, p.rot) + '@' + (p.x + tLeftEdge(p.type, p.rot))];
+    if (best !== undefined && t.pieceInputs > best) t.finesse += t.pieceInputs - best;
+  }
+
+  function tGarbageRow() {
+    var hole;
+    do { hole = Math.floor(Math.random() * T_COLS); } while (hole === tetris.lastHole);
+    tetris.lastHole = hole;
+    var row = new Array(T_COLS).fill(T_GARBAGE_COLOR);
+    row[hole] = null;
+    return row;
+  }
+
+  // Garbage rises from the floor; anything pushed off the top is a top out.
+  function tRaiseGarbage(n) {
+    var ok = true;
+    for (var i = 0; i < n; i++) {
+      if (tetris.grid[0].some(Boolean)) ok = false;
+      tetris.grid.shift();
+      tetris.gRows.shift();
+      tetris.grid.push(tGarbageRow());
+      tetris.gRows.push(true);
+      tetris.garbageSpawned++;
+    }
+    return ok;
+  }
+
+  function tRefillCheese() {
+    var mode = T_MODES[tetris.mode];
+    var onBoard = tetris.gRows.filter(Boolean).length;
+    var add = Math.min(mode.garbage - tetris.garbageSpawned, T_CHEESE_ON_SCREEN - onBoard);
+    return add > 0 ? tRaiseGarbage(add) : true;
+  }
+
+  function tRaceMs() {
+    return tetris ? performance.now() - tetris.startedAt : 0;
+  }
+
   function flashAction(text) {
     tetrisActionEl.textContent = text;
     tetrisActionEl.classList.remove('is-flash');
@@ -5327,6 +5548,9 @@
       if (tFrontCornersFilled(p.x, p.y, p.rot) < 2 && tetris.lastKickIndex !== 4) tspinMini = true;
     }
 
+    tCheckFinesse();
+    tetris.pieces++;
+
     var over = false;
     cells.forEach(function (c) {
       var bx = p.x + c[0];
@@ -5337,14 +5561,19 @@
     if (over) { endTetris(); return; }
 
     var cleared = 0;
+    var garbageCleared = 0;
     for (var y = T_ROWS - 1; y >= 0; y--) {
       if (tetris.grid[y].every(Boolean)) {
+        if (tetris.gRows[y]) garbageCleared++;
         tetris.grid.splice(y, 1);
         tetris.grid.unshift(new Array(T_COLS).fill(null));
+        tetris.gRows.splice(y, 1);
+        tetris.gRows.unshift(false);
         cleared++;
         y++;
       }
     }
+    var perfect = cleared > 0 && tetris.grid.every(function (row) { return !row.some(Boolean); });
 
     var names = ['', 'SINGLE', 'DOUBLE', 'TRIPLE', 'QUAD'];
     var action = '';
@@ -5376,12 +5605,23 @@
     } else {
       tetris.combo = -1;
     }
+    if (perfect) {
+      base += (cleared === 4 && tetris.b2bCount > 0 ? 3200 : [0, 800, 1200, 1800, 2000][cleared]) * tetris.level;
+      action = (action ? action + ' · ' : '') + 'PERFECT CLEAR';
+    }
     tetris.score += base;
     tetris.lines += cleared;
-    tetris.level = Math.floor(tetris.lines / 10) + 1;
+    if (tetris.mode === 'survival') tetris.level = Math.floor(tetris.lines / 10) + 1;
     if (action) flashAction(action);
 
     tetris.holdUsed = false;
+    var mode = T_MODES[tetris.mode];
+    if (mode.lines && tetris.lines >= mode.lines) { finishTetris(); return; }
+    if (mode.garbage) {
+      tetris.garbageLeft -= garbageCleared;
+      if (tetris.garbageLeft <= 0) { finishTetris(); return; }
+      if (!tRefillCheese()) { endTetris(); return; }
+    }
     updateTetrisHud();
     tSpawnFromQueue();
   }
@@ -5392,6 +5632,23 @@
     tetrisLevelEl.textContent = String(tetris ? tetris.level : 1);
     tetrisComboEl.textContent = tetris && tetris.combo > 0 ? '×' + tetris.combo : '—';
     tetrisB2bEl.textContent = tetris && tetris.b2bCount > 0 ? '×' + tetris.b2bCount : '—';
+    var mode = T_MODES[tetris ? tetris.mode : tCfg.mode];
+    var left = mode.lines ? mode.lines - (tetris ? tetris.lines : 0) : mode.garbage ? (tetris ? tetris.garbageLeft : mode.garbage) : 0;
+    tetrisLeftEl.textContent = String(Math.max(0, left));
+    tetrisPiecesEl.textContent = String(tetris ? tetris.pieces : 0);
+    tetrisFinesseEl.textContent = String(tetris ? tetris.finesse : 0);
+    updateTetrisClock();
+  }
+
+  function updateTetrisClock() {
+    var ms = tetris ? tRaceMs() : 0;
+    if (tetris && tetris.doneMs) ms = tetris.doneMs;
+    var race = fmtRaceTime(ms);
+    if (tetrisTimeEl.textContent !== race) tetrisTimeEl.textContent = race;
+    var clock = fmtClock(ms);
+    if (tetrisSurvivedEl.textContent !== clock) tetrisSurvivedEl.textContent = clock;
+    var pps = tetris && ms > 0 ? (tetris.pieces / (ms / 1000)).toFixed(2) : '0.00';
+    if (tetrisPpsEl.textContent !== pps) tetrisPpsEl.textContent = pps;
   }
 
   function tStep(dt) {
@@ -5413,8 +5670,29 @@
       }
     }
 
+    if (t.mode === 'survival') {
+      t.survivedAcc += dt;
+      if (t.survivedAcc >= 1000) {
+        var secs = Math.floor(t.survivedAcc / 1000);
+        t.survivedAcc -= secs * 1000;
+        t.score += secs * T_SURVIVAL_POINTS * t.level;
+        updateTetrisHud();
+      }
+    }
+
     var delay = tGravityDelay();
-    if (t.softHeld) delay = Math.max(delay / 20, 10);
+    if (t.softHeld && tCfg.sdf > 40) {
+      var drop = tGhostY() - p.y;
+      if (drop > 0) {
+        p.y += drop;
+        if (p.y > t.lowestY) { t.lowestY = p.y; t.lockResets = 0; }
+        t.lastMoveRotation = false;
+        t.score += drop;
+        updateTetrisHud();
+      }
+    } else if (t.softHeld) {
+      delay = Math.max(delay / tCfg.sdf, 2);
+    }
     t.gravAcc += dt;
     while (t.gravAcc >= delay) {
       t.gravAcc -= delay;
@@ -5540,6 +5818,7 @@
     tetrisLastTs = ts;
     tStep(dt);
     if (tetris) {
+      updateTetrisClock();
       drawTetris();
       tetrisRaf = requestAnimationFrame(tetrisFrame);
     } else {
@@ -5549,14 +5828,20 @@
 
   function startTetris() {
     var grid = [];
-    for (var y = 0; y < T_ROWS; y++) grid.push(new Array(T_COLS).fill(null));
+    var gRows = [];
+    for (var y = 0; y < T_ROWS; y++) { grid.push(new Array(T_COLS).fill(null)); gRows.push(false); }
+    var mode = T_MODES[tCfg.mode] ? tCfg.mode : 'survival';
     tetris = {
       grid: grid, bag: [], queue: [], piece: null, hold: null, holdUsed: false,
       score: 0, lines: 0, level: 1, combo: -1, b2b: false, b2bCount: 0,
       gravAcc: 0, lockAcc: 0, lockResets: 0, lowestY: -1,
       lastMoveRotation: false, lastKickIndex: 0,
       dirHeld: 0, leftHeld: false, rightHeld: false, dasAcc: 0, arrAcc: 0, softHeld: false,
+      mode: mode, startedAt: performance.now(), doneMs: 0, survivedAcc: 0,
+      pieces: 0, pieceInputs: 0, finesse: 0,
+      gRows: gRows, garbageLeft: T_MODES[mode].garbage || 0, garbageSpawned: 0, lastHole: -1,
     };
+    if (T_MODES[mode].garbage) tRefillCheese();
     tRefillQueue();
     tSpawnFromQueue();
     updateTetrisHud();
@@ -5570,20 +5855,46 @@
 
   function endTetris() {
     var finalScore = tetris ? tetris.score : 0;
+    var mode = tetris ? tetris.mode : 'survival';
+    var left = tetris ? Math.max(0, T_MODES[mode].lines ? T_MODES[mode].lines - tetris.lines : tetris.garbageLeft) : 0;
     tetris = null;
     if (tetrisRaf) { cancelAnimationFrame(tetrisRaf); tetrisRaf = null; }
-    tetrisMsg.textContent = 'top out · score ' + finalScore;
     tetrisStartBtn.textContent = 'play again';
     tetrisOverlay.hidden = false;
-    submitScore('tetris', finalScore);
+    if (mode === 'survival') {
+      tetrisMsg.textContent = 'top out · score ' + finalScore;
+      submitScore('tetris', finalScore);
+    } else {
+      tetrisMsg.textContent = 'topped out · ' + left + (T_MODES[mode].garbage ? ' garbage' : ' lines') + ' to go';
+    }
+  }
+
+  function finishTetris() {
+    var t = tetris;
+    var ms = Math.max(1, Math.round(tRaceMs()));
+    t.doneMs = ms;
+    updateTetrisHud();
+    drawTetris();
+    var mode = T_MODES[t.mode];
+    var best = tCfg.best[t.mode];
+    var isBest = !best || ms < best;
+    if (isBest) { tCfg.best[t.mode] = ms; saveTetrisCfg(); }
+    var pps = (t.pieces / (ms / 1000)).toFixed(2);
+    tetrisMsg.textContent = mode.label.toLowerCase() + ' · ' + fmtRaceTime(ms) + ' · ' + t.pieces + ' pieces · ' + pps + ' pps' +
+      (t.mode === 'sprint' ? ' · ' + t.finesse + ' finesse' : '') + (isBest ? ' · new best' : ' · best ' + fmtRaceTime(best));
+    tetris = null;
+    if (tetrisRaf) { cancelAnimationFrame(tetrisRaf); tetrisRaf = null; }
+    tetrisStartBtn.textContent = 'play again';
+    tetrisOverlay.hidden = false;
+    submitScore(mode.board, ms);
   }
 
   function stopTetris(abandon) {
     if (!tetris) return;
-    if (abandon && tetris.score > 0) submitScore('tetris', tetris.score);
+    if (abandon && tetris.mode === 'survival' && tetris.score > 0) submitScore('tetris', tetris.score);
     tetris = null;
     if (tetrisRaf) { cancelAnimationFrame(tetrisRaf); tetrisRaf = null; }
-    tetrisMsg.textContent = 'move · rotate · hold · hard drop — see controls';
+    tetrisMsg.textContent = tModeHint(tCfg.mode);
     tetrisStartBtn.textContent = 'play';
     tetrisOverlay.hidden = false;
   }
@@ -6363,147 +6674,1307 @@
   // Cookie clicker
   // ---------------------------------------------------------------------
 
-  var cookieBtn = document.getElementById('cookie-btn');
-  var cookieShopEl = document.getElementById('cookie-shop');
-  var cookieCountEl = document.getElementById('cookie-count');
-  var cookieCpsEl = document.getElementById('cookie-cps');
-  var cookieTotalEl = document.getElementById('cookie-total');
-  var COOKIE_BUILDINGS = [
-    { id: 'cursor', name: 'Cursor', base: 15, cps: 0.1 },
-    { id: 'grandma', name: 'Grandma', base: 100, cps: 1 },
-    { id: 'farm', name: 'Farm', base: 1100, cps: 8 },
-    { id: 'factory', name: 'Factory', base: 12000, cps: 47 },
-    { id: 'bank', name: 'Bank', base: 140000, cps: 260 },
-    { id: 'temple', name: 'Temple', base: 2000000, cps: 1400 },
-  ];
-  var cookie = { cookies: 0, total: 0, owned: {} };
-  var cookieTimer = null;
-  var cookieDirty = false;
-  var cookieSubmitCounter = 0;
+  var ckStage = document.getElementById('stage-cookie');
+  var ckCookieBtn = document.getElementById('ck-cookie');
+  var ckCookiesEl = document.getElementById('ck-cookies');
+  var ckCpsEl = document.getElementById('ck-cps');
+  var ckBakeryEl = document.getElementById('ck-bakery');
+  var ckBuffsEl = document.getElementById('ck-buffs');
+  var ckNoteEl = document.getElementById('ck-note');
+  var ckQtyEl = document.getElementById('ck-qty');
+  var ckUpgradesEl = document.getElementById('ck-upgrades');
+  var ckBuildingsEl = document.getElementById('ck-buildings');
+  var ckStatsEl = document.getElementById('ck-stats');
+  var ckAchGrid = document.getElementById('ck-ach-grid');
+  var ckAchNote = document.getElementById('ck-ach-note');
+  var ckAchCount = document.getElementById('ck-ach-count');
+  var ckPrestigeEl = document.getElementById('ck-prestige');
+  var ckPrestigeBonus = document.getElementById('ck-prestige-bonus');
+  var ckLegacyNote = document.getElementById('ck-legacy-note');
+  var ckLegacyBar = document.getElementById('ck-legacy-bar');
+  var ckLegacyNext = document.getElementById('ck-legacy-next');
+  var ckAscendBtn = document.getElementById('ck-ascend');
+  var ckTip = document.getElementById('ck-tip');
+  var ckToasts = document.getElementById('ck-toasts');
+  var ckTabs = Array.prototype.slice.call(ckStage.querySelectorAll('.ck-tab'));
 
-  function cookieStorageKey() {
+  // Golden cookies every 5–9 minutes; true makes it 30–60 seconds for testing.
+  var CK_GOLDEN_TEST = false;
+
+  var CK_BUILDINGS = [
+    { id: 'cursor', name: 'Cursor', plural: 'Cursors', icon: '👆', base: 15, cps: 0.1, desc: 'Auto-clicks the big cookie.' },
+    { id: 'grandma', name: 'Grandma', plural: 'Grandmas', icon: '👵', base: 100, cps: 1, desc: 'A nice grandma to bake more cookies.' },
+    { id: 'farm', name: 'Farm', plural: 'Farms', icon: '🌾', base: 1100, cps: 8, desc: 'Grows cookie plants from cookie seeds.' },
+    { id: 'mine', name: 'Mine', plural: 'Mines', icon: '⛏️', base: 12000, cps: 47, desc: 'Mines out cookie dough and chocolate chips.' },
+    { id: 'factory', name: 'Factory', plural: 'Factories', icon: '🏭', base: 130000, cps: 260, desc: 'Mass-produces cookies on assembly lines.' },
+    { id: 'bank', name: 'Bank', plural: 'Banks', icon: '🏦', base: 1.4e6, cps: 1400, desc: 'Generates cookie loans and handles financial assets.' },
+    { id: 'temple', name: 'Temple', plural: 'Temples', icon: '🛕', base: 2e7, cps: 7800, desc: 'Full of good, baker-loving deities.' },
+    { id: 'wizard', name: 'Wizard Tower', plural: 'Wizard towers', icon: '🧙', base: 3.3e8, cps: 44000, desc: 'Summons cookies out of thin air using magic.' },
+    { id: 'shipment', name: 'Shipment', plural: 'Shipments', icon: '🚀', base: 5.1e9, cps: 260000, desc: 'Brings fresh ingredients from the cookie planet.' },
+    { id: 'alchemy', name: 'Alchemy Lab', plural: 'Alchemy labs', icon: '⚗️', base: 7.5e10, cps: 1.6e6, desc: 'Transmutes gold directly into cookies.' },
+    { id: 'portal', name: 'Portal', plural: 'Portals', icon: '🌀', base: 1e12, cps: 1e7, desc: 'Opens a doorway to the terrifying Cookieverse.' },
+    { id: 'timemachine', name: 'Time Machine', plural: 'Time machines', icon: '⏳', base: 1.4e13, cps: 6.5e7, desc: 'Brings cookies from the past before they were even eaten.' },
+    { id: 'antimatter', name: 'Antimatter Condenser', plural: 'Antimatter condensers', icon: '⚛️', base: 1.7e14, cps: 4.3e8, desc: "Condenses the universe's antimatter into unstable cookies." },
+    { id: 'prism', name: 'Prism', plural: 'Prisms', icon: '🌈', base: 2.1e15, cps: 2.9e9, desc: 'Converts pure light into delicious cookies.' },
+    { id: 'chancemaker', name: 'Chancemaker', plural: 'Chancemakers', icon: '🍀', base: 2.6e16, cps: 2.1e10, desc: 'Generates cookies out of thin air through sheer luck.' },
+    { id: 'fractal', name: 'Fractal Engine', plural: 'Fractal engines', icon: '❄️', base: 3.1e17, cps: 1.5e11, desc: 'Turns cookies into even more cookies recursively.' },
+    { id: 'console', name: 'JavaScript Console', plural: 'JavaScript consoles', icon: '💻', base: 7.1e19, cps: 1.1e12, desc: 'Programs cookies directly into the source code.' },
+    { id: 'idleverse', name: 'Idleverse', plural: 'Idleverses', icon: '🌌', base: 1.2e22, cps: 8.3e12, desc: 'Hijacks production lines from alternate, parallel idle universes.' },
+    { id: 'cortex', name: 'Cortex Baker', plural: 'Cortex bakers', icon: '🧠', base: 1.9e24, cps: 6.4e13, desc: 'Mastermind brains designed to dream up cookies.' },
+    { id: 'you', name: 'You', plural: 'Clones of you', icon: '👥', base: 5.4e26, cps: 5.1e14, desc: 'Cloning yourself to generate cookies through sheer willpower.' },
+  ];
+
+  var CK_TIER_OWNED = [1, 5, 25, 50, 100, 150, 200, 250];
+  var CK_TIER_PRICE = [10, 50, 500, 50000, 5e6, 5e8, 5e11, 5e14];
+  var CK_TIER_NAMES = {
+    grandma: ['Forwards from grandma', 'Steel-plated rolling pins', 'Lubricated dentures', 'Prune juice', 'Double-thick glasses', 'Aging agents', 'Xtreme walkers', 'The Unbridling'],
+    farm: ['Cheap hoes', 'Fertilizer', 'Cookie trees', 'Genetically-modified cookies', 'Gingerbread scarecrows', 'Pulsar sprinklers', 'Fudge fungus', 'Wheat triffids'],
+    mine: ['Sugar gas', 'Megadrill', 'Ultradrill', 'Ultimadrill', 'H-bomb mining', 'Coreforge', 'Planetsplitters', 'Canola oil wells'],
+    factory: ['Sturdier conveyor belts', 'Child labor', 'Sweatshop', 'Radium reactors', 'Recombobulators', 'Deep-bake process', 'Cyborg workforce', '78-hour days'],
+    bank: ['Taller tellers', 'Scissor-resistant credit cards', 'Acid-proof vaults', 'Chocolate coins', 'Exponential interest rates', 'Financial zen', 'Way of the wallet', 'The stuff rationale'],
+    temple: ['Golden idols', 'Sacrifices', 'Delicious blessing', 'Sun festival', 'Enlarged pantheon', 'Great Baker in the sky', 'Creation myth', 'Theocracy'],
+    wizard: ['Pointier hats', 'Beardlier beards', 'Ancient grimoires', 'Kitchen curses', 'School of sorcery', 'Dark formulas', 'Cookiemancy', 'Rabbit trick'],
+    shipment: ['Vanilla nebulae', 'Wormholes', 'Frequent flyer', 'Warp drive', 'Chocolate monoliths', 'Generation ship', 'Dyson sphere', 'The final frontier'],
+    alchemy: ['Antimony', 'Essence of dough', 'True chocolate', 'Ambrosia', 'Aqua crustulae', 'Origin crucible', 'Theory of atomic fluidity', 'Beige goo'],
+    portal: ['Ancient tablet', 'Insane oatling workers', 'Soul bond', 'Sanity dance', 'Brane transplant', 'Deity-sized portals', 'End of times back-up plan', 'Maddening chants'],
+    timemachine: ['Flux capacitors', 'Time paradox resolver', 'Quantum conundrum', 'Causality enforcer', 'Yestermorrow comparators', 'Far future enactment', 'Great loop hypothesis', 'Cookietopian moments of maybe'],
+    antimatter: ['Sugar bosons', 'String theory', 'Large macaron collider', 'Big bang bake', 'Reverse cyclotrons', 'Nanocosmics', 'The Pulse', 'Some other super-tiny fundamental particle'],
+    prism: ['Gem polish', '9th color', 'Chocolate light', 'Grainbow', 'Pure cosmic light', 'Glow-in-the-dark', 'Lux sanctorum', 'Reverse shadows'],
+    chancemaker: ['Your lucky cookie', '"All Bets Are Off" magic coin', 'Winning lottery ticket', 'Four-leaf clover field', 'A recipe book about books', 'Leprechaun village', 'Improbability drive', 'Antisuperstistronics'],
+    fractal: ['Metabakeries', 'Mandelbrown sugar', 'Fractoids', 'Nested universe theory', 'Menger sponge cake', 'One particularly good-humored cow', 'Chocolate ouroboros', 'Nested'],
+    console: ['The JavaScript console for dummies', '64bit arrays', 'Stack overflow', 'Enterprise compiler', 'Syntactic sugar', 'A nice cup of coffee', 'Just-in-time baking', 'Cookie++'],
+    idleverse: ['Manifest destiny', 'The multiverse in a nutshell', 'All-conversion', 'Multiverse agents', 'Escape plan', 'Game design', 'Sandbox universes', 'Multiverse wars'],
+    cortex: ['Principled neural shackles', 'Obey', 'A sprinkle of irrationality', 'Front and back hemispheres', 'Neural networking', 'Cosmic brainstorms', 'Megatherapy', 'Synaptic lubricant'],
+    you: ['Cloning vats', 'Energized nutrients', 'Stem cells', 'Cellular regeneration', 'Self-awareness', 'The land of dreams', 'Mitosis', 'Mirror, mirror'],
+  };
+  var CK_ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
+  var CK_CURSOR_UPS = [
+    ['Reinforced index finger', 100, 1], ['Carpal tunnel prevention cream', 500, 1], ['Ambidextrous', 10000, 10],
+    ['Thousand fingers', 1e5, 25], ['Million fingers', 1e7, 50], ['Billion fingers', 1e8, 100], ['Trillion fingers', 1e9, 150],
+    ['Quadrillion fingers', 1e10, 200], ['Quintillion fingers', 1e13, 250], ['Sextillion fingers', 1e16, 300],
+  ];
+  var CK_FINGER_MULT = [0, 0, 0, 1, 5, 10, 20, 20, 20, 20];
+  var CK_MICE = [
+    ['Plastic mouse', 5e4, 1e3], ['Iron mouse', 5e6, 1e5], ['Titanium mouse', 5e8, 1e7], ['Adamantium mouse', 5e10, 1e9],
+    ['Unobtainium mouse', 5e12, 1e11], ['Eludium mouse', 5e14, 1e13], ['Wishalloy mouse', 5e16, 1e15], ['Fantasteel mouse', 5e18, 1e17],
+    ['Nevercrack mouse', 5e20, 1e19], ['Armythril mouse', 5e22, 1e21],
+  ];
+  var CK_KITTENS = [
+    ['Kitten helpers', 9e6, 13, 0.1], ['Kitten workers', 9e9, 25, 0.125], ['Kitten engineers', 9e13, 50, 0.15],
+    ['Kitten overseers', 9e16, 75, 0.175], ['Kitten managers', 9e19, 100, 0.2], ['Kitten accountants', 9e22, 125, 0.2],
+    ['Kitten specialists', 9e25, 150, 0.2], ['Kitten experts', 9e28, 170, 0.2],
+  ];
+  var CK_FLAVORS = [
+    ['Plain cookies', 999999, 1], ['Sugar cookies', 5e6, 1], ['Oatmeal raisin cookies', 1e7, 1], ['Peanut butter cookies', 5e7, 2],
+    ['Coconut cookies', 1e8, 2], ['White chocolate cookies', 5e8, 2], ['Macadamia nut cookies', 1e9, 2], ['Double-chip cookies', 5e9, 2],
+    ['White chocolate macadamia nut cookies', 1e10, 2], ['All-chocolate cookies', 5e10, 2], ['Dark chocolate-coated cookies', 1e11, 4],
+    ['White chocolate-coated cookies', 1e11, 4], ['Eclipse cookies', 5e11, 2], ['Zebra cookies', 1e12, 2], ['Snickerdoodles', 5e12, 2],
+    ['Stroopwafels', 1e13, 2], ['Macaroons', 5e13, 2], ['Empire biscuits', 1e14, 2], ['Madeleines', 5e14, 2], ['Palmiers', 5e14, 2],
+    ['Palets', 1e15, 2], ['Sablés', 1e15, 2], ['Caramoas', 1e16, 3], ['Sagalongs', 5e16, 3], ['Shortfoils', 1e17, 3],
+    ['Win mints', 5e17, 3], ['Fig gluttons', 1e18, 3], ['Loreols', 5e18, 3], ['Jaffa cakes', 1e19, 3], ["Grease's cups", 5e19, 3],
+    ['Gingerbread men', 1e20, 4], ['Gingerbread trees', 1e21, 4], ['Pure black chocolate cookies', 1e22, 5], ['Pure white chocolate cookies', 1e23, 5],
+    ['Ladyfingers', 1e24, 3], ['Tuiles', 1e25, 3], ['Chocolate-stuffed biscuits', 1e26, 3], ['Checker cookies', 1e27, 3],
+    ['Butter cookies', 1e28, 3], ['Cream cookies', 1e29, 3], ['Gingersnaps', 1e30, 4], ['Cinnamon cookies', 1e31, 4],
+    ['Vanity cookies', 1e32, 4], ['Cigars', 1e33, 4], ['Pinwheel cookies', 1e34, 4], ['Fudge squares', 1e35, 4],
+  ];
+
+  var ck = null;
+  var ckKey = null;
+  var ckD = { baseCps: 0, clickBase: 1, mouse: 0, each: [], per: [], mult: 1, milk: 0 };
+  var ckClockOffset = 0;
+  var ckQty = '1';
+  var ckTimer = null;
+  var ckTickN = 0;
+  var ckServerDirty = false;
+  var ckLastServerSave = 0;
+  var ckSaving = null;
+  var ckLastLocalSave = 0;
+  var ckSynced = false;
+  var ckLastSync = 0;
+  var ckMigrated = false;
+  var ckGolden = null;
+  var ckGoldenAt = 0;
+  var ckPane = 'stats';
+  var ckTipFor = null;
+  var ckUpgradeSig = null;
+  var ckBuildingRows = [];
+  var ckAchTiles = {};
+  var ckStatRows = {};
+  var ckBuffChips = {};
+  var ckPops = [];
+  var ckNoteTimer = null;
+  var ckLastLb = 0;
+  var ckAscendArmed = 0;
+
+  var CK_LONG = ['', '', 'Million', 'Billion', 'Trillion', 'Quadrillion', 'Quintillion', 'Sextillion', 'Septillion', 'Octillion',
+    'Nonillion', 'Decillion', 'Undecillion', 'Duodecillion', 'Tredecillion', 'Quattuordecillion', 'Quindecillion', 'Sexdecillion',
+    'Septendecillion', 'Octodecillion', 'Novemdecillion', 'Vigintillion'];
+  var CK_SHORT = ['', 'K', 'M', 'B', 'T', 'Qa', 'Qi', 'Sx', 'Sp', 'Oc', 'No', 'Dc', 'UDc', 'DDc', 'TDc', 'QaDc', 'QiDc', 'SxDc',
+    'SpDc', 'OcDc', 'NoDc', 'Vg'];
+
+  function ckGroup(n) {
+    if (n < 100 && n % 1) return (Math.floor(n * 10) / 10).toFixed(1).replace(/\.0$/, '');
+    return Math.floor(n).toLocaleString('en-US');
+  }
+
+  // 1234567 → "1.235 Million"
+  function ckFmt(n, decimals) {
+    if (!isFinite(n)) return '∞';
+    if (n < 1e6) return ckGroup(n);
+    var tier = Math.min(Math.floor(Math.log10(n) / 3), CK_LONG.length - 1);
+    var v = n / Math.pow(1000, tier);
+    var d = decimals === undefined ? 3 : decimals;
+    if (Number(v.toFixed(d)) >= 1000 && tier < CK_LONG.length - 1) { tier++; v /= 1000; }
+    return v.toFixed(d) + ' ' + CK_LONG[tier];
+  }
+
+  // 1234567 → "1.23M"
+  function ckShort(n) {
+    if (!isFinite(n)) return '∞';
+    if (n < 1000) return ckGroup(n);
+    var tier = Math.min(Math.floor(Math.log10(n) / 3), CK_SHORT.length - 1);
+    var v = n / Math.pow(1000, tier);
+    var d = v < 10 ? 2 : v < 100 ? 1 : 0;
+    if (Number(v.toFixed(d)) >= 1000 && tier < CK_SHORT.length - 1) { tier++; v /= 1000; d = 2; }
+    return v.toFixed(d) + CK_SHORT[tier];
+  }
+
+  function ckDuration(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    var d = Math.floor(s / 86400);
+    var h = Math.floor(s / 3600) % 24;
+    var m = Math.floor(s / 60) % 60;
+    if (d) return d + 'd ' + h + 'h';
+    if (h) return h + 'h ' + m + 'm';
+    if (m) return m + 'm ' + (s % 60) + 's';
+    return (s % 60) + 's';
+  }
+
+  function ckNow() { return Date.now() + ckClockOffset; }
+
+  var CK_UPS = [];
+  var CK_UP = Object.create(null);
+
+  function ckUp(u) { CK_UPS.push(u); CK_UP[u.id] = u; }
+
+  function ckOwned(i) { return (ck.owned[CK_BUILDINGS[i].id] || 0); }
+
+  CK_CURSOR_UPS.forEach(function (c, t) {
+    ckUp({
+      id: 100 + t, name: c[0], icon: '👆', price: c[1], badge: t < 3 ? CK_ROMAN[t] : '',
+      desc: t < 3 ? 'The mouse and cursors are twice as efficient.'
+        : t === 3 ? 'The mouse and cursors gain +0.1 cookies for each non-cursor building owned.'
+          : 'Multiplies the gain from Thousand fingers by ' + CK_FINGER_MULT[t] + '.',
+      test: function () { return ckOwned(0) >= c[2]; },
+    });
+  });
+  CK_BUILDINGS.forEach(function (b, bi) {
+    if (!bi) return;
+    CK_TIER_NAMES[b.id].forEach(function (name, t) {
+      ckUp({
+        id: 100 + bi * 10 + t, name: name, icon: b.icon, price: b.base * CK_TIER_PRICE[t], badge: CK_ROMAN[t],
+        desc: b.plural + ' are twice as efficient.',
+        test: function () { return ckOwned(bi) >= CK_TIER_OWNED[t]; },
+      });
+    });
+  });
+  CK_MICE.forEach(function (m, i) {
+    ckUp({
+      id: 30 + i, name: m[0], icon: '🖱️', price: m[1], badge: CK_ROMAN[i] || '',
+      desc: 'Clicking gains +1% of your cookies per second.',
+      test: function () { return ck.handmade >= m[2]; },
+    });
+  });
+  CK_KITTENS.forEach(function (k, i) {
+    ckUp({
+      id: 50 + i, name: k[0], icon: '🐱', price: k[1], badge: CK_ROMAN[i] || '',
+      desc: 'You gain more cookies per second the more milk you have (every feat is 4% milk).',
+      test: function () { return Object.keys(ck.ach).length >= k[2]; },
+    });
+  });
+  [
+    ['Lucky day', 777777777, 7, 'Golden cookies appear twice as often and stay twice as long.', '🍀'],
+    ['Serendipity', 77777777777, 27, 'Golden cookies appear twice as often and stay twice as long.', '🔮'],
+    ['Get lucky', 77777777777777, 77, 'Golden cookie effects last twice as long.', '🎲'],
+  ].forEach(function (g, i) {
+    ckUp({
+      id: 70 + i, name: g[0], icon: g[4], price: g[1], badge: '',
+      desc: g[3],
+      test: function () { return ck.gcClicks >= g[2]; },
+    });
+  });
+  CK_FLAVORS.forEach(function (f, i) {
+    ckUp({
+      id: 300 + i, name: f[0], icon: '🍪', price: f[1], badge: '+' + f[2] + '%',
+      desc: 'Cookie production multiplier +' + f[2] + '%.',
+      test: function () { return ck.baked >= f[1] / 20; },
+    });
+  });
+
+  var CK_ACH = [];
+  var CK_ACH_BY_ID = Object.create(null);
+
+  function ckAch(id, name, icon, desc, test) {
+    var a = { id: id, name: name, icon: icon, desc: desc, test: test };
+    CK_ACH.push(a);
+    CK_ACH_BY_ID[id] = a;
+  }
+
+  function ckTotalBuildings() {
+    var n = 0;
+    CK_BUILDINGS.forEach(function (b) { n += ck.owned[b.id] || 0; });
+    return n;
+  }
+
+  [
+    [1, 'Wake and bake'], [1e3, 'Making some dough'], [1e5, 'So baked right now'], [1e6, 'Fledgling bakery'],
+    [1e8, 'Affluent bakery'], [1e9, 'World-famous bakery'], [1e10, 'Cosmic bakery'], [1e11, 'Galactic bakery'],
+    [1e12, 'Universal bakery'], [1e13, 'Timeless bakery'], [1e14, 'Infinite bakery'], [1e15, 'Immortal bakery'],
+    [1e16, "Don't stop me now"], [1e17, 'You can stop now'], [1e18, 'Cookies all the way down'], [1e19, 'Overdose'],
+    [1e20, 'How?'], [1e21, 'The land of milk and cookies'], [1e22, 'He who controls the cookies controls the universe'],
+    [1e23, 'Tonight on Hoarders'], [1e24, 'Are you gonna eat all that?'], [1e25, "We're gonna need a bigger bakery"],
+    [1e26, 'In the mouth of madness'], [1e27, 'Brought to you by the letter 🍪'],
+  ].forEach(function (a, i) {
+    ckAch(i, a[1], '🍪', 'Bake ' + ckFmt(a[0], 0) + ' cookie' + (a[0] > 1 ? 's' : '') + ' in all.', function () { return ck.bakedAll >= a[0]; });
+  });
+  [
+    [1, 'Casual baking'], [10, 'Hardcore baking'], [100, 'Steady tasty stream'], [1e3, 'Cookie monster'], [1e4, 'Mass producer'],
+    [1e5, 'Cookie vortex'], [1e6, 'Cookie pulsar'], [1e7, 'Cookie quasar'], [1e8, "Oh hey, you're still here"],
+    [1e9, "Let's never bake again"], [1e10, 'A world filled with cookies'], [1e11, 'Fast and delicious'], [1e12, 'Cookiehertz'],
+    [1e13, 'Woops, you solved world hunger'], [1e14, 'Turbopuns'], [1e15, 'Faster menner'], [1e16, "And yet you're still hungry"],
+    [1e17, 'The Abakening'], [1e18, "There's really no hard limit to how long these achievement names can be"], [1e19, 'Speed baking'],
+  ].forEach(function (a, i) {
+    ckAch(30 + i, a[1], '⚡', 'Bake ' + ckFmt(a[0], 0) + ' cookie' + (a[0] > 1 ? 's' : '') + ' per second, buffs aside.', function () { return ckD.baseCps >= a[0]; });
+  });
+  [[1e3, 'Click-tastic'], [1e4, 'Click-athlon'], [1e5, 'Click-olympics'], [1e6, 'Click-orama']].forEach(function (a, i) {
+    ckAch(50 + i, a[1], '👆', 'Click the big cookie ' + ckGroup(a[0]) + ' times.', function () { return ck.clicks >= a[0]; });
+  });
+  [[1e5, 'Handmade'], [1e8, 'Clickasmic'], [1e11, 'Clickageddon'], [1e14, 'Clicknarok'], [1e17, 'Clickastrophe']].forEach(function (a, i) {
+    ckAch(55 + i, a[1], '✋', 'Make ' + ckFmt(a[0], 0) + ' cookies by clicking.', function () { return ck.handmade >= a[0]; });
+  });
+  [[1, 'Golden cookie'], [7, 'Lucky cookie'], [27, 'A stroke of luck'], [77, 'Fortune'], [777, 'Leprechaun'], [7777, "Black cat's paw"]].forEach(function (a, i) {
+    ckAch(60 + i, a[1], '🌟', 'Click ' + ckGroup(a[0]) + ' golden cookie' + (a[0] > 1 ? 's' : '') + '.', function () { return ck.gcClicks >= a[0]; });
+  });
+  [[100, 'Builder'], [500, 'Architect'], [1000, 'Engineer'], [2000, 'Lord of Constructs'], [4000, 'Grand design']].forEach(function (a, i) {
+    ckAch(70 + i, a[1], '🏗️', 'Own ' + ckGroup(a[0]) + ' buildings.', function () { return ckTotalBuildings() >= a[0]; });
+  });
+  [[20, 'Enhancer'], [50, 'Augmenter'], [100, 'Upgrader'], [200, 'Lord of Progress']].forEach(function (a, i) {
+    ckAch(80 + i, a[1], '🔧', 'Buy ' + a[0] + ' upgrades.', function () { return Object.keys(ck.upgrades).length >= a[0]; });
+  });
+  ckAch(90, 'Welcome back', '🌙', 'Come back after an hour or more to what your bakery made without you.', function () { return false; });
+  ckAch(91, 'Sleeping on the job', '💤', 'Stay away for 8 hours while your bakery keeps baking.', function () { return false; });
+  ckAch(92, 'Mathematician', '🧮', 'Own 1 of the priciest building, 2 of the next, 4 of the next, and so on (up to 128).', function () {
+    for (var i = 0; i < CK_BUILDINGS.length; i++) {
+      if (ckOwned(CK_BUILDINGS.length - 1 - i) < Math.min(Math.pow(2, i), 128)) return false;
+    }
+    return true;
+  });
+  ckAch(93, 'Base 10', '🔟', 'Own 10 of the priciest building, 20 of the next, 30 of the next, and so on.', function () {
+    for (var i = 0; i < CK_BUILDINGS.length; i++) {
+      if (ckOwned(CK_BUILDINGS.length - 1 - i) < (i + 1) * 10) return false;
+    }
+    return true;
+  });
+  ckAch(94, 'Golden touch', '✨', 'Start a Frenzy.', function () { return false; });
+  ckAch(95, 'Rebirth', '👼', 'Ascend once.', function () { return ck.ascensions >= 1; });
+  ckAch(96, 'Resurrection', '😇', 'Ascend 5 times.', function () { return ck.ascensions >= 5; });
+  ckAch(97, 'Neverclick', '🚫', 'Bake 1 Million cookies in one ascension with 15 clicks or fewer.', function () { return ck.baked >= 1e6 && ck.runClicks <= 15; });
+  ckAch(98, 'True Neverclick', '🙅', 'Bake 1 Million cookies in one ascension without a single click.', function () { return ck.baked >= 1e6 && ck.runClicks === 0; });
+  var CK_BUILDING_FEATS = {
+    cursor: ['Click', 'Mouse wheel', 'Of Mice and Men', 'The Digital', 'Extreme polydactyly'],
+    grandma: ["Grandma's cookies", 'Sloppy kisses', 'Retirement home', 'Friend of the ancients', 'Ruler of the ancients'],
+    farm: ['Bought the farm', 'Reap what you sow', 'Farm ill', 'Perfectly peachy', 'Harvest moon'],
+    mine: ['You know the drill', 'Excavation site', 'Hollow the planet', 'Can you dig it', 'The center of the Earth'],
+    factory: ['Production chain', 'Industrial revolution', 'Global warming', 'Ultimate automation', 'Technocracy'],
+    bank: ['Pretty penny', 'Fit the bill', 'A loan in the dark', 'Need for greed', "It's the economy, stupid"],
+    temple: ['Your time to shrine', 'Shady sect', 'New-age cult', 'Organized religion', 'Fanaticism'],
+    wizard: ['Bewitched', "The sorcerer's apprentice", 'Charms and enchantments', 'Curses and maledictions', 'Magic kingdom'],
+    shipment: ['Expedition', 'Galactic highway', 'Far far away', 'Type II civilization', 'We come in peace'],
+    alchemy: ['Transmutation', 'Transmogrification', 'Gold member', 'Gild wars', 'The secrets of the universe'],
+    portal: ['A whole new world', "Now you're thinking", 'Dimensional shift', 'Brain-split', 'Realm of the Mad God'],
+    timemachine: ['Time warp', 'Alternate timeline', 'Rewriting history', 'Time duke', 'Forever and ever'],
+    antimatter: ['Antibatter', 'Quirky quarks', 'It does matter!', 'Molecular maestro', 'Walk the planck'],
+    prism: ['Lone photon', 'Dazzling glimmer', 'Blinding flash', 'Unending glow', 'Rise and shine'],
+    chancemaker: ['Lucked out', 'What are the odds', 'Grandma needs a new pair of shoes', 'Million to one shot, doc', 'As luck would have it'],
+    fractal: ['Self-contained', 'Threw you for a loop', 'The sum of its parts', 'Bears repeating', 'More of the same'],
+    console: ['F12', 'Variable success', 'No comments', 'Up to code', 'Works on my machine'],
+    idleverse: ['Parallel bakery', 'Parallel paradise', 'Everywhere at once', 'Multiverse bakers', 'All at once'],
+    cortex: ['Thinking cap', 'Food for thought', 'Mind over matter', 'Brainiac', 'Big brain energy'],
+    you: ['Me, myself and I', 'Seeing double', 'Army of me', 'Clone wars', 'There can only be many'],
+  };
+  CK_BUILDINGS.forEach(function (b, bi) {
+    [1, 50, 100, 150, 200].forEach(function (n, k) {
+      ckAch(1000 + bi * 10 + k, CK_BUILDING_FEATS[b.id][k], b.icon, 'Own ' + n + ' ' + (n > 1 ? b.plural.toLowerCase() : b.name.toLowerCase()) + '.', function () {
+        return ckOwned(bi) >= n;
+      });
+    });
+  });
+
+  function ckHas(id) { return !!ck.upgrades[id]; }
+
+  function ckRecalc() {
+    var nonCursor = ckTotalBuildings() - ckOwned(0);
+    var cursorMult = (ckHas(100) ? 2 : 1) * (ckHas(101) ? 2 : 1) * (ckHas(102) ? 2 : 1);
+    var fingers = 0;
+    if (ckHas(103)) {
+      fingers = 0.1;
+      for (var f = 4; f < CK_FINGER_MULT.length; f++) if (ckHas(100 + f)) fingers *= CK_FINGER_MULT[f];
+    }
+    var mult = 1;
+    CK_FLAVORS.forEach(function (fl, i) { if (ckHas(300 + i)) mult *= 1 + fl[2] / 100; });
+    var milk = Object.keys(ck.ach).length * 0.04;
+    CK_KITTENS.forEach(function (k, i) { if (ckHas(50 + i)) mult *= 1 + milk * k[3]; });
+    mult *= 1 + ck.prestige * 0.01;
+    var raw = 0;
+    CK_BUILDINGS.forEach(function (b, i) {
+      var each;
+      if (!i) {
+        each = b.cps * cursorMult + fingers * nonCursor;
+      } else {
+        var doublings = 0;
+        for (var t = 0; t < 8; t++) if (ckHas(100 + i * 10 + t)) doublings++;
+        each = b.cps * Math.pow(2, doublings);
+      }
+      var n = ckOwned(i);
+      ckD.each[i] = each * mult;
+      ckD.per[i] = each * n * mult;
+      raw += each * n;
+    });
+    var mice = 0;
+    for (var m = 0; m < CK_MICE.length; m++) if (ckHas(30 + m)) mice++;
+    ckD.mult = mult;
+    ckD.milk = milk;
+    ckD.baseCps = raw * mult;
+    ckD.clickBase = cursorMult + fingers * nonCursor;
+    ckD.mouse = mice;
+  }
+
+  function ckBuffMult(at) {
+    var m = 1;
+    for (var i = 0; i < ck.buffs.length; i++) if (ck.buffs[i].until > at) m *= ck.buffs[i].m;
+    return m;
+  }
+
+  function ckCps() { return ckD.baseCps * ckBuffMult(ckNow()); }
+
+  function ckClickValue() { return ckD.clickBase + ckCps() * 0.01 * ckD.mouse; }
+
+  // Production over a stretch of time, split wherever a buff runs out.
+  function ckProduce(t0, t1) {
+    if (!(t1 > t0) || !(ckD.baseCps > 0)) return 0;
+    var cuts = [t0, t1];
+    ck.buffs.forEach(function (b) { if (b.until > t0 && b.until < t1) cuts.push(b.until); });
+    cuts.sort(function (a, b) { return a - b; });
+    var total = 0;
+    for (var i = 0; i < cuts.length - 1; i++) {
+      if (cuts[i + 1] > cuts[i]) total += ckD.baseCps * ckBuffMult(cuts[i]) * (cuts[i + 1] - cuts[i]) / 1000;
+    }
+    return total;
+  }
+
+  function ckEarn(n) {
+    ck.cookies += n;
+    ck.baked += n;
+    ck.bakedAll += n;
+    ckServerDirty = true;
+  }
+
+  function ckAdvance(now) {
+    if (!ck) return 0;
+    var gained = ckProduce(ck.lastTick, now);
+    if (now > ck.lastTick) ck.lastTick = now;
+    if (gained > 0) ckEarn(gained);
+    if (ck.buffs.some(function (b) { return b.until <= now; })) {
+      ck.buffs = ck.buffs.filter(function (b) { return b.until > now; });
+    }
+    return gained;
+  }
+
+  function ckCostOf(b, owned, n) {
+    return Math.ceil(b.base * Math.pow(1.15, owned) * (Math.pow(1.15, n) - 1) / 0.15);
+  }
+
+  function ckQuote(i) {
+    var b = CK_BUILDINGS[i];
+    var owned = ckOwned(i);
+    if (ckQty !== 'max') {
+      var q = Number(ckQty);
+      return { n: q, cost: ckCostOf(b, owned, q) };
+    }
+    var first = b.base * Math.pow(1.15, owned);
+    var n = Math.floor(Math.log(1 + ck.cookies * 0.15 / first) / Math.log(1.15));
+    if (n < 1) return { n: 1, cost: ckCostOf(b, owned, 1) };
+    var cost = ckCostOf(b, owned, n);
+    while (n > 1 && cost > ck.cookies) { n--; cost = ckCostOf(b, owned, n); }
+    return { n: n, cost: cost };
+  }
+
+  function ckRevealed(i) {
+    return i === 0 || ckOwned(i) > 0 || ck.bakedAll >= CK_BUILDINGS[i].base;
+  }
+
+  function ckBuy(i) {
+    if (!ck || !ckRevealed(i)) return;
+    ckAdvance(ckNow());
+    var q = ckQuote(i);
+    if (q.cost > ck.cookies) return;
+    ck.cookies = Math.max(0, ck.cookies - q.cost);
+    var b = CK_BUILDINGS[i];
+    ck.owned[b.id] = ckOwned(i) + q.n;
+    ckServerDirty = true;
+    ckRecalc();
+    ckCheckAch();
+    var row = ckBuildingRows[i];
+    row.btn.classList.remove('bought');
+    void row.btn.offsetWidth;
+    row.btn.classList.add('bought');
+    ckRenderCounter();
+    ckRenderStore(true);
+    ckRefreshTip();
+  }
+
+  function ckVisibleUpgrades() {
+    return CK_UPS.filter(function (u) { return !ck.upgrades[u.id] && u.test(); })
+      .sort(function (a, b) { return a.price - b.price; });
+  }
+
+  function ckBuyUpgrade(id) {
+    var u = CK_UP[id];
+    if (!ck || !u || ck.upgrades[id] || !u.test()) return;
+    ckAdvance(ckNow());
+    if (ck.cookies < u.price) return;
+    ck.cookies = Math.max(0, ck.cookies - u.price);
+    ck.upgrades[id] = true;
+    ckServerDirty = true;
+    ckRecalc();
+    ckCheckAch();
+    ckRenderCounter();
+    ckRenderStore(true);
+    ckHideTip();
+  }
+
+  function ckCheckAch(quiet) {
+    if (!ck) return;
+    var fresh = [];
+    CK_ACH.forEach(function (a) {
+      if (!ck.ach[a.id] && a.test()) { ck.ach[a.id] = true; fresh.push(a); }
+    });
+    if (!fresh.length) return;
+    ckServerDirty = true;
+    ckRecalc();
+    ckRenderAch();
+    if (!quiet) ckAnnounce(fresh);
+  }
+
+  function ckAward(id) {
+    if (!ck || ck.ach[id]) return;
+    ck.ach[id] = true;
+    ckServerDirty = true;
+    ckRecalc();
+    ckRenderAch();
+    ckAnnounce([CK_ACH_BY_ID[id]]);
+  }
+
+  function ckAnnounce(list) {
+    if (list.length > 3) {
+      ckToast('🏆', list.length + ' feats unlocked', list.slice(0, 3).map(function (a) { return a.name; }).join(', ') + ' and more.', 'Achievements');
+      return;
+    }
+    list.forEach(function (a) { ckToast(a.icon, a.name, a.desc, 'Achievement unlocked'); });
+  }
+
+  function ckToast(icon, title, text, kicker) {
+    var el = document.createElement('div');
+    el.className = 'ck-toast';
+    var ic = document.createElement('span');
+    ic.className = 'ck-toast-icon';
+    ic.textContent = icon;
+    var body = document.createElement('div');
+    var k = document.createElement('small');
+    k.textContent = kicker || '';
+    var t = document.createElement('b');
+    t.textContent = title;
+    var p = document.createElement('span');
+    p.textContent = text;
+    body.appendChild(k);
+    body.appendChild(t);
+    body.appendChild(p);
+    el.appendChild(ic);
+    el.appendChild(body);
+    var gone = false;
+    function dismiss() {
+      if (gone) return;
+      gone = true;
+      el.classList.remove('is-in');
+      el.classList.add('is-out');
+      setTimeout(function () { el.remove(); }, 450);
+    }
+    el.addEventListener('click', dismiss);
+    ckToasts.appendChild(el);
+    while (ckToasts.children.length > 4) ckToasts.firstChild.remove();
+    void el.offsetWidth;
+    el.classList.add('is-in');
+    setTimeout(dismiss, 5200);
+  }
+
+  function ckPop(x, y, text, big) {
+    var el = document.createElement('span');
+    el.className = 'ck-pop' + (big ? ' is-big' : '');
+    el.textContent = text;
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    el.style.setProperty('--dx', Math.round(Math.random() * 36 - 18) + 'px');
+    ckStage.appendChild(el);
+    ckPops.push(el);
+    if (ckPops.length > 28) ckPops.shift().remove();
+    setTimeout(function () {
+      el.remove();
+      var at = ckPops.indexOf(el);
+      if (at !== -1) ckPops.splice(at, 1);
+    }, big ? 2300 : 1000);
+  }
+
+  function ckShowNote(text) {
+    ckNoteEl.textContent = text;
+    ckNoteEl.hidden = false;
+    clearTimeout(ckNoteTimer);
+    ckNoteTimer = setTimeout(function () { ckNoteEl.hidden = true; }, 15000);
+  }
+
+  function ckGoldenMult() { return (ckHas(70) ? 2 : 1) * (ckHas(71) ? 2 : 1); }
+
+  function ckScheduleGolden() {
+    var lo = CK_GOLDEN_TEST ? 30 : 300;
+    var hi = CK_GOLDEN_TEST ? 60 : 540;
+    ckGoldenAt = Date.now() + (lo + Math.random() * (hi - lo)) * 1000 / ckGoldenMult();
+  }
+
+  function ckVisible() {
+    return currentView === 'games' && activeGame === 'cookie' && !document.hidden;
+  }
+
+  function ckMaybeGolden() {
+    if (ckGolden || !ckVisible()) return;
+    if (!ckGoldenAt) ckScheduleGolden();
+    if (Date.now() >= ckGoldenAt) ckSpawnGolden();
+  }
+
+  function ckSpawnGolden() {
+    var life = 15000 * ckGoldenMult();
+    var size = 72;
+    var el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'ck-golden';
+    el.setAttribute('aria-label', 'Golden cookie');
+    var art = ckCookieBtn.querySelector('svg').cloneNode(true);
+    var defs = art.querySelector('defs');
+    if (defs) defs.remove();
+    el.appendChild(art);
+    el.style.left = Math.round(16 + Math.random() * Math.max(0, window.innerWidth - size - 32)) + 'px';
+    el.style.top = Math.round(80 + Math.random() * Math.max(0, window.innerHeight - size - 160)) + 'px';
+    el.style.animationDelay = '0s, ' + (-Math.random() * 7).toFixed(2) + 's';
+    el.addEventListener('click', ckClickGolden);
+    ckStage.appendChild(el);
+    ckGolden = {
+      el: el,
+      fade: setTimeout(function () { el.classList.add('is-leaving'); }, life - 1600),
+      gone: setTimeout(function () { ckRemoveGolden(true); }, life),
+    };
+  }
+
+  function ckRemoveGolden(reschedule) {
+    if (!ckGolden) return;
+    clearTimeout(ckGolden.fade);
+    clearTimeout(ckGolden.gone);
+    ckGolden.el.remove();
+    ckGolden = null;
+    if (reschedule) ckScheduleGolden();
+  }
+
+  function ckClickGolden(e) {
+    if (!ckGolden || !ck) return;
+    var r = ckGolden.el.getBoundingClientRect();
+    var x = e.clientX || r.left + r.width / 2;
+    var y = e.clientY || r.top + r.height / 2;
+    var now = ckNow();
+    ckAdvance(now);
+    ck.gcClicks++;
+    ckServerDirty = true;
+    if (Math.random() < 0.5) {
+      var len = 77000 * (ckHas(72) ? 2 : 1);
+      ck.buffs = ck.buffs.filter(function (b) { return b.k !== 'frenzy'; });
+      ck.buffs.push({ k: 'frenzy', m: 7, until: now + len, len: len });
+      ckPop(x, y, 'Frenzy! Cookie production ×7 for ' + Math.round(len / 1000) + ' seconds!', true);
+      ckAward(94);
+    } else {
+      var gain = Math.min(ck.cookies * 0.15, ckCps() * 900) + 13;
+      ckEarn(gain);
+      ckPop(x, y, 'Lucky! +' + ckFmt(gain, 2) + ' cookies', true);
+    }
+    ckRemoveGolden(true);
+    ckCheckAch();
+    ckRenderBuffs();
+    ckRenderCounter();
+    ckRenderStore(true);
+  }
+
+  var CK_NUMBERS = ['cookies', 'baked', 'bakedAll', 'handmade', 'clicks', 'runClicks', 'gcClicks', 'prestige', 'ascensions',
+    'started', 'runStarted', 'played', 'offline'];
+
+  function ckFresh(now) {
+    return {
+      cookies: 0, baked: 0, bakedAll: 0, handmade: 0, clicks: 0, runClicks: 0, gcClicks: 0, prestige: 0, ascensions: 0,
+      started: now, runStarted: now, played: 0, offline: 0, owned: {}, upgrades: {}, ach: {}, buffs: [], lastTick: now,
+    };
+  }
+
+  function ckFromSave(p, at) {
+    var now = ckNow();
+    var st = ckFresh(now);
+    CK_NUMBERS.forEach(function (f) {
+      var v = Number(p[f]);
+      if (isFinite(v) && v >= 0) st[f] = v;
+    });
+    if (!(st.started > 0)) st.started = now;
+    if (!(st.runStarted > 0)) st.runStarted = st.started;
+    st.prestige = Math.floor(st.prestige);
+    if (p.owned && typeof p.owned === 'object') {
+      CK_BUILDINGS.forEach(function (b) {
+        var n = Math.floor(Number(p.owned[b.id]) || 0);
+        if (n > 0) st.owned[b.id] = Math.min(n, 100000);
+      });
+    }
+    (Array.isArray(p.upgrades) ? p.upgrades : []).forEach(function (id) { if (CK_UP[id]) st.upgrades[id] = true; });
+    (Array.isArray(p.ach) ? p.ach : []).forEach(function (id) { if (CK_ACH_BY_ID[id]) st.ach[id] = true; });
+    (Array.isArray(p.buffs) ? p.buffs : []).forEach(function (b) {
+      if (b && b.k === 'frenzy' && b.m > 0 && b.until > 0) st.buffs.push({ k: 'frenzy', m: b.m, until: b.until, len: b.len || 77000 });
+    });
+    var t = Number(at) || Number(p.savedAt) || now;
+    st.lastTick = Math.min(t, now);
+    return st;
+  }
+
+  function ckToSave() {
+    var out = { v: 2 };
+    CK_NUMBERS.forEach(function (f) { out[f] = ck[f]; });
+    out.cps = ckD.baseCps;
+    out.savedAt = ck.lastTick;
+    out.owned = Object.assign({}, ck.owned);
+    out.upgrades = Object.keys(ck.upgrades).map(Number);
+    out.ach = Object.keys(ck.ach).map(Number);
+    out.buffs = ck.buffs.map(function (b) { return { k: b.k, m: b.m, until: b.until, len: b.len }; });
+    return out;
+  }
+
+  function ckLocalKey() {
+    return 'ss_ck2_' + (myRoom || '') + '_' + (myUsername || '').toLowerCase();
+  }
+
+  function ckLegacyKey() {
     return 'ss_cookie_' + (myRoom || '') + '_' + (myUsername || '').toLowerCase();
   }
 
-  function loadCookieState() {
-    cookie = { cookies: 0, total: 0, owned: {} };
+  function ckLoadLocal() {
+    ckMigrated = false;
     try {
-      var raw = prefs.get(cookieStorageKey());
+      var raw = prefs.get(ckKey);
       if (raw) {
-        var p = JSON.parse(raw);
-        if (p && typeof p === 'object') {
-          cookie.cookies = Math.max(0, Number(p.cookies) || 0);
-          cookie.total = Math.max(0, Number(p.total) || 0);
-          if (p.owned && typeof p.owned === 'object') {
-            COOKIE_BUILDINGS.forEach(function (b) {
-              var n = Math.floor(Number(p.owned[b.id]) || 0);
-              if (n > 0) cookie.owned[b.id] = n;
-            });
-          }
+        var wrap = JSON.parse(raw);
+        if (wrap && wrap.save && typeof wrap.save === 'object') {
+          if (typeof wrap.off === 'number' && isFinite(wrap.off)) ckClockOffset = wrap.off;
+          if (['1', '10', '100', 'max'].indexOf(wrap.qty) !== -1) ckQty = wrap.qty;
+          return ckFromSave(wrap.save, wrap.save.savedAt);
         }
+      }
+      var legacy = prefs.get(ckLegacyKey());
+      if (legacy) {
+        var p = JSON.parse(legacy);
+        var st = ckFresh(ckNow());
+        st.cookies = Math.max(0, Number(p.cookies) || 0);
+        st.baked = st.bakedAll = Math.max(0, Number(p.total) || 0);
+        st.runClicks = 999;
+        if (p.owned && typeof p.owned === 'object') {
+          ['cursor', 'grandma', 'farm', 'factory', 'bank', 'temple'].forEach(function (id) {
+            var n = Math.floor(Number(p.owned[id]) || 0);
+            if (n > 0) st.owned[id] = n;
+          });
+        }
+        ckMigrated = true;
+        return st;
       }
     } catch (e) { /* start fresh */ }
-    buildCookieShop();
-    updateCookieHud();
+    return ckFresh(ckNow());
   }
 
-  function saveCookieState() {
-    prefs.set(cookieStorageKey(), JSON.stringify(cookie));
+  function ckSaveLocal() {
+    if (!ck || !ckKey) return;
+    prefs.set(ckKey, JSON.stringify({ save: ckToSave(), off: ckClockOffset, qty: ckQty }));
+    if (ckMigrated) { prefs.remove(ckLegacyKey()); ckMigrated = false; }
+    ckLastLocalSave = Date.now();
   }
 
-  function cookieCps() {
-    return COOKIE_BUILDINGS.reduce(function (sum, b) {
-      return sum + (cookie.owned[b.id] || 0) * b.cps;
-    }, 0);
+  function ckSaveServer(force) {
+    if (!ck || !csrfToken || !ckSynced || ckSaving) return ckSaving;
+    var now = Date.now();
+    if (!force && (!ckServerDirty || now - ckLastServerSave < 20000)) return null;
+    if (now - ckLastServerSave < 1600) { ckServerDirty = true; return null; }
+    ckLastServerSave = now;
+    ckServerDirty = false;
+    var body = JSON.stringify({ save: ckToSave() });
+    ckSaving = fetch('/api/games/cookie', {
+      method: 'POST',
+      credentials: 'same-origin',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+      body: body,
+    }).then(function (res) {
+      return res.ok ? res.json() : { ok: false };
+    }).then(function (data) {
+      if (data && data.behind) {
+        ckSynced = false;
+        ckSyncFromServer();
+      } else if (!data || !data.ok) {
+        ckServerDirty = true;
+      }
+    }, function () {
+      ckServerDirty = true;
+    }).then(function () { ckSaving = null; });
+    return ckSaving;
   }
 
-  function buildingCost(b) {
-    return Math.ceil(b.base * Math.pow(1.15, cookie.owned[b.id] || 0));
+  // The newest bakery wins: the one here, or the one this name left on the
+  // server from another browser, each counted forward to now.
+  async function ckSyncFromServer() {
+    var key = ckKey;
+    var t0 = Date.now();
+    ckLastSync = t0;
+    var data;
+    try {
+      var res = await fetch('/api/games/cookie', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+    if (!ck || key !== ckKey || !data) return;
+    var t1 = Date.now();
+    if (typeof data.now === 'number' && isFinite(data.now)) ckClockOffset = data.now - (t0 + t1) / 2;
+    ckAdvance(ckNow());
+    var s = data.save;
+    if (s && typeof s === 'object') {
+      var at = Number(data.at) || 0;
+      var projected = (Number(s.bakedAll) || 0) + (Number(s.cps) || 0) * Math.max(0, ckNow() - at) / 1000;
+      ckSynced = true;
+      if (projected > ck.bakedAll + Math.max(1, ck.bakedAll * 1e-6)) {
+        var feats = ck.ach;
+        ck = ckFromSave(s, at);
+        Object.keys(feats).forEach(function (id) { ck.ach[id] = true; });
+        ckRecalc();
+        ckCatchUp();
+        ckCheckAch(true);
+        ckUpgradeSig = null;
+        ckRenderAll();
+        ckSaveLocal();
+        return;
+      }
+    }
+    ckSynced = true;
+    ckServerDirty = true;
+    ckSaveServer(true);
   }
 
-  function buildCookieShop() {
-    cookieShopEl.innerHTML = '';
-    COOKIE_BUILDINGS.forEach(function (b) {
-      var btn = document.createElement('button');
+  function ckCatchUp() {
+    var now = ckNow();
+    var away = now - ck.lastTick;
+    var gained = ckAdvance(now);
+    if (away >= 60000 && gained >= 1) {
+      ck.offline += gained;
+      ckShowNote('While you were away for ' + ckDuration(away) + ', your bakery baked ' + ckFmt(gained) + ' cookies.');
+      if (away >= 3600000) ckAward(90);
+      if (away >= 8 * 3600000) ckAward(91);
+    }
+  }
+
+  function ckEl(tag, cls, text) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  var CK_STATS = [
+    ['bank', 'Cookies in bank'], ['baked', 'Baked this ascension'], ['bakedAll', 'Baked all time'], ['cps', 'Cookies per second'],
+    ['click', 'Cookies per click'], ['clicks', 'Cookie clicks'], ['handmade', 'Hand-made cookies'], ['gc', 'Golden cookies clicked'],
+    ['buildings', 'Buildings owned'], ['upgrades', 'Upgrades bought'], ['ach', 'Feats'], ['played', 'Time played'],
+    ['offline', 'Baked while away'], ['started', 'Bakery founded'], ['prestige', 'Prestige'],
+  ];
+
+  function ckBuildUi() {
+    if (ckBuildingRows.length) return;
+    CK_BUILDINGS.forEach(function (b, i) {
+      var btn = ckEl('button', 'ck-bld');
       btn.type = 'button';
-      btn.className = 'shop-item';
-      btn.dataset.building = b.id;
-      var left = document.createElement('span');
-      var nm = document.createElement('span');
-      nm.className = 'shop-name';
-      var sub = document.createElement('span');
-      sub.className = 'shop-sub';
-      left.appendChild(nm);
-      left.appendChild(sub);
-      var cost = document.createElement('span');
-      cost.className = 'shop-cost';
-      btn.appendChild(left);
-      btn.appendChild(cost);
-      btn.addEventListener('click', function () {
-        var c = buildingCost(b);
-        if (cookie.cookies >= c) {
-          cookie.cookies -= c;
-          cookie.owned[b.id] = (cookie.owned[b.id] || 0) + 1;
-          cookieDirty = true;
-          updateCookieHud();
-        }
+      btn.dataset.bld = String(i);
+      var icon = ckEl('span', 'ck-bld-icon', b.icon);
+      var info = ckEl('span', 'ck-bld-info');
+      var name = ckEl('span', 'ck-bld-name', b.name);
+      var cost = ckEl('span', 'ck-bld-cost');
+      info.appendChild(name);
+      info.appendChild(cost);
+      var owned = ckEl('span', 'ck-bld-owned');
+      var bar = ckEl('span', 'ck-bar');
+      var fill = document.createElement('i');
+      bar.appendChild(fill);
+      btn.appendChild(icon);
+      btn.appendChild(info);
+      btn.appendChild(owned);
+      btn.appendChild(bar);
+      ckBuildingsEl.appendChild(btn);
+      ckBuildingRows.push({ btn: btn, name: name, cost: cost, owned: owned, fill: fill, state: {} });
+    });
+    CK_ACH.forEach(function (a) {
+      var tile = ckEl('span', 'ck-ach', a.icon);
+      tile.dataset.ach = String(a.id);
+      tile.tabIndex = 0;
+      ckAchGrid.appendChild(tile);
+      ckAchTiles[a.id] = tile;
+    });
+    CK_STATS.forEach(function (s) {
+      var row = document.createElement('div');
+      var dt = ckEl('dt', '', s[1]);
+      var dd = ckEl('dd', '', '—');
+      row.appendChild(dt);
+      row.appendChild(dd);
+      ckStatsEl.appendChild(row);
+      ckStatRows[s[0]] = dd;
+    });
+  }
+
+  function ckSetText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+  function ckRenderCounter() {
+    if (!ck) return;
+    ckSetText(ckCookiesEl, ckFmt(ck.cookies));
+    var cps = ckCps();
+    ckSetText(ckCpsEl, ckFmt(cps, 1));
+    ckCpsEl.parentNode.classList.toggle('is-frenzy', cps > ckD.baseCps);
+  }
+
+  function ckRenderStore(force) {
+    if (!ck) return;
+    var mystery = 0;
+    CK_BUILDINGS.forEach(function (b, i) {
+      var row = ckBuildingRows[i];
+      var st = row.state;
+      var known = ckRevealed(i);
+      var show = known || mystery++ < 2;
+      if (st.show !== show || force) { row.btn.hidden = !show; st.show = show; }
+      if (!show) return;
+      var q = ckQuote(i);
+      var can = known && q.cost <= ck.cookies;
+      if (st.known !== known) {
+        row.btn.classList.toggle('is-mystery', !known);
+        row.name.textContent = known ? b.name : '???';
+        st.known = known;
+      }
+      if (st.can !== can) { row.btn.classList.toggle('can', can); st.can = can; }
+      var costText = '🍪 ' + ckShort(q.cost) + (q.n > 1 ? ' · ×' + q.n : '');
+      if (st.cost !== costText) { row.cost.textContent = costText; st.cost = costText; }
+      var owned = ckOwned(i);
+      var ownedText = owned ? String(owned) : '';
+      if (st.owned !== ownedText) { row.owned.textContent = ownedText; st.owned = ownedText; }
+      var pct = Math.min(100, Math.floor(ck.cookies / q.cost * 100));
+      if (st.pct !== pct) { row.fill.style.width = pct + '%'; st.pct = pct; }
+    });
+
+    var list = ckVisibleUpgrades();
+    var sig = list.map(function (u) { return u.id; }).join(',');
+    if (force || sig !== ckUpgradeSig) {
+      ckUpgradeSig = sig;
+      ckUpgradesEl.textContent = '';
+      if (!list.length) {
+        ckUpgradesEl.appendChild(ckEl('p', 'ck-empty', 'Upgrades show up here as your bakery grows.'));
+      }
+      list.forEach(function (u) {
+        var tile = ckEl('button', 'ck-up', u.icon);
+        tile.type = 'button';
+        tile.dataset.up = String(u.id);
+        tile.setAttribute('aria-label', u.name);
+        if (u.badge) tile.appendChild(ckEl('span', 'ck-tier', u.badge));
+        ckUpgradesEl.appendChild(tile);
       });
-      cookieShopEl.appendChild(btn);
+    }
+    Array.prototype.forEach.call(ckUpgradesEl.children, function (tile) {
+      var u = CK_UP[tile.dataset.up];
+      if (u) tile.classList.toggle('can', ck.cookies >= u.price);
     });
   }
 
-  function refreshCookieShop() {
-    COOKIE_BUILDINGS.forEach(function (b) {
-      var btn = cookieShopEl.querySelector('[data-building="' + b.id + '"]');
-      if (!btn) return;
-      var owned = cookie.owned[b.id] || 0;
-      btn.querySelector('.shop-name').textContent = b.name + (owned ? ' × ' + owned : '');
-      btn.querySelector('.shop-sub').textContent = '+' + b.cps + ' cookies/sec each';
-      var c = buildingCost(b);
-      btn.querySelector('.shop-cost').textContent = fmtScore(c);
-      btn.disabled = cookie.cookies < c;
+  function ckRenderBuffs() {
+    if (!ck) return;
+    var now = ckNow();
+    var live = {};
+    ck.buffs.forEach(function (b) {
+      if (b.until <= now) return;
+      live[b.k] = true;
+      var chip = ckBuffChips[b.k];
+      if (!chip) {
+        chip = ckBuffChips[b.k] = { el: ckEl('span', 'ck-buff'), text: ckEl('b'), bar: document.createElement('i') };
+        chip.el.appendChild(chip.text);
+        chip.el.appendChild(chip.bar);
+        ckBuffsEl.appendChild(chip.el);
+      }
+      var left = b.until - now;
+      ckSetText(chip.text, '🌟 Frenzy ×' + b.m + ' · ' + ckDuration(left));
+      chip.bar.style.width = Math.max(0, Math.min(100, left / (b.len || 77000) * 100)).toFixed(1) + '%';
+    });
+    Object.keys(ckBuffChips).forEach(function (k) {
+      if (!live[k]) { ckBuffChips[k].el.remove(); delete ckBuffChips[k]; }
     });
   }
 
-  function updateCookieHud() {
-    cookieCountEl.textContent = fmtScore(Math.floor(cookie.cookies));
-    cookieCpsEl.textContent = String(Math.round(cookieCps() * 10) / 10);
-    cookieTotalEl.textContent = fmtScore(Math.floor(cookie.total));
-    refreshCookieShop();
+  function ckRenderStats() {
+    if (!ck) return;
+    var cps = ckCps();
+    var rows = {
+      bank: ckFmt(ck.cookies), baked: ckFmt(ck.baked), bakedAll: ckFmt(ck.bakedAll),
+      cps: ckFmt(cps, 1) + (cps > ckD.baseCps ? ' (×' + Math.round(cps / ckD.baseCps) + ')' : ''),
+      click: ckFmt(ckClickValue(), 1), clicks: ckGroup(ck.clicks), handmade: ckFmt(ck.handmade), gc: ckGroup(ck.gcClicks),
+      buildings: ckGroup(ckTotalBuildings()), upgrades: Object.keys(ck.upgrades).length + ' / ' + CK_UPS.length,
+      ach: Object.keys(ck.ach).length + ' / ' + CK_ACH.length + ' · ' + Math.round(ckD.milk * 100) + '% milk',
+      played: ckDuration(ck.played), offline: ckFmt(ck.offline),
+      started: new Date(ck.started).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+      prestige: ck.prestige + ' (+' + ck.prestige + '% CpS)' + (ck.ascensions ? ' · ' + ck.ascensions + '× ascended' : ''),
+    };
+    Object.keys(rows).forEach(function (k) { if (ckStatRows[k]) ckSetText(ckStatRows[k], rows[k]); });
   }
 
-  cookieBtn.addEventListener('click', function () {
-    cookie.cookies += 1;
-    cookie.total += 1;
-    cookieDirty = true;
-    updateCookieHud();
+  function ckRenderAch() {
+    if (!ck) return;
+    var won = 0;
+    CK_ACH.forEach(function (a) {
+      var has = !!ck.ach[a.id];
+      if (has) won++;
+      var tile = ckAchTiles[a.id];
+      if (tile) tile.classList.toggle('is-won', has);
+    });
+    ckSetText(ckAchCount, String(won));
+    ckSetText(ckAchNote, won + ' of ' + CK_ACH.length + ' feats · each one is 4% milk, which kittens turn into cookies.');
+  }
+
+  function ckPrestigeFor(baked) { return Math.floor(Math.cbrt(baked / 1e12)); }
+
+  function ckRenderLegacy() {
+    if (!ck) return;
+    var level = ckPrestigeFor(ck.bakedAll);
+    var gain = Math.max(0, level - ck.prestige);
+    ckSetText(ckPrestigeEl, String(ck.prestige));
+    ckSetText(ckPrestigeBonus, '+' + ck.prestige + '% CpS');
+    var prevAt = 1e12 * Math.pow(level, 3);
+    var nextAt = 1e12 * Math.pow(level + 1, 3);
+    var pct = Math.max(0, Math.min(1, (ck.bakedAll - prevAt) / (nextAt - prevAt)));
+    ckLegacyBar.style.width = (pct * 100).toFixed(1) + '%';
+    ckSetText(ckLegacyNext, 'Next level at ' + ckFmt(nextAt, 0) + ' baked in all · ' + Math.floor(pct * 100) + '% there.');
+    ckSetText(ckLegacyNote, gain > 0
+      ? 'Ascending now earns ' + gain + ' prestige level' + (gain > 1 ? 's' : '') + ': +' + gain + '% CpS for good. Feats stay; cookies, buildings and upgrades start over.'
+      : 'Levels come from everything you have ever baked: 1 Trillion for the first, 8 Trillion for two, 27 for three. Each is +1% CpS for good once you ascend.');
+    ckAscendBtn.disabled = gain < 1;
+    if (!ckAscendArmed || Date.now() - ckAscendArmed > 4000) {
+      ckAscendArmed = 0;
+      ckSetText(ckAscendBtn, gain >= 1 ? 'ascend · +' + gain : 'ascend');
+    }
+  }
+
+  function ckRenderAll() {
+    if (!ck) return;
+    ckSetText(ckBakeryEl, (myUsername || 'your') + (myUsername ? "'s" : '') + ' bakery');
+    Array.prototype.forEach.call(ckQtyEl.querySelectorAll('button'), function (b) {
+      b.classList.toggle('is-active', b.dataset.qty === ckQty);
+    });
+    ckRenderCounter();
+    ckRenderStore(true);
+    ckRenderBuffs();
+    ckRenderAch();
+    ckRenderStats();
+    ckRenderLegacy();
+  }
+
+  function ckTipContent(target) {
+    var box = document.createDocumentFragment();
+    var head = ckEl('div', 'ck-tip-head');
+    var lines = [];
+    var cost = null;
+    if (target.dataset.bld !== undefined) {
+      var i = Number(target.dataset.bld);
+      var b = CK_BUILDINGS[i];
+      if (!ckRevealed(i)) {
+        head.appendChild(ckEl('span', '', '❔'));
+        head.appendChild(ckEl('b', '', '???'));
+        lines.push('Bake ' + ckFmt(b.base, 0) + ' cookies in all to find out what this is.');
+      } else {
+        var q = ckQuote(i);
+        var owned = ckOwned(i);
+        head.appendChild(ckEl('span', '', b.icon));
+        head.appendChild(ckEl('b', '', b.name));
+        head.appendChild(ckEl('em', '', 'owned ' + owned));
+        lines.push(b.desc);
+        lines.push('Each makes ' + ckFmt(ckD.each[i], 1) + ' per second.');
+        if (owned) {
+          var share = ckD.baseCps > 0 ? ckD.per[i] / ckD.baseCps * 100 : 0;
+          lines.push('All ' + owned + ' make ' + ckFmt(ckD.per[i], 1) + ' per second (' + (share < 0.1 ? 'under 0.1' : share.toFixed(1)) + '% of your bakery).');
+        }
+        cost = { text: (q.n > 1 ? q.n + ' for ' : '') + ckFmt(q.cost, 2) + ' cookies', short: q.cost - ck.cookies };
+      }
+    } else if (target.dataset.up !== undefined) {
+      var u = CK_UP[target.dataset.up];
+      if (!u) return null;
+      head.appendChild(ckEl('span', '', u.icon));
+      head.appendChild(ckEl('b', '', u.name));
+      head.appendChild(ckEl('em', '', 'upgrade'));
+      lines.push(u.desc);
+      if (u.id >= 50 && u.id < 60) lines.push('Milk now: ' + Math.round(ckD.milk * 100) + '%.');
+      cost = { text: ckFmt(u.price, 2) + ' cookies', short: u.price - ck.cookies };
+    } else if (target.dataset.ach !== undefined) {
+      var a = CK_ACH_BY_ID[target.dataset.ach];
+      if (!a) return null;
+      var won = !!ck.ach[a.id];
+      head.appendChild(ckEl('span', '', a.icon));
+      head.appendChild(ckEl('b', '', a.name));
+      head.appendChild(ckEl('em', '', won ? 'unlocked' : 'locked'));
+      lines.push(a.desc);
+    } else {
+      return null;
+    }
+    box.appendChild(head);
+    lines.forEach(function (l) { box.appendChild(ckEl('p', '', l)); });
+    if (cost) {
+      var c = ckEl('p', 'ck-tip-cost' + (cost.short > 0 ? ' no' : ''), '🍪 ' + cost.text);
+      box.appendChild(c);
+      if (cost.short > 0) box.appendChild(ckEl('p', 'ck-tip-short', ckFmt(cost.short, 2) + ' more to go' + (ckCps() > 0 ? ' · about ' + ckDuration(cost.short / ckCps() * 1000) : '') + '.'));
+    }
+    return box;
+  }
+
+  function ckPlaceTip(target) {
+    var r = target.getBoundingClientRect();
+    var w = ckTip.offsetWidth;
+    var h = ckTip.offsetHeight;
+    var x = r.left - w - 12;
+    var y = r.top;
+    if (x < 8) x = r.right + 12;
+    if (x + w > window.innerWidth - 8) {
+      x = Math.max(8, Math.min(window.innerWidth - w - 8, r.left));
+      y = r.bottom + 8;
+      if (y + h > window.innerHeight - 8) y = r.top - h - 8;
+    }
+    ckTip.style.left = Math.round(x) + 'px';
+    ckTip.style.top = Math.round(Math.max(8, Math.min(window.innerHeight - h - 8, y))) + 'px';
+  }
+
+  function ckShowTip(target) {
+    if (!ck) return;
+    var content = ckTipContent(target);
+    if (!content) return ckHideTip();
+    ckTipFor = target;
+    ckTip.textContent = '';
+    ckTip.appendChild(content);
+    ckTip.hidden = false;
+    ckPlaceTip(target);
+  }
+
+  function ckHideTip() {
+    ckTipFor = null;
+    ckTip.hidden = true;
+  }
+
+  function ckRefreshTip() {
+    if (!ckTipFor) return;
+    if (!ckTipFor.isConnected || ckTipFor.hidden) return ckHideTip();
+    ckShowTip(ckTipFor);
+  }
+
+  function ckTipTarget(el) {
+    return el && el.closest ? el.closest('[data-bld],[data-up],[data-ach]') : null;
+  }
+
+  ckStage.addEventListener('mouseover', function (e) {
+    var t = ckTipTarget(e.target);
+    if (t && t !== ckTipFor) ckShowTip(t);
+  });
+  ckStage.addEventListener('mouseout', function (e) {
+    var t = ckTipTarget(e.target);
+    if (t && t === ckTipFor && !t.contains(e.relatedTarget)) ckHideTip();
+  });
+  ckStage.addEventListener('focusin', function (e) {
+    var t = ckTipTarget(e.target);
+    if (t) ckShowTip(t);
+  });
+  ckStage.addEventListener('focusout', function () { ckHideTip(); });
+
+  ckBuildingsEl.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-bld]');
+    if (btn) ckBuy(Number(btn.dataset.bld));
+  });
+  ckUpgradesEl.addEventListener('click', function (e) {
+    var tile = e.target.closest('[data-up]');
+    if (tile) ckBuyUpgrade(Number(tile.dataset.up));
+  });
+  ckQtyEl.addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-qty]');
+    if (!btn) return;
+    ckQty = btn.dataset.qty;
+    Array.prototype.forEach.call(ckQtyEl.querySelectorAll('button'), function (b) { b.classList.toggle('is-active', b === btn); });
+    ckRenderStore(true);
+    ckRefreshTip();
+    ckSaveLocal();
+  });
+  ckTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      ckPane = tab.dataset.pane;
+      ckTabs.forEach(function (t) {
+        var on = t === tab;
+        t.classList.toggle('is-active', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        document.getElementById('ck-pane-' + t.dataset.pane).hidden = !on;
+      });
+      if (ckPane === 'stats') ckRenderStats();
+      if (ckPane === 'legacy') ckRenderLegacy();
+      if (ckPane === 'ach') ckRenderAch();
+    });
   });
 
-  function startCookieLoop() {
-    if (cookieTimer) return;
-    cookieTimer = setInterval(function () {
-      var cps = cookieCps();
-      if (cps > 0) {
-        cookie.cookies += cps;
-        cookie.total += cps;
-        cookieDirty = true;
+  ckCookieBtn.addEventListener('pointerdown', function () { ckCookieBtn.classList.add('is-pressed'); });
+  ['pointerup', 'pointerleave', 'pointercancel', 'blur'].forEach(function (evt) {
+    ckCookieBtn.addEventListener(evt, function () { ckCookieBtn.classList.remove('is-pressed'); });
+  });
+  ckCookieBtn.addEventListener('click', function (e) {
+    if (!ck) return;
+    ckAdvance(ckNow());
+    var v = ckClickValue();
+    ckEarn(v);
+    ck.handmade += v;
+    ck.clicks++;
+    ck.runClicks++;
+    var x = e.clientX;
+    var y = e.clientY;
+    if (!e.detail || (!x && !y)) {
+      var r = ckCookieBtn.getBoundingClientRect();
+      x = r.left + r.width / 2;
+      y = r.top + r.height / 3;
+    }
+    ckPop(x, y, '+' + ckShort(v));
+    ckRenderCounter();
+  });
+
+  ckAscendBtn.addEventListener('click', function () {
+    if (!ck) return;
+    ckAdvance(ckNow());
+    var gain = ckPrestigeFor(ck.bakedAll) - ck.prestige;
+    if (gain < 1) return;
+    if (!ckAscendArmed || Date.now() - ckAscendArmed > 4000) {
+      ckAscendArmed = Date.now();
+      ckAscendBtn.textContent = 'sure? click again';
+      return;
+    }
+    ckAscendArmed = 0;
+    ck.prestige += gain;
+    ck.ascensions++;
+    ck.cookies = 0;
+    ck.baked = 0;
+    ck.runClicks = 0;
+    ck.owned = {};
+    ck.upgrades = {};
+    ck.buffs = [];
+    ck.runStarted = ckNow();
+    ckServerDirty = true;
+    ckRecalc();
+    ckCheckAch();
+    ckUpgradeSig = null;
+    ckRenderAll();
+    ckSaveLocal();
+    ckSaveServer(true);
+    ckToast('👼', 'Ascended', 'Prestige ' + ck.prestige + ': +' + ck.prestige + '% cookies per second, for good.', 'Legacy');
+  });
+
+  function ckLoop() {
+    if (!ck) return;
+    var nowMs = Date.now();
+    var now = ckNow();
+    var dt = now - ck.lastTick;
+    ckAdvance(now);
+    var visible = ckVisible();
+    ckTickN++;
+    if (visible) {
+      ck.played += Math.max(0, Math.min(dt, 1000));
+      ckRenderCounter();
+      if (ckTickN % 3 === 0) {
+        ckRenderStore();
+        ckRenderBuffs();
+        ckRefreshTip();
       }
-      if (cookieDirty) {
-        cookieDirty = false;
-        saveCookieState();
-        if (currentView === 'games' && activeGame === 'cookie') updateCookieHud();
-      }
-      if (++cookieSubmitCounter >= 20) {
-        cookieSubmitCounter = 0;
-        submitScore('cookie', cookie.total);
-      }
-    }, 1000);
+    }
+    if (ckTickN % 10 === 0 && visible) {
+      ckCheckAch();
+      ckMaybeGolden();
+      if (ckPane === 'stats') ckRenderStats();
+      else if (ckPane === 'legacy') ckRenderLegacy();
+    }
+    if (nowMs - ckLastLocalSave >= 10000) ckSaveLocal();
+    if (!ckSynced && nowMs - ckLastSync > 20000) ckSyncFromServer();
+    ckSaveServer(false);
+    if (visible && nowMs - ckLastLb > 30000) {
+      ckLastLb = nowMs;
+      fetchLeaderboard();
+    }
   }
 
-  function stopCookieLoop() {
-    if (cookieTimer) { clearInterval(cookieTimer); cookieTimer = null; }
-    saveCookieState();
+  function ckEnter() {
+    var key = ckLocalKey();
+    if (ckKey !== key) {
+      ckKey = key;
+      ckClockOffset = 0;
+      ckGoldenAt = 0;
+      ckSynced = false;
+      ck = ckLoadLocal();
+      ckRecalc();
+      ckBuildUi();
+      ckCheckAch(true);
+      ckUpgradeSig = null;
+      ckCatchUp();
+      ckRenderAll();
+      ckSaveLocal();
+      ckSyncFromServer();
+    } else if (ck) {
+      ckCatchUp();
+      ckRenderAll();
+    }
+    ckLastLb = Date.now();
+    if (!ckTimer) ckTimer = setInterval(ckLoop, 100);
   }
+
+  function ckLeave() {
+    if (ckTimer) { clearInterval(ckTimer); ckTimer = null; }
+    ckRemoveGolden(false);
+    ckHideTip();
+    if (!ck) return null;
+    ckAdvance(ckNow());
+    ckSaveLocal();
+    return ckSaveServer(true);
+  }
+
+  function ckFlush() {
+    if (!ck || !ckTimer) return;
+    ckAdvance(ckNow());
+    ckSaveLocal();
+    ckSaveServer(true);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) ckFlush();
+    else if (ck && ckTimer) ckRenderAll();
+  });
+  window.addEventListener('pagehide', function () {
+    ckFlush();
+    prefs.flush();
+  });
 
   document.addEventListener('keydown', function (e) {
     if (currentView !== 'games') return;
@@ -6547,6 +8018,7 @@
       if (code === b.left) {
         e.preventDefault();
         if (!e.repeat) {
+          tetris.pieceInputs++;
           tetris.leftHeld = true;
           tetris.dirHeld = -1;
           tetris.dasAcc = 0;
@@ -6556,6 +8028,7 @@
       } else if (code === b.right) {
         e.preventDefault();
         if (!e.repeat) {
+          tetris.pieceInputs++;
           tetris.rightHeld = true;
           tetris.dirHeld = 1;
           tetris.dasAcc = 0;
@@ -6570,13 +8043,13 @@
         if (!e.repeat) tHardDrop();
       } else if (code === b.cw) {
         e.preventDefault();
-        if (!e.repeat) tRotate(1);
+        if (!e.repeat) { tetris.pieceInputs++; tRotate(1); }
       } else if (code === b.ccw) {
         e.preventDefault();
-        if (!e.repeat) tRotate(-1);
+        if (!e.repeat) { tetris.pieceInputs++; tRotate(-1); }
       } else if (code === b.r180) {
         e.preventDefault();
-        if (!e.repeat) tRotate(2);
+        if (!e.repeat) { tetris.pieceInputs++; tRotate(2); }
       } else if (code === b.hold) {
         e.preventDefault();
         if (!e.repeat) tHoldPiece();

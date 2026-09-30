@@ -202,11 +202,17 @@
                 <canvas id="t-hold" width="96" height="72"></canvas>
               </div>
               <div class="t-stats">
+                <div data-modes="sprint cheese18 cheese100" hidden class="t-race"><span class="t-label">time</span><b id="tetris-time">0:00.000</b></div>
+                <div data-modes="sprint cheese18 cheese100" hidden class="t-race"><span class="t-label" id="tetris-left-label">left</span><b id="tetris-left">40</b></div>
                 <div><span class="t-label">score</span><b id="tetris-score">0</b></div>
                 <div><span class="t-label">lines</span><b id="tetris-lines">0</b></div>
-                <div><span class="t-label">level</span><b id="tetris-level">1</b></div>
+                <div data-modes="survival"><span class="t-label">level</span><b id="tetris-level">1</b></div>
+                <div data-modes="survival"><span class="t-label">time</span><b id="tetris-survived">0:00</b></div>
                 <div><span class="t-label">combo</span><b id="tetris-combo">—</b></div>
                 <div><span class="t-label">b2b</span><b id="tetris-b2b">—</b></div>
+                <div data-modes="sprint cheese18 cheese100" hidden><span class="t-label">pieces</span><b id="tetris-pieces">0</b></div>
+                <div data-modes="sprint cheese18 cheese100" hidden><span class="t-label">pps</span><b id="tetris-pps">0.00</b></div>
+                <div data-modes="sprint" hidden><span class="t-label">finesse</span><b id="tetris-finesse">0</b></div>
               </div>
               <button type="button" class="t-keys-btn" id="tetris-keys-btn">controls</button>
             </div>
@@ -214,6 +220,12 @@
               <canvas id="tetris-canvas" width="240" height="480"></canvas>
               <div class="t-action" id="tetris-action" aria-live="polite"></div>
               <div class="game-overlay" id="tetris-overlay">
+                <div class="t-modes" id="t-modes" role="group" aria-label="Mode">
+                  <button type="button" data-mode="survival" class="is-active">survival</button>
+                  <button type="button" data-mode="sprint">40 lines</button>
+                  <button type="button" data-mode="cheese18">cheese 18</button>
+                  <button type="button" data-mode="cheese100">cheese 100</button>
+                </div>
                 <p id="tetris-msg">move · rotate · hold · hard drop — see controls</p>
                 <button type="button" id="tetris-start">play</button>
               </div>
@@ -231,6 +243,7 @@
             <div class="t-tuning">
               <label><span class="t-label">das</span><input type="range" id="t-das" min="67" max="300" step="1"><b id="t-das-val"></b></label>
               <label><span class="t-label">arr</span><input type="range" id="t-arr" min="0" max="83" step="1"><b id="t-arr-val"></b></label>
+              <label><span class="t-label">sdf</span><input type="range" id="t-sdf" min="5" max="41" step="1"><b id="t-sdf-val"></b></label>
             </div>
             <p class="t-keys-hint">click a key to rebind · saved to your username</p>
           </div>
@@ -297,11 +310,62 @@
         </div>
 
         <div class="game-stage" id="stage-cookie" hidden>
-          <div class="game-hud"><span>cookies <b id="cookie-count">0</b></span><span>per second <b id="cookie-cps">0</b></span><span>all-time <b id="cookie-total">0</b></span></div>
-          <div class="cookie-zone">
-            <button type="button" class="cookie-btn" id="cookie-btn" aria-label="Bake a cookie">🍪</button>
-            <div class="cookie-shop" id="cookie-shop"></div>
+          <div class="ck" id="ck">
+            <section class="ck-panel ck-side" aria-label="Your bakery">
+              <div class="ck-tabs" role="tablist">
+                <button type="button" class="ck-tab is-active" data-pane="stats" role="tab" aria-selected="true">stats</button>
+                <button type="button" class="ck-tab" data-pane="ach" role="tab" aria-selected="false">feats <b id="ck-ach-count">0</b></button>
+                <button type="button" class="ck-tab" data-pane="legacy" role="tab" aria-selected="false">legacy</button>
+              </div>
+              <div class="ck-pane" id="ck-pane-stats"><dl class="ck-stats" id="ck-stats"></dl></div>
+              <div class="ck-pane" id="ck-pane-ach" hidden>
+                <p class="ck-pane-note" id="ck-ach-note"></p>
+                <div class="ck-ach-grid" id="ck-ach-grid"></div>
+              </div>
+              <div class="ck-pane" id="ck-pane-legacy" hidden>
+                <div class="ck-legacy">
+                  <div class="ck-legacy-level"><span>prestige</span><b id="ck-prestige">0</b><em id="ck-prestige-bonus">+0% CpS</em></div>
+                  <p class="ck-pane-note" id="ck-legacy-note"></p>
+                  <div class="ck-bar"><i id="ck-legacy-bar"></i></div>
+                  <p class="ck-legacy-next" id="ck-legacy-next"></p>
+                  <button type="button" class="ck-ascend" id="ck-ascend" disabled>ascend</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="ck-panel ck-center" aria-label="The cookie">
+              <p class="ck-bakery" id="ck-bakery">your bakery</p>
+              <div class="ck-count" aria-live="off"><b id="ck-cookies">0</b><span>cookies</span></div>
+              <p class="ck-rate">per second <b id="ck-cps">0</b></p>
+              <div class="ck-buffs" id="ck-buffs"></div>
+              <div class="ck-cookie-wrap">
+                <div class="ck-cookie-float">
+                  <button type="button" class="ck-cookie" id="ck-cookie" aria-label="Bake a cookie"><svg class="ck-cookie-svg" viewBox="0 0 200 200" aria-hidden="true" focusable="false"><defs><radialGradient id="ck-dough" cx="40%" cy="36%" r="70%"><stop offset="0" stop-color="#f0c07a"/><stop offset="0.55" stop-color="#cf8f47"/><stop offset="1" stop-color="#94592a"/></radialGradient><radialGradient id="ck-chip" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#7a4a2a"/><stop offset="1" stop-color="#2b1509"/></radialGradient></defs><path d="M189.9 100C190 108.3 187.3 116.7 185.2 125C183.1 133.3 181.9 142.8 177.4 149.7C172.8 156.7 164.4 161.2 157.8 166.7C151.2 172.2 145.4 179.2 137.9 183C130.4 186.7 121.2 188.5 112.8 189.2C104.4 189.9 95.9 188.3 87.5 187.3C79 186.2 69.7 186.3 62.2 182.8C54.7 179.4 48.7 172.2 42.3 166.5C36 160.9 28.3 155.9 23.8 149C19.3 142 17.4 133 15.3 124.9C13.3 116.7 12 108.4 11.6 100C11.3 91.6 11.5 82.9 13.1 74.5C14.8 66.1 16.9 56.6 21.7 49.7C26.5 42.8 35.1 38.2 42 33C48.9 27.9 55.4 22.8 62.9 18.8C70.4 14.8 78.5 11.1 86.9 9.1C95.3 7.2 104.8 5.8 113.4 7.1C121.9 8.4 130.4 12.7 138 16.8C145.6 20.9 152.3 26.3 159.2 31.7C166 37.1 174.9 41.9 179.1 49.2C183.3 56.4 182.7 66.7 184.5 75.2C186.3 83.7 189.8 91.7 189.9 100Z" fill="#7d4a22"/><path d="M189.9 100C190 108.3 187.3 116.7 185.2 125C183.1 133.3 181.9 142.8 177.4 149.7C172.8 156.7 164.4 161.2 157.8 166.7C151.2 172.2 145.4 179.2 137.9 183C130.4 186.7 121.2 188.5 112.8 189.2C104.4 189.9 95.9 188.3 87.5 187.3C79 186.2 69.7 186.3 62.2 182.8C54.7 179.4 48.7 172.2 42.3 166.5C36 160.9 28.3 155.9 23.8 149C19.3 142 17.4 133 15.3 124.9C13.3 116.7 12 108.4 11.6 100C11.3 91.6 11.5 82.9 13.1 74.5C14.8 66.1 16.9 56.6 21.7 49.7C26.5 42.8 35.1 38.2 42 33C48.9 27.9 55.4 22.8 62.9 18.8C70.4 14.8 78.5 11.1 86.9 9.1C95.3 7.2 104.8 5.8 113.4 7.1C121.9 8.4 130.4 12.7 138 16.8C145.6 20.9 152.3 26.3 159.2 31.7C166 37.1 174.9 41.9 179.1 49.2C183.3 56.4 182.7 66.7 184.5 75.2C186.3 83.7 189.8 91.7 189.9 100Z" fill="url(#ck-dough)" transform="translate(0 -2)"/><path d="M180.9 100C181 107.5 178.5 115 176.7 122.5C174.8 130 173.7 138.5 169.6 144.7C165.5 151 157.9 155 152 160C146.1 165 140.9 171.3 134.1 174.7C127.4 178.1 119.1 179.7 111.5 180.3C104 180.9 96.3 179.5 88.7 178.5C81.1 177.6 72.7 177.6 66 174.5C59.2 171.4 53.9 165 48.1 159.9C42.4 154.8 35.5 150.3 31.4 144.1C27.4 137.8 25.6 129.7 23.8 122.4C22 115 20.8 107.6 20.5 100C20.1 92.4 20.3 84.6 21.8 77C23.3 69.5 25.2 60.9 29.5 54.7C33.8 48.5 41.6 44.4 47.8 39.7C54 35.1 59.9 30.5 66.6 27C73.4 23.4 80.7 20 88.2 18.2C95.8 16.4 104.4 15.2 112 16.4C119.7 17.5 127.3 21.4 134.2 25.1C141.1 28.8 147.1 33.7 153.2 38.6C159.4 43.4 167.4 47.7 171.2 54.2C175 60.8 174.5 70 176.1 77.7C177.7 85.3 180.8 92.5 180.9 100Z" fill="none" stroke="#b77536" stroke-opacity="0.45" stroke-width="3"/><circle cx="146.4" cy="53.3" r="1.6" fill="#a8672f" fill-opacity="0.55"/><circle cx="86.1" cy="110.2" r="1.9" fill="#a8672f" fill-opacity="0.55"/><circle cx="113.6" cy="105.6" r="1.4" fill="#a8672f" fill-opacity="0.55"/><circle cx="117.7" cy="128.8" r="1.2" fill="#a8672f" fill-opacity="0.55"/><circle cx="120.6" cy="100" r="1.2" fill="#a8672f" fill-opacity="0.55"/><circle cx="92.3" cy="108.9" r="2.1" fill="#a8672f" fill-opacity="0.55"/><circle cx="84.6" cy="86.6" r="1.4" fill="#a8672f" fill-opacity="0.55"/><circle cx="79.6" cy="129.1" r="1.2" fill="#a8672f" fill-opacity="0.55"/><circle cx="146.3" cy="35.4" r="1.7" fill="#a8672f" fill-opacity="0.55"/><circle cx="84.1" cy="101.6" r="1.2" fill="#a8672f" fill-opacity="0.55"/><circle cx="84.3" cy="123.8" r="2.1" fill="#a8672f" fill-opacity="0.55"/><circle cx="106.1" cy="109.9" r="2.2" fill="#a8672f" fill-opacity="0.55"/><circle cx="80.1" cy="96.4" r="1.8" fill="#a8672f" fill-opacity="0.55"/><circle cx="146.3" cy="107.9" r="2.3" fill="#a8672f" fill-opacity="0.55"/><circle cx="138.4" cy="55.5" r="1.4" fill="#a8672f" fill-opacity="0.55"/><circle cx="85.5" cy="116.1" r="2" fill="#a8672f" fill-opacity="0.55"/><circle cx="36.8" cy="86.9" r="1.5" fill="#a8672f" fill-opacity="0.55"/><circle cx="111.3" cy="165.8" r="2.3" fill="#a8672f" fill-opacity="0.55"/><path d="M68.8 51.2C70.9 52.8 72.1 55.9 72 58.1C71.9 60.3 70.2 63 68.1 64.4C66 65.8 62.5 66.9 59.5 66.6C56.5 66.3 51.2 64.7 50.1 62.6C49 60.6 51.3 56.7 52.8 54.3C54.4 51.9 56.8 48.8 59.4 48.3C62.1 47.8 66.6 49.6 68.8 51.2Z" fill="url(#ck-chip)"/><path d="M112 42.1C113.9 40.7 117.8 39.4 120 39.9C122.2 40.4 124.4 43.1 125.3 44.9C126.2 46.8 126.3 49.1 125.4 50.8C124.6 52.4 122.5 54.2 120.2 54.9C117.8 55.6 113.6 56.1 111.6 54.9C109.6 53.8 108.3 50.3 108.4 48.2C108.5 46.1 110 43.5 112 42.1Z" fill="url(#ck-chip)"/><path d="M141.6 94.4C139 93.5 136.4 90.5 135.8 88.3C135.2 86.1 136.3 83.3 138 81.2C139.6 79.2 142.6 76.4 145.4 76.1C148.3 75.9 153.1 77.8 154.8 79.7C156.5 81.6 156.1 85 155.5 87.4C155 89.8 153.6 92.9 151.3 94C149 95.2 144.2 95.4 141.6 94.4Z" fill="url(#ck-chip)"/><path d="M69.7 102.1C70.3 99.2 74.1 95.3 77.2 94.2C80.3 93 84.8 94.2 88.3 95.2C91.8 96.3 97.6 98.2 98.4 100.5C99.1 102.8 95 106.7 92.8 109C90.5 111.2 88 113.5 84.8 114C81.6 114.4 76.3 113.7 73.7 111.7C71.2 109.7 69.1 105 69.7 102.1Z" fill="url(#ck-chip)"/><path d="M138.7 139.8C136.5 141 132.4 140.2 129.3 139.5C126.3 138.9 121.9 138 120.5 135.9C119 133.8 119.1 129.1 120.7 126.9C122.3 124.6 126.6 122.8 130 122.3C133.4 121.8 138.8 122.1 141 123.8C143.1 125.5 143.2 129.8 142.8 132.5C142.4 135.2 141 138.6 138.7 139.8Z" fill="url(#ck-chip)"/><path d="M54.5 134.1C57.1 133.3 61.2 133.7 63.4 134.9C65.6 136 67.2 138.8 67.7 141.1C68.1 143.3 67.8 146.7 66 148.5C64.2 150.2 59.5 151.9 56.8 151.5C54.1 151.2 51.2 148.4 49.7 146.3C48.3 144.3 47.2 141.2 48 139.2C48.8 137.2 52 134.8 54.5 134.1Z" fill="url(#ck-chip)"/><path d="M109 163C108.1 164.9 105.3 166.8 102.7 167.5C100.2 168.2 96 168.4 93.9 167.3C91.7 166.1 89.8 162.6 89.9 160.6C90 158.5 92.5 156.3 94.4 155C96.4 153.8 99 152.9 101.3 153C103.7 153.2 107.1 154.5 108.4 156.1C109.6 157.8 110 161.1 109 163Z" fill="url(#ck-chip)"/><path d="M47.9 98.9C47.6 100.4 45.3 102.2 43.6 103C41.8 103.7 39.2 103.8 37.5 103.3C35.9 102.7 34.5 101.2 33.6 99.7C32.8 98.1 31.6 95.1 32.6 93.9C33.5 92.7 37.3 92.4 39.4 92.4C41.6 92.4 43.9 92.8 45.3 93.9C46.7 95 48.2 97.4 47.9 98.9Z" fill="url(#ck-chip)"/><path d="M153.6 124.3C152.6 123 153.6 120.5 154.1 119C154.7 117.4 155.4 115.6 156.9 114.8C158.4 114.1 161.2 113.9 163.1 114.5C165 115.1 167.5 116.8 168.1 118.4C168.6 120 167.7 122.7 166.4 124.1C165.1 125.5 162.2 126.7 160.1 126.8C158 126.8 154.6 125.6 153.6 124.3Z" fill="url(#ck-chip)"/><path d="M100.9 76.9C99.4 76.7 97.7 75.5 96.8 74.3C95.8 73.1 94.8 71 95.3 69.7C95.9 68.3 98.4 66.3 100 66.1C101.7 65.9 103.9 67.5 105.2 68.4C106.4 69.3 107.4 70.6 107.5 71.8C107.6 73 106.8 74.6 105.7 75.5C104.6 76.3 102.4 77.1 100.9 76.9Z" fill="url(#ck-chip)"/><path d="M78.6 174.4C77.1 174.5 74.9 174 74 173.2C73.1 172.4 72.9 170.6 73.1 169.5C73.4 168.5 74.6 167.6 75.7 167C76.8 166.4 78.6 165.7 79.8 166C80.9 166.2 82.4 167.6 82.8 168.6C83.3 169.7 83.4 171.5 82.7 172.4C82 173.4 80 174.2 78.6 174.4Z" fill="url(#ck-chip)"/><path d="M156.5 58.4C156.9 59.8 156.2 61.8 155.2 62.9C154.2 64.1 152.2 65.3 150.5 65.4C148.8 65.5 146 64.8 145 63.7C144.1 62.7 144.7 60.8 144.9 59.3C145.1 57.9 145.1 55.6 146.4 54.8C147.7 54 150.9 54.1 152.6 54.7C154.3 55.3 156 57 156.5 58.4Z" fill="url(#ck-chip)"/><ellipse cx="74" cy="56" rx="38" ry="20" fill="#fff" fill-opacity="0.1" transform="rotate(-28 74 56)"/></svg></button>
+                </div>
+              </div>
+              <p class="ck-note" id="ck-note" hidden></p>
+            </section>
+
+            <section class="ck-panel ck-store" aria-label="Store">
+              <div class="ck-store-head">
+                <span class="t-label">store</span>
+                <div class="ck-qty" id="ck-qty" role="group" aria-label="Buy amount">
+                  <button type="button" data-qty="1" class="is-active">×1</button>
+                  <button type="button" data-qty="10">×10</button>
+                  <button type="button" data-qty="100">×100</button>
+                  <button type="button" data-qty="max">max</button>
+                </div>
+              </div>
+              <div class="ck-scroll">
+                <p class="ck-sub-label" id="ck-upgrades-label">upgrades</p>
+                <div class="ck-upgrades" id="ck-upgrades"></div>
+                <p class="ck-sub-label">buildings</p>
+                <div class="ck-buildings" id="ck-buildings"></div>
+              </div>
+            </section>
           </div>
+          <div class="ck-tip" id="ck-tip" role="tooltip" hidden></div>
+          <div class="ck-toasts" id="ck-toasts" aria-live="polite"></div>
         </div>
       </div>
 

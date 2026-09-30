@@ -4,7 +4,7 @@
   "description": "Soul Studies — password-gated site with essay, username creation, and a shared chat room.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node boot.js"
   },
   "engines": {
     "node": ">=18"

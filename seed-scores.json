@@ -1,34 +1,23 @@
 {
   "_comment": [
-    "Leaderboard records that survive a redeploy.",
+    "Leaderboard records and the admin's roster, merged in at boot.",
     "",
-    "This app runs on a Render free instance, which has NO persistent disk:",
-    "every deploy rebuilds the container from a fresh git checkout, so",
-    "everything in data/ (including scores-<room>.json) is wiped. Anything",
-    "listed here is merged back in at boot by loadScores() in server.js.",
+    "A deploy normally carries data/ over from the instance it replaces",
+    "(boot.js). These are the floor for when it can't. A record here only",
+    "ever raises a score (or, for the timed boards, lowers a time); a live",
+    "record that beats it wins. Roster entries are names only.",
     "",
-    "Rules: an entry here only ever RAISES a score, never lowers one. If the",
-    "same player has a higher live score, theirs wins; if they later score",
-    "lower, the record below still stands. Keys are room ids ('meowmeow',",
-    "'overwatch'), then game ids ('snake', 'tetris', 'mines', 'poker',",
-    "'cookie'). To add a record, copy the shape below.",
-    "",
-    "Entries are records people actually set. Don't invent them.",
-    "",
-    "Not seeded, because the standings they came from listed no score:",
-    "snake/y (7th), tetris/Doom (10th), cookie/sigmachan (10th, though an",
-    "older 415 of theirs is kept below). Add a score for any of them here",
-    "and they'll appear."
+    "Entries are records people actually set. Don't invent them."
   ],
   "overwatch": {
     "snake": [
       {
-        "username": "copper",
-        "score": 540
+        "username": "sparks",
+        "score": 800
       },
       {
-        "username": "sparks",
-        "score": 530
+        "username": "copper",
+        "score": 540
       },
       {
         "username": "x",
@@ -45,6 +34,14 @@
       {
         "username": "ab",
         "score": 100
+      },
+      {
+        "username": "a4",
+        "score": 70
+      },
+      {
+        "username": "sigmachan",
+        "score": 60
       }
     ],
     "tetris": [
@@ -65,6 +62,14 @@
         "score": 137000
       },
       {
+        "username": "Jamorant",
+        "score": 134000
+      },
+      {
+        "username": "Kabaan",
+        "score": 122000
+      },
+      {
         "username": "sigmachan",
         "score": 93000
       },
@@ -73,16 +78,48 @@
         "score": 68000
       },
       {
+        "username": "sparks",
+        "score": 60000
+      },
+      {
         "username": "Jumpyboy20",
         "score": 45000
       },
       {
+        "username": "CumINmybu$$",
+        "score": 41000
+      },
+      {
+        "username": "a4",
+        "score": 37000
+      },
+      {
         "username": "fly",
-        "score": 34000
+        "score": 37000
+      },
+      {
+        "username": "x",
+        "score": 35000
       },
       {
         "username": "Takan",
         "score": 30000
+      },
+      {
+        "username": "doom",
+        "score": 12000
+      },
+      {
+        "username": "ab",
+        "score": 6500
+      },
+      {
+        "username": "Overwatch",
+        "score": 3700
+      },
+      {
+        "username": "fatty",
+        "score": 1200
       }
     ],
     "mines": [
@@ -94,7 +131,7 @@
     "poker": [
       {
         "username": "copper",
-        "score": 12000
+        "score": 22000
       },
       {
         "username": "jamorant",
@@ -108,43 +145,111 @@
     "cookie": [
       {
         "username": "copper",
-        "score": 181400000
-      },
-      {
-        "username": "fatty",
-        "score": 18100000
+        "score": 210300000
       },
       {
         "username": "sparks",
-        "score": 16900000
+        "score": 100600000
+      },
+      {
+        "username": "a4",
+        "score": 46500000
+      },
+      {
+        "username": "fatty",
+        "score": 29400000
       },
       {
         "username": "Kaban",
-        "score": 4800000
+        "score": 6700000
       },
       {
-        "username": "Doom",
-        "score": 1600000
-      },
-      {
-        "username": "Jamorant",
-        "score": 165000
+        "username": "doom",
+        "score": 6100000
       },
       {
         "username": "sss",
-        "score": 98000
+        "score": 5000000
+      },
+      {
+        "username": "Jamorant",
+        "score": 262000
       },
       {
         "username": "x",
-        "score": 16000
+        "score": 18000
+      },
+      {
+        "username": "Overwatch",
+        "score": 6900
       },
       {
         "username": "Dr goon",
-        "score": 3592
+        "score": 5300
       },
       {
         "username": "sigmachan",
-        "score": 415
+        "score": 1800
+      },
+      {
+        "username": "ab",
+        "score": 246
+      }
+    ],
+    "roster": [
+      {
+        "username": "x"
+      },
+      {
+        "username": "a4"
+      },
+      {
+        "username": "sparks"
+      },
+      {
+        "username": "Kaban"
+      },
+      {
+        "username": "copper"
+      },
+      {
+        "username": "Jamorant"
+      },
+      {
+        "username": "fatty"
+      },
+      {
+        "username": "sss"
+      },
+      {
+        "username": "Kabaan"
+      },
+      {
+        "username": "Dr goon"
+      },
+      {
+        "username": "doom"
+      },
+      {
+        "username": "CumINmybu$$"
+      },
+      {
+        "username": "ab"
+      },
+      {
+        "username": "sigmachan"
+      },
+      {
+        "username": "fly"
+      },
+      {
+        "username": "Takan"
+      },
+      {
+        "username": "Overwatch"
+      },
+      {
+        "username": "Jumpyboy20"
       }
     ]
   }

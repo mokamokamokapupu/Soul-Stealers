@@ -2,6 +2,7 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const boot = require('./boot');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
@@ -88,7 +89,13 @@ const ALLOWED_AVATAR_EXTS = ['jpg', 'png', 'webp'];
 // 'enc' = AES-GCM ciphertext this server can't read. Avatars stay real images.
 const ALLOWED_CHAT_IMAGE_EXTS = ['jpg', 'png', 'webp', 'enc'];
 const REPLY_ID_RE = /^[0-9a-fA-F-]{1,100}$/;
-const GAME_IDS = ['snake', 'tetris', 'mines', 'poker', 'cookie'];
+const GAME_IDS = ['snake', 'tetris', 'mines', 'poker', 'cookie', 'sprint', 'cheese18', 'cheese100'];
+// Race times in milliseconds: the lower the better.
+const TIMED_GAMES = new Set(['sprint', 'cheese18', 'cheese100']);
+const MIN_TIMED_MS = { sprint: 5000, cheese18: 3000, cheese100: 15000 };
+const MAX_TIMED_MS = 2 * 60 * 60 * 1000;
+const MAX_COOKIE_SCORE = 1e300;
+const MAX_COOKIE_SAVE_BYTES = 32 * 1024;
 // Closed set of activity codes. Never free text: the client re-labels these for display.
 const ACTIVITY_CODES = [
   'chat', 'essay', 'arcade', 'spotify', 'idle',
@@ -289,6 +296,20 @@ function loadBans(roomId) {
       }
     }
   }
+  const seededRoom = SEED_SCORES && typeof SEED_SCORES === 'object' ? SEED_SCORES[roomId] : null;
+  for (const rec of seededRoom && Array.isArray(seededRoom.roster) ? seededRoom.roster : []) {
+    if (!rec || typeof rec.username !== 'string' || !USERNAME_RE.test(rec.username)) continue;
+    const key = rec.username.toLowerCase();
+    const firstAt = Number(rec.firstAt) || 0;
+    const lastAt = Number(rec.lastAt) || 0;
+    const have = empty.roster[key];
+    if (!have) {
+      empty.roster[key] = { username: rec.username, firstAt, lastAt };
+    } else {
+      if (firstAt && (!have.firstAt || firstAt < have.firstAt)) have.firstAt = firstAt;
+      if (lastAt > have.lastAt) have.lastAt = lastAt;
+    }
+  }
   for (const device of seededBanDevices()) {
     if (!empty.devices[device]) empty.devices[device] = { by: 'config', at: 0, username: null };
   }
@@ -308,6 +329,7 @@ function rememberUser(roomState, username, deviceId) {
   if (rec) {
     rec.username = username;
     rec.lastAt = now;
+    if (!rec.firstAt) rec.firstAt = now;
   } else {
     roster[key] = { username, firstAt: now, lastAt: now };
     const names = Object.keys(roster);
@@ -530,6 +552,16 @@ function loadSeedScores() {
 }
 const SEED_SCORES = loadSeedScores();
 
+function beats(game, a, b) {
+  return TIMED_GAMES.has(game) ? a < b : a > b;
+}
+
+function validScore(game, score) {
+  if (typeof score !== 'number' || !isFinite(score) || score < 0) return false;
+  if (TIMED_GAMES.has(game)) return score >= MIN_TIMED_MS[game] && score <= MAX_TIMED_MS;
+  return score <= (game === 'cookie' ? MAX_COOKIE_SCORE : MAX_GAME_SCORE);
+}
+
 function loadScores(roomId) {
   let stored = {};
   try {
@@ -544,8 +576,7 @@ function loadScores(roomId) {
     if (!entries || typeof entries !== 'object') continue;
     for (const key of Object.keys(entries)) {
       const rec = entries[key];
-      if (rec && typeof rec.username === 'string' && USERNAME_RE.test(rec.username) &&
-          typeof rec.score === 'number' && isFinite(rec.score) && rec.score >= 0) {
+      if (rec && typeof rec.username === 'string' && USERNAME_RE.test(rec.username) && validScore(game, rec.score)) {
         scores[game][key] = { username: rec.username, score: Math.floor(rec.score), ts: rec.ts || 0 };
       }
     }
@@ -561,11 +592,11 @@ function loadScores(roomId) {
       if (!Array.isArray(seeded)) continue;
       for (const rec of seeded) {
         if (!rec || typeof rec.username !== 'string' || !USERNAME_RE.test(rec.username)) continue;
-        if (typeof rec.score !== 'number' || !isFinite(rec.score) || rec.score < 0 || rec.score > MAX_GAME_SCORE) continue;
+        if (!validScore(game, rec.score)) continue;
         const key = rec.username.toLowerCase();
         const score = Math.floor(rec.score);
         const current = scores[game][key];
-        if (!current || score > current.score) {
+        if (!current || beats(game, score, current.score)) {
           scores[game][key] = { username: rec.username, score, ts: rec.ts || 0 };
         }
       }
@@ -574,11 +605,25 @@ function loadScores(roomId) {
   return scores;
 }
 
+/** A bakery keeps baking while its owner is away, so the board counts what it
+ * has made since the last save at the rate it was saved with. */
+function cookieBakedNow(roomState, usernameKey) {
+  const rec = roomState.cookieSaves[usernameKey];
+  const stored = roomState.scores.cookie[usernameKey];
+  let best = stored ? stored.score : 0;
+  if (rec) {
+    const projected = rec.save.bakedAll + rec.save.cps * Math.max(0, Date.now() - rec.at) / 1000;
+    if (projected > best) best = projected;
+  }
+  return Math.floor(Math.min(best, MAX_COOKIE_SCORE));
+}
+
 function bestScoresFor(roomState, usernameKey) {
   const out = Object.create(null);
   for (const game of GAME_IDS) {
     const rec = roomState.scores[game] && roomState.scores[game][usernameKey];
-    if (rec && rec.score) out[game] = rec.score;
+    const score = game === 'cookie' ? cookieBakedNow(roomState, usernameKey) : rec && rec.score;
+    if (score) out[game] = score;
   }
   return out;
 }
@@ -586,9 +631,87 @@ function bestScoresFor(roomState, usernameKey) {
 function topScores(roomState) {
   const out = {};
   for (const game of GAME_IDS) {
-    out[game] = Object.values(roomState.scores[game])
-      .sort((a, b) => b.score - a.score)
+    let rows = Object.values(roomState.scores[game]);
+    if (game === 'cookie') {
+      const byKey = new Map();
+      for (const key of Object.keys(roomState.scores.cookie)) {
+        byKey.set(key, roomState.scores.cookie[key].username);
+      }
+      for (const key of Object.keys(roomState.cookieSaves)) {
+        if (!byKey.has(key)) byKey.set(key, roomState.cookieSaves[key].username);
+      }
+      rows = Array.from(byKey, ([key, username]) => ({ username, score: cookieBakedNow(roomState, key) }));
+    }
+    out[game] = rows
+      .sort((a, b) => (TIMED_GAMES.has(game) ? a.score - b.score : b.score - a.score))
       .slice(0, 10);
+  }
+  return out;
+}
+
+function cookieSavesPathFor(roomId) {
+  return path.join(DATA_DIR, 'cookie-' + roomId + '.json');
+}
+
+const COOKIE_SAVE_NUMBERS = [
+  'cookies', 'baked', 'bakedAll', 'handmade', 'clicks', 'runClicks', 'gcClicks', 'prestige', 'ascensions',
+  'started', 'runStarted', 'played', 'offline', 'cps', 'savedAt',
+];
+
+/** Only the shape is checked, the same trust every other score gets; anything
+ * not in the shape is dropped. */
+function cleanCookieSave(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const save = { v: 2 };
+  for (const field of COOKIE_SAVE_NUMBERS) {
+    const n = raw[field] === undefined ? 0 : raw[field];
+    if (typeof n !== 'number' || !isFinite(n) || n < 0 || n > MAX_COOKIE_SCORE) return null;
+    save[field] = n;
+  }
+  save.owned = {};
+  if (raw.owned !== undefined) {
+    if (!raw.owned || typeof raw.owned !== 'object' || Array.isArray(raw.owned)) return null;
+    const ids = Object.keys(raw.owned);
+    if (ids.length > 40) return null;
+    for (const id of ids) {
+      const n = raw.owned[id];
+      if (!/^[a-z]{1,16}$/.test(id) || !Number.isInteger(n) || n < 0 || n > 100000) return null;
+      if (n) save.owned[id] = n;
+    }
+  }
+  for (const list of ['upgrades', 'ach']) {
+    const ids = raw[list] === undefined ? [] : raw[list];
+    if (!Array.isArray(ids) || ids.length > 1024) return null;
+    if (!ids.every((n) => Number.isInteger(n) && n >= 0 && n < 4096)) return null;
+    save[list] = Array.from(new Set(ids));
+  }
+  save.buffs = [];
+  if (raw.buffs !== undefined) {
+    if (!Array.isArray(raw.buffs) || raw.buffs.length > 8) return null;
+    for (const b of raw.buffs) {
+      if (!b || typeof b !== 'object' || !/^[a-z]{1,12}$/.test(b.k || '')) return null;
+      if (typeof b.until !== 'number' || !isFinite(b.until) || typeof b.m !== 'number' || !isFinite(b.m) || b.m < 0 || b.m > 1e6) return null;
+      save.buffs.push({ k: b.k, until: b.until, m: b.m, len: typeof b.len === 'number' && isFinite(b.len) ? b.len : 0 });
+    }
+  }
+  return save;
+}
+
+function loadCookieSaves(roomId) {
+  const out = Object.create(null);
+  let stored = null;
+  try {
+    stored = JSON.parse(fs.readFileSync(cookieSavesPathFor(roomId), 'utf8'));
+  } catch (e) {
+    stored = null;
+  }
+  if (stored && typeof stored === 'object') {
+    for (const key of Object.keys(stored)) {
+      const rec = stored[key];
+      if (!rec || typeof rec.username !== 'string' || !USERNAME_RE.test(rec.username)) continue;
+      const save = cleanCookieSave(rec.save);
+      if (save) out[key] = { username: rec.username, save, at: Number(rec.at) || Date.now() };
+    }
   }
   return out;
 }
@@ -745,6 +868,8 @@ for (const room of ROOMS) {
     dirty: false,
     clearedAt: 0,
     scores: loadScores(room.id),
+    cookieSaves: loadCookieSaves(room.id),
+    cookieDirty: false,
     id: room.id,
     archiveIndex: loadArchiveIndex(room.id),
     archiveDirty: false,
@@ -820,6 +945,10 @@ setInterval(() => {
       r.scoresDirty = false;
       fs.writeFile(scoresPathFor(roomId), JSON.stringify(r.scores), () => {});
     }
+    if (r.cookieDirty) {
+      r.cookieDirty = false;
+      fs.writeFile(cookieSavesPathFor(roomId), JSON.stringify(r.cookieSaves), { mode: 0o600 }, () => {});
+    }
     if (r.spotifyDirty) {
       r.spotifyDirty = false;
       fs.writeFile(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens), { mode: 0o600 }, () => {});
@@ -847,6 +976,7 @@ function flushSaveSync() {
     try {
       fs.writeFileSync(messagesPathFor(roomId), JSON.stringify(rooms[roomId].messages));
       fs.writeFileSync(scoresPathFor(roomId), JSON.stringify(rooms[roomId].scores));
+      fs.writeFileSync(cookieSavesPathFor(roomId), JSON.stringify(rooms[roomId].cookieSaves), { mode: 0o600 });
       fs.writeFileSync(spotifyTokensPathFor(roomId), JSON.stringify(rooms[roomId].spotifyTokens), { mode: 0o600 });
       fs.writeFileSync(bansPathFor(roomId), JSON.stringify(rooms[roomId].bans), { mode: 0o600 });
     } catch (e) { /* best effort on shutdown */ }
@@ -1154,13 +1284,14 @@ function banReasonFor(roomState, deviceId, ip, usernameKey) {
 
 const BANNED_MESSAGE = 'This device has been blocked from that room.';
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes) {
+  const limit = maxBytes || MAX_BODY_BYTES;
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         reject({ status: 413, message: 'Payload too large' });
         req.destroy();
         return;
@@ -2813,18 +2944,59 @@ async function handleApi(req, res, pathname) {
     try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
     const game = body.game;
     const score = Number(body.score);
-    if (!GAME_IDS.includes(game) || !isFinite(score) || score < 0 || score > MAX_GAME_SCORE) {
+    if (!GAME_IDS.includes(game) || !validScore(game, score)) {
       return sendJson(res, 400, { error: 'Invalid score.' });
     }
     const roomState = rooms[session.room];
     const key = session.username.toLowerCase();
     const clean = Math.floor(score);
     const current = roomState.scores[game][key];
-    if (!current || clean > current.score) {
+    if (!current || beats(game, clean, current.score)) {
       roomState.scores[game][key] = { username: session.username, score: clean, ts: Date.now() };
       roomState.scoresDirty = true;
     }
     return sendJson(res, 200, { ok: true, scores: topScores(roomState) });
+  }
+
+  // GET /api/games/cookie — this name's bakery, and the server's clock
+  if (pathname === '/api/games/cookie' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const rec = rooms[session.room].cookieSaves[session.username.toLowerCase()];
+    return sendJson(res, 200, { save: rec ? rec.save : null, at: rec ? rec.at : 0, now: Date.now() });
+  }
+
+  // POST /api/games/cookie — keep this name's bakery
+  if (pathname === '/api/games/cookie' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    const now = Date.now();
+    if (session.lastCookieSaveAt && now - session.lastCookieSaveAt < 1500) {
+      return sendJson(res, 200, { ok: false, wait: true });
+    }
+    let body;
+    try { body = await readJsonBody(req, MAX_COOKIE_SAVE_BYTES); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const save = cleanCookieSave(body && body.save);
+    if (!save) return sendJson(res, 400, { error: 'Invalid save.' });
+    session.lastCookieSaveAt = now;
+    const roomState = rooms[session.room];
+    const key = session.username.toLowerCase();
+    const existing = roomState.cookieSaves[key];
+    if (!existing && Object.keys(roomState.cookieSaves).length >= MAX_BANS_KEPT) {
+      return sendJson(res, 507, { error: 'Full.' });
+    }
+    // Another tab or device of the same name is further along: it wins.
+    if (existing && save.bakedAll < existing.save.bakedAll - Math.max(1, existing.save.bakedAll * 1e-6)) {
+      return sendJson(res, 200, { ok: false, behind: true });
+    }
+    roomState.cookieSaves[key] = { username: session.username, save, at: now };
+    roomState.cookieDirty = true;
+    const baked = Math.floor(Math.min(save.bakedAll, MAX_COOKIE_SCORE));
+    const current = roomState.scores.cookie[key];
+    if (baked > 0 && (!current || baked > current.score)) {
+      roomState.scores.cookie[key] = { username: session.username, score: baked, ts: now };
+      roomState.scoresDirty = true;
+    }
+    return sendJson(res, 200, { ok: true, at: now, now });
   }
 
   // GET /api/spotify/login
@@ -3599,10 +3771,50 @@ async function handleApi(req, res, pathname) {
 // Server
 // ---------------------------------------------------------------------------
 
+/** Everything in data/, with what is held in memory taken from memory, for
+ * the instance that is about to replace this one. */
+function syncFiles() {
+  const files = [];
+  const taken = new Set();
+  const add = (abs, text) => {
+    const rel = path.relative(DATA_DIR, abs).split(path.sep).join('/');
+    if (!rel || rel.startsWith('..') || taken.has(rel)) return;
+    taken.add(rel);
+    files.push({ rel, abs, data: text === undefined ? null : Buffer.from(text, 'utf8') });
+  };
+  for (const roomId of Object.keys(rooms)) {
+    const r = rooms[roomId];
+    add(messagesPathFor(roomId), JSON.stringify(r.messages));
+    add(scoresPathFor(roomId), JSON.stringify(r.scores));
+    add(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens));
+    add(bansPathFor(roomId), JSON.stringify(r.bans));
+    add(cookieSavesPathFor(roomId), JSON.stringify(r.cookieSaves));
+    add(path.join(archiveDirFor(roomId), 'index.json'), JSON.stringify(r.archiveIndex));
+    add(path.join(archiveDirFor(roomId), 'reactions.json'), JSON.stringify(r.reactions));
+  }
+  add(sessionsPath(), JSON.stringify(Array.from(sessions.entries())));
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else if (entry.isFile()) add(abs);
+    }
+  };
+  walk(DATA_DIR);
+  return files;
+}
+
 const server = http.createServer((req, res) => {
   // The strict policy by default; only the room's own page widens it.
   applySecurityHeaders(res, false);
   const pathname = req.url.split('?')[0];
+
+  if (pathname === boot.SYNC_PATH && boot.accepts(req)) {
+    boot.send(res, syncFiles()).catch(() => res.destroy());
+    return;
+  }
 
   if (pathname.startsWith('/api/')) {
     handleApi(req, res, pathname).catch((err) => {
