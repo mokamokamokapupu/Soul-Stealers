@@ -5092,15 +5092,17 @@
     if (snake.queue.length < 3) snake.queue.push(d);
   }
 
+  // The move in flight is already committed (the head is drawn heading
+  // into that square), so a queued turn takes over the moment it arrives.
+  function snakeTakeTurn() {
+    var s = snake;
+    s.prevAngle = Math.atan2(s.dir.y, s.dir.x);
+    if (s.queue.length) s.dir = s.queue.shift();
+    s.angle = Math.atan2(s.dir.y, s.dir.x);
+  }
+
   function snakeStep(now) {
     var s = snake;
-    if (s.queue.length) {
-      s.prevAngle = Math.atan2(s.dir.y, s.dir.x);
-      s.dir = s.queue.shift();
-    } else {
-      s.prevAngle = Math.atan2(s.dir.y, s.dir.x);
-    }
-    s.angle = Math.atan2(s.dir.y, s.dir.x);
     var head = s.body[0];
     var nx = head.x + s.dir.x;
     var ny = head.y + s.dir.y;
@@ -5141,6 +5143,7 @@
       if (!s.foods.length) return snakeDie(now, true);
     }
     snakeLengthEl.textContent = String(s.body.length);
+    snakeTakeTurn();
   }
 
   function snakeBurst(s, x, y, color, now) {
@@ -5273,22 +5276,30 @@
     var p = s.alive ? Math.min(1, s.acc / snakeDelay(s, now)) : 1;
     var skin = SNAKE_SKINS[snakeOpts.color] || SNAKE_SKINS.blue;
     var n1 = s.body.length;
-    // Only the two ends move between ticks: the head slides into its new
-    // square and the tail slides out of its old one; everything between
-    // stays on its square, so the body never cuts corners.
-    function slide(from, to) {
-      var dx = to.x - from.x;
-      var dy = to.y - from.y;
-      if (Math.abs(dx) > 1) dx = -Math.sign(dx);
-      if (Math.abs(dy) > 1) dy = -Math.sign(dy);
-      return { x: to.x - dx * (1 - p) + 0.5, y: to.y - dy * (1 - p) + 0.5 };
-    }
-    var verts = [slide(s.prev[0] || s.body[0], s.body[0])];
-    for (var vi = 1; vi < n1; vi++) verts.push({ x: s.body[vi].x + 0.5, y: s.body[vi].y + 0.5 });
-    var oldTail = s.prev[n1 - 1];
-    var newTail = s.body[n1 - 1];
-    if (n1 > 1 && oldTail && (oldTail.x !== newTail.x || oldTail.y !== newTail.y)) {
-      verts.push(slide(oldTail, newTail));
+    // The head is drawn heading into the square it has committed to and the
+    // tail drawn leaving its last one, so what you see is where the snake is
+    // going rather than where it was: turns land at the next square's centre.
+    var h0 = s.body[0];
+    var nx = h0.x + s.dir.x;
+    var ny = h0.y + s.dir.y;
+    var offBoard = !s.wrap && (nx < 0 || ny < 0 || nx >= s.n || ny >= s.n);
+    if (s.wrap) { nx = (nx + s.n) % s.n; ny = (ny + s.n) % s.n; }
+    var willEat = false;
+    for (var fi = 0; fi < s.foods.length; fi++) if (s.foods[fi].x === nx && s.foods[fi].y === ny) willEat = true;
+    var blocked = offBoard;
+    var solidN = willEat ? n1 : n1 - 1;
+    for (var si = 0; si < solidN && !blocked; si++) if (s.body[si].x === nx && s.body[si].y === ny) blocked = true;
+    var reach = blocked ? Math.min(p, 0.12) : p;
+    var verts = [{ x: h0.x + 0.5 + s.dir.x * reach, y: h0.y + 0.5 + s.dir.y * reach }];
+    for (var vi = 0; vi < n1; vi++) verts.push({ x: s.body[vi].x + 0.5, y: s.body[vi].y + 0.5 });
+    if (n1 > 1 && !willEat && !blocked) {
+      var tl1 = s.body[n1 - 1];
+      var tl2 = s.body[n1 - 2];
+      var tdx = tl2.x - tl1.x;
+      var tdy = tl2.y - tl1.y;
+      if (Math.abs(tdx) > 1) tdx = -Math.sign(tdx);
+      if (Math.abs(tdy) > 1) tdy = -Math.sign(tdy);
+      verts[verts.length - 1] = { x: tl1.x + 0.5 + tdx * p, y: tl1.y + 0.5 + tdy * p };
     }
 
     var width = cell * 0.74;
@@ -5369,7 +5380,8 @@
     });
 
     var head = { x: verts[0].x * cell, y: verts[0].y * cell };
-    var ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    var pt = Math.min(1, p * 2.2);
+    var ease = pt < 0.5 ? 2 * pt * pt : 1 - Math.pow(-2 * pt + 2, 2) / 2;
     var angle = lerpAngle(s.prevAngle, s.angle, ease);
     var sq = (now - s.squashAt) / 260;
     var stretch = sq >= 0 && sq < 1 ? Math.sin(sq * Math.PI) * (1 - sq) : 0;
