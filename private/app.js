@@ -3459,7 +3459,7 @@
       document.getElementById('stage-' + g).hidden = g !== name;
     });
     renderActiveLb();
-    if (name === 'cookie' && ck) ckRenderAll();
+    if (name === 'cookie' && ck) { ckRenderAll(); ckNewsAt = Date.now(); ckNews(); }
     else ckHideTip();
     if (name === 'snake' && !snake) drawSnakePreview();
     nudgePresence();
@@ -4930,8 +4930,18 @@
     banana: { color: '#ffd23f', points: 10, boostMs: 4000, note: 'Bananas: 10 points and a few seconds of extra speed.' },
     pepper: { color: '#ff4a2a', points: 20, pace: 0.62, note: 'Peppers: ultra-fast the whole game, but every pepper is worth double.' },
   };
+  var SNAKE_SKINS = {
+    blue: { body: '#4e7cf6', dark: '#3a62d6' },
+    red: { body: '#ef5646', dark: '#cc3a2c' },
+    purple: { body: '#9b6bf2', dark: '#7b4bd6' },
+    pink: { body: '#f46fb4', dark: '#d44f94' },
+    orange: { body: '#ff9440', dark: '#e07422' },
+    yellow: { body: '#f5c842', dark: '#d6a91f' },
+    teal: { body: '#2fbfb2', dark: '#1f9a8f' },
+    night: { body: '#4b4f63', dark: '#33364a' },
+  };
   var SNAKE_OPTS_KEY = 'ss_snake_opts';
-  var snakeOpts = { speed: 'normal', size: 'medium', walls: 'classic', fruit: 'apple', apples: 1 };
+  var snakeOpts = { speed: 'normal', size: 'medium', walls: 'classic', fruit: 'apple', apples: 1, color: 'blue', pattern: 'solid' };
   var snake = null;
   var snakeRaf = null;
   var snakeLastTs = 0;
@@ -4947,7 +4957,7 @@
     prefs.set(SNAKE_OPTS_KEY, JSON.stringify(snakeOpts));
   }
 
-  var SNAKE_GROUPS = [['speed', 'speed'], ['size', 'size'], ['walls', 'walls'], ['fruit', 'fruit'], ['apples', 'apples']];
+  var SNAKE_GROUPS = [['speed', 'speed'], ['size', 'size'], ['walls', 'walls'], ['fruit', 'fruit'], ['apples', 'apples'], ['color', 'color'], ['pattern', 'pattern']];
 
   function refreshSnakeOptButtons() {
     SNAKE_GROUPS.forEach(function (g) {
@@ -4981,6 +4991,8 @@
       if (saved.walls === 'classic' || saved.walls === 'portal') snakeOpts.walls = saved.walls;
       if (SNAKE_FRUITS[saved.fruit]) snakeOpts.fruit = saved.fruit;
       if ([1, 3, 5].indexOf(saved.apples) !== -1) snakeOpts.apples = saved.apples;
+      if (SNAKE_SKINS[saved.color]) snakeOpts.color = saved.color;
+      if (['solid', 'stripes', 'spots'].indexOf(saved.pattern) !== -1) snakeOpts.pattern = saved.pattern;
     } catch (e) { /* defaults */ }
     refreshSnakeOptButtons();
   });
@@ -5162,15 +5174,23 @@
     var bob = 1 + Math.sin(t / 260) * 0.05;
     ctx.scale(bob, bob);
     if (kind === 'banana') {
-      ctx.rotate(-0.5);
-      ctx.fillStyle = '#ffd23f';
+      ctx.rotate(-0.35);
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#d9a514';
+      ctx.lineWidth = r * 0.7;
       ctx.beginPath();
-      ctx.arc(0, -r * 0.35, r * 0.95, 0.35 * Math.PI, 0.95 * Math.PI);
-      ctx.arc(-r * 0.12, -r * 0.75, r * 1.2, 0.86 * Math.PI, 0.4 * Math.PI, true);
-      ctx.closePath();
-      ctx.fill();
+      ctx.arc(0, -r * 0.55, r * 0.95, 0.18 * Math.PI, 0.82 * Math.PI);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffd84a';
+      ctx.lineWidth = r * 0.52;
+      ctx.beginPath();
+      ctx.arc(0, -r * 0.6, r * 0.95, 0.2 * Math.PI, 0.8 * Math.PI);
+      ctx.stroke();
       ctx.fillStyle = '#6b4423';
-      ctx.fillRect(-r * 0.95, -r * 0.1, r * 0.22, r * 0.22);
+      ctx.beginPath();
+      ctx.arc(Math.cos(0.18 * Math.PI) * r * 0.95, -r * 0.55 + Math.sin(0.18 * Math.PI) * r * 0.95, r * 0.16, 0, Math.PI * 2);
+      ctx.arc(Math.cos(0.82 * Math.PI) * r * 0.95, -r * 0.55 + Math.sin(0.82 * Math.PI) * r * 0.95, r * 0.13, 0, Math.PI * 2);
+      ctx.fill();
     } else if (kind === 'pepper') {
       ctx.rotate(0.6);
       ctx.fillStyle = '#ff4a2a';
@@ -5238,85 +5258,170 @@
     });
 
     var p = s.alive ? Math.min(1, s.acc / snakeDelay(s, now)) : 1;
-    var pts = s.body.map(function (b, i) {
-      var from = s.prev[i] || b;
-      var dx = b.x - from.x;
-      var dy = b.y - from.y;
+    var skin = SNAKE_SKINS[snakeOpts.color] || SNAKE_SKINS.blue;
+    var n1 = s.body.length;
+    // Only the two ends move between ticks: the head slides into its new
+    // square and the tail slides out of its old one; everything between
+    // stays on its square, so the body never cuts corners.
+    function slide(from, to) {
+      var dx = to.x - from.x;
+      var dy = to.y - from.y;
       if (Math.abs(dx) > 1) dx = -Math.sign(dx);
       if (Math.abs(dy) > 1) dy = -Math.sign(dy);
-      return { x: (b.x - dx * (1 - p) + 0.5) * cell, y: (b.y - dy * (1 - p) + 0.5) * cell, dx: dx, dy: dy };
-    });
-
-    var len = pts.length;
-    var base = cell * 0.7;
-    var widths = pts.map(function (pt, i) {
-      var w = base * (1 - (i / Math.max(len, 1)) * 0.22);
-      s.pulses.forEach(function (t0) {
-        var k = (now - t0) / 38;
-        var d = i - k;
-        if (d > -2.5 && d < 2.5) w += cell * 0.22 * Math.exp(-d * d / 1.6);
-      });
-      return w;
-    });
-    s.pulses = s.pulses.filter(function (t0) { return (now - t0) / 38 < len + 3; });
-
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    for (var i = len - 1; i >= 1; i--) {
-      var a = pts[i];
-      var b = pts[i - 1];
-      var t = i / len;
-      ctx.strokeStyle = 'rgb(' + Math.round(lerp(78, 44, t)) + ',' + Math.round(lerp(124, 86, t)) + ',' + Math.round(lerp(246, 204, t)) + ')';
-      ctx.lineWidth = widths[i];
-      ctx.beginPath();
-      if (Math.abs(a.x - b.x) > cell * 1.5 || Math.abs(a.y - b.y) > cell * 1.5) {
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(a.x + b.dx * cell, a.y + b.dy * cell);
-        ctx.moveTo(b.x - b.dx * cell, b.y - b.dy * cell);
-        ctx.lineTo(b.x, b.y);
-      } else {
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-      }
-      ctx.stroke();
+      return { x: to.x - dx * (1 - p) + 0.5, y: to.y - dy * (1 - p) + 0.5 };
+    }
+    var verts = [slide(s.prev[0] || s.body[0], s.body[0])];
+    for (var vi = 1; vi < n1; vi++) verts.push({ x: s.body[vi].x + 0.5, y: s.body[vi].y + 0.5 });
+    var oldTail = s.prev[n1 - 1];
+    var newTail = s.body[n1 - 1];
+    if (n1 > 1 && oldTail && (oldTail.x !== newTail.x || oldTail.y !== newTail.y)) {
+      verts.push(slide(oldTail, newTail));
     }
 
-    var head = pts[0];
-    var angle = lerpAngle(s.prevAngle, s.angle, Math.min(1, p * 1.8));
+    var width = cell * 0.74;
+    function tracePath() {
+      ctx.beginPath();
+      ctx.moveTo(verts[0].x * cell, verts[0].y * cell);
+      for (var k = 1; k < verts.length; k++) {
+        var a = verts[k - 1];
+        var b = verts[k];
+        if (Math.abs(a.x - b.x) > 1.5 || Math.abs(a.y - b.y) > 1.5) {
+          var sx = Math.abs(a.x - b.x) > 1.5 ? -Math.sign(b.x - a.x) : Math.sign(b.x - a.x);
+          var sy = Math.abs(a.y - b.y) > 1.5 ? -Math.sign(b.y - a.y) : Math.sign(b.y - a.y);
+          ctx.lineTo((a.x + sx) * cell, (a.y + sy) * cell);
+          ctx.moveTo((b.x - sx) * cell, (b.y - sy) * cell);
+        }
+        ctx.lineTo(b.x * cell, b.y * cell);
+      }
+    }
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.save();
+    ctx.translate(0, cell * 0.07);
+    tracePath();
+    ctx.strokeStyle = 'rgba(30,60,10,0.28)';
+    ctx.lineWidth = width;
+    ctx.stroke();
+    ctx.restore();
+    tracePath();
+    ctx.strokeStyle = skin.dark;
+    ctx.lineWidth = width;
+    ctx.stroke();
+    tracePath();
+    ctx.strokeStyle = skin.body;
+    ctx.lineWidth = width * 0.84;
+    ctx.stroke();
+
+    function pointAt(k) {
+      var i0 = Math.max(0, Math.min(verts.length - 1, Math.floor(k)));
+      var i1 = Math.min(verts.length - 1, i0 + 1);
+      var f = k - i0;
+      var a = verts[i0];
+      var b = verts[i1];
+      if (Math.abs(a.x - b.x) > 1.5 || Math.abs(a.y - b.y) > 1.5) return a;
+      return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f) };
+    }
+    if (snakeOpts.pattern === 'stripes' || snakeOpts.pattern === 'spots') {
+      for (var j = 1; j < verts.length - 1; j++) {
+        if (snakeOpts.pattern === 'stripes' && j % 2) continue;
+        var v = verts[j];
+        ctx.fillStyle = skin.dark;
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        if (snakeOpts.pattern === 'spots') ctx.arc(v.x * cell, v.y * cell, width * 0.16, 0, Math.PI * 2);
+        else ctx.arc(v.x * cell, v.y * cell, width * 0.36, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+    s.pulses = s.pulses.filter(function (t0) { return (now - t0) / 45 < verts.length + 2; });
+    s.pulses.forEach(function (t0) {
+      var k = (now - t0) / 45;
+      if (k < 0.6) return;
+      var at = pointAt(k);
+      var swell = Math.sin(Math.min(1, k / verts.length) * Math.PI) * 0.3 + 0.18;
+      ctx.fillStyle = skin.body;
+      ctx.beginPath();
+      ctx.arc(at.x * cell, at.y * cell, width * 0.5 * (1 + swell), 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    var head = { x: verts[0].x * cell, y: verts[0].y * cell };
+    var ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    var angle = lerpAngle(s.prevAngle, s.angle, ease);
     var sq = (now - s.squashAt) / 260;
     var stretch = sq >= 0 && sq < 1 ? Math.sin(sq * Math.PI) * (1 - sq) : 0;
+    var near = null;
+    var nearD = 1e9;
+    s.foods.forEach(function (f) {
+      var fx = f.x + 0.5;
+      var fy = f.y + 0.5;
+      var d = Math.hypot(fx - verts[0].x, fy - verts[0].y);
+      if (d < nearD) { nearD = d; near = { x: fx * cell, y: fy * cell }; }
+    });
+    var dead = !s.alive && !s.won;
+    var hr = width * 0.6;
     ctx.save();
     ctx.translate(head.x, head.y);
     ctx.rotate(angle);
     ctx.scale(1 + stretch * 0.45, 1 - stretch * 0.3);
-    var hr = widths[0] * 0.56;
-    ctx.fillStyle = '#4e7cf6';
+    if (!dead && s.alive && near && nearD < 2.6) {
+      var flick = 0.55 + 0.45 * Math.abs(Math.sin(now / 70));
+      var tl = hr * (0.7 + 0.9 * flick);
+      ctx.strokeStyle = '#e8364a';
+      ctx.lineWidth = hr * 0.14;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(hr * 0.8, 0);
+      ctx.lineTo(hr * 0.8 + tl, 0);
+      ctx.moveTo(hr * 0.8 + tl, 0);
+      ctx.lineTo(hr * 0.8 + tl + hr * 0.3, -hr * 0.2);
+      ctx.moveTo(hr * 0.8 + tl, 0);
+      ctx.lineTo(hr * 0.8 + tl + hr * 0.3, hr * 0.2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = skin.dark;
     ctx.beginPath();
-    ctx.ellipse(hr * 0.12, 0, hr * 1.08, hr, 0, 0, Math.PI * 2);
+    ctx.ellipse(hr * 0.12, 0, hr * 1.1, hr * 1.02, 0, 0, Math.PI * 2);
     ctx.fill();
-    var dead = !s.alive && !s.won;
+    ctx.fillStyle = skin.body;
+    ctx.beginPath();
+    ctx.ellipse(hr * 0.12, 0, hr * 0.98, hr * 0.9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    var blink = s.alive && (now % 3400) < 130;
+    var look = 0;
+    if (near) look = Math.atan2(near.y - head.y, near.x - head.x) - angle;
     [-1, 1].forEach(function (side) {
-      var ex = hr * 0.42;
-      var ey = side * hr * 0.48;
+      var ex = hr * 0.38;
+      var ey = side * hr * 0.46;
+      var er = hr * 0.34;
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.arc(ex, ey, hr * 0.34, 0, Math.PI * 2);
+      ctx.ellipse(ex, ey, er, blink ? er * 0.15 : er, 0, 0, Math.PI * 2);
       ctx.fill();
+      if (blink) return;
       if (dead) {
         ctx.strokeStyle = '#1f2b4d';
         ctx.lineWidth = hr * 0.12;
         ctx.beginPath();
-        ctx.moveTo(ex - hr * 0.16, ey - hr * 0.16);
-        ctx.lineTo(ex + hr * 0.16, ey + hr * 0.16);
-        ctx.moveTo(ex + hr * 0.16, ey - hr * 0.16);
-        ctx.lineTo(ex - hr * 0.16, ey + hr * 0.16);
+        ctx.moveTo(ex - er * 0.5, ey - er * 0.5);
+        ctx.lineTo(ex + er * 0.5, ey + er * 0.5);
+        ctx.moveTo(ex + er * 0.5, ey - er * 0.5);
+        ctx.lineTo(ex - er * 0.5, ey + er * 0.5);
         ctx.stroke();
-      } else {
-        ctx.fillStyle = '#1f2b4d';
-        ctx.beginPath();
-        ctx.arc(ex + hr * 0.1, ey, hr * 0.17, 0, Math.PI * 2);
-        ctx.fill();
+        return;
       }
+      var reach = near ? er * 0.45 : er * 0.3;
+      var px2 = near ? Math.cos(look) * reach : reach;
+      var py2 = near ? Math.sin(look) * reach : 0;
+      ctx.fillStyle = '#1f2b4d';
+      ctx.beginPath();
+      ctx.arc(ex + px2, ey + py2, er * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.beginPath();
+      ctx.arc(ex + px2 - er * 0.18, ey + py2 - er * 0.2, er * 0.15, 0, Math.PI * 2);
+      ctx.fill();
     });
     ctx.restore();
 
@@ -7187,6 +7292,7 @@
   var ckRainLive = 0;
   var ckNewsAt = 0;
   var ckNewsLast = '';
+  var ckNewsHold = 9000;
   var ckAchSeen = false;
 
   // Golden cookies every 5–9 minutes; true makes it 30–60 seconds for testing.
@@ -7196,8 +7302,8 @@
   var CK_AWAY_RATE = 0.05;
   var CK_AWAY_CAP = 60 * 60 * 1000;
   var CK_AWAY_GAP = 10 * 1000;
-  var CK_EPOCH = 2;
-  var CK_EPOCH_CUTS = { 2: 0.3 };
+  var CK_EPOCH = 3;
+  var CK_EPOCH_CUTS = { 2: 0.3, 3: 0.6 };
 
   var CK_BUILDINGS = [
     { id: 'cursor', name: 'Cursor', plural: 'Cursors', icon: '👆', base: 15, cps: 0.1, desc: 'Auto-clicks the big cookie.' },
@@ -8132,58 +8238,128 @@
     }
   }
 
+  // [cookies baked in all to unlock, headline]; {name} is the baker.
   var CK_NEWS = [
     [0, 'You feel like making cookies. But nobody wants to eat your cookies.'],
-    [10, 'Your first batch goes to the trash. The neighbourhood raccoon barely touches it.'],
-    [100, 'Your cookies are popular with the neighbourhood kids.'],
+    [0, 'Your oven makes a noise that ovens should not make. You choose to ignore it.'],
+    [5, 'Your first batch goes in the trash. The neighbourhood raccoon barely touches it.'],
+    [50, 'Your family says your cookies are "fine". Your family is lying.'],
+    [100, 'Your cookies are popular with the neighbourhood kids, mostly as projectiles.'],
+    [500, 'A stray cat now visits daily. It is not here for you.'],
     [1e3, 'People are starting to talk about your cookies.'],
-    [1e4, 'Your cookies are talked about for miles around.'],
+    [1e3, 'Local man claims your cookie "changed his life". Man has also said this about soup.'],
+    [5e3, 'Your cookies are talked about for miles around.'],
+    [1e4, 'News: {name} spotted buying flour in bulk; shop owner "concerned, but grateful".'],
+    [5e4, 'News: town council debates whether {name}\'s bakery counts as a landmark yet.'],
     [1e5, 'Your cookies are renowned in the whole town!'],
+    [1e5, 'News: dentists report record profits, refuse to say why.'],
+    [5e5, 'News: "it\'s not an addiction, it\'s a lifestyle," says man holding 40 cookies.'],
     [1e6, 'News: local bakery breaks records; grandmas everywhere grow suspicious.'],
+    [1e6, 'News: cookie-scented candles banned after three people try to eat them.'],
+    [5e6, 'News: study finds 9 out of 10 people prefer cookies. The tenth was asleep.'],
+    [1e7, 'News: {name}\'s cookies now sold in 3 countries, one of which may not exist.'],
+    [5e7, 'News: economists fear the "cookie bubble"; bubble described as "crunchy".'],
     [1e8, 'News: cookie stocks soar as {name} opens yet another wing.'],
+    [1e8, 'News: milk shortage blamed on "one very specific bakery".'],
+    [5e8, 'News: famous chef tries {name}\'s cookie, quits cooking forever.'],
     [1e9, 'News: cookies now outnumber people in town, say baffled scientists.'],
-    [1e10, 'News: cookie-backed currency proposed; economists ask for a cookie.'],
-    [1e11, 'News: the moon confirmed to be mostly dough.'],
+    [1e9, 'News: cookie crumbs detected in the upper atmosphere.'],
+    [5e9, 'News: new law requires every citizen to own at least one cookie. Nobody objects.'],
+    [1e10, 'News: cookie-backed currency proposed; economists ask for a cookie first.'],
+    [1e10, 'News: the word "diet" quietly removed from the dictionary.'],
+    [5e10, 'News: oceans 2% chocolate now. Fish report "no complaints".'],
+    [1e11, 'News: the moon is confirmed to be mostly dough.'],
+    [1e11, 'News: astronauts report a faint smell of baking from low orbit.'],
+    [5e11, 'News: {name} named "Person of the Year", "Cookie of the Year" and "Year of the Year".'],
     [1e12, 'News: the universe is slowly turning into cookies. Experts are fine with it.'],
+    [1e12, 'News: philosophers ask "if a cookie falls and nobody eats it, was it baked?"'],
+    [1e13, 'News: gravity now 4% weaker near large cookie stockpiles.'],
     [1e14, 'News: time travellers report the past now smells of chocolate chips.'],
+    [1e15, 'News: aliens make first contact, ask only for the recipe.'],
     [1e16, 'News: other dimensions file noise complaints about {name}.'],
+    [1e18, 'News: the heat death of the universe postponed until the last batch is done.'],
     [1e20, 'News: reality now runs on {name}\'s JavaScript console.'],
+    [1e24, 'News: there are more cookies than atoms. Physicists choose not to think about it.'],
+  ];
+  var CK_ANY_NEWS = [
+    'News: man accidentally eats a whole batch, calls it "a cry for help, but tasty".',
+    'News: scientists discover cookies are 100% delicious, research funding renewed.',
+    'News: local cat knocks cookie off table, shows no remorse.',
+    'News: "I only had one," says person with crumbs on their face, shirt and dog.',
+    'News: cookie found in an ancient tomb, still tastes "pretty good actually".',
+    'News: survey shows people prefer cookies to people.',
+    'News: weather forecast calls for scattered sprinkles.',
+    'News: national cookie reserves at "concerning but delicious" levels.',
+    'News: experts warn against looking directly at a fresh batch.',
+    'News: grandmother wins arm-wrestling tournament, credits cookies.',
+    'News: cookie jar becomes self-aware, demands to be refilled.',
+    'News: "the crunchy ones are better" – this statement has divided the nation.',
+    'News: nutritionist eats one cookie on camera, career over.',
+    'News: museum unveils world\'s oldest cookie. Security guard caught nibbling it.',
+    'News: chocolate chip union demands more chips per cookie.',
+    'News: oatmeal raisin cookies file for discrimination.',
+    'News: someone dunked a cookie for too long. We will not show the footage.',
+    'News: fortune cookie predicts "more cookies". Fortune is correct.',
+    'News: "cookies are just flat cakes," says man who is no longer invited anywhere.',
+    'News: mysterious figure leaves cookies on doorsteps at night. Police "not complaining".',
   ];
   var CK_BUILDING_NEWS = {
-    grandma: 'News: grandmas call it "the best job ever", ask for more knitting breaks.',
-    farm: 'News: cookie crops blamed for a light chocolate drizzle downtown.',
-    mine: 'News: miners strike a chocolate vein, refuse to share.',
-    factory: 'News: factory smoke described as "suspiciously delicious".',
-    bank: 'News: banks now accept cookies as collateral.',
-    temple: 'News: new faith worships a great cookie in the sky.',
-    wizard: 'News: wizard tower turns the mayor into a macaron, briefly.',
-    shipment: 'News: cookie planet discovered, already half eaten.',
-    alchemy: 'News: alchemists turn gold into cookies; gold prices collapse.',
-    portal: 'News: things from the Cookieverse "seem friendly enough".',
-    timemachine: 'News: history books revised to include more cookies.',
-    antimatter: 'News: antimatter cookies taste "about the same".',
-    prism: 'News: rainbows now come in chocolate.',
-    chancemaker: 'News: four-leaf clovers sell out nationwide.',
-    fractal: 'News: cookie found inside a cookie inside a cookie.',
-    console: 'News: bakery source code leaked; it is just cookies all the way down.',
-    idleverse: 'News: parallel universes report missing bakeries.',
-    cortex: 'News: giant brain dreams of cookies, wakes up hungry.',
-    you: 'News: there are now several of {name}. They all want cookies.',
+    cursor: ['News: cursors seen clicking things that are not cookies. Experts unsettled.', 'News: carpal tunnel cases drop as cursors do the clicking.'],
+    grandma: ['News: grandmas call it "the best job ever", ask for more knitting breaks.', 'News: grandmas form a union. Demands: more sugar, fewer questions.', 'News: "they used to be nice," says neighbour of the grandma compound.'],
+    farm: ['News: cookie crops blamed for a light chocolate drizzle downtown.', 'News: scarecrows quit; "the crows just want cookies now".'],
+    mine: ['News: miners strike a chocolate vein, refuse to share.', 'News: mine collapse; nobody hurt, but "the dough is everywhere".'],
+    factory: ['News: factory smoke described as "suspiciously delicious".', 'News: assembly line reaches the moon. Nobody asked it to.'],
+    bank: ['News: banks now accept cookies as collateral.', 'News: robbers break into vault, leave with only crumbs and regret.'],
+    temple: ['News: new faith worships a great cookie in the sky.', 'News: temple monks take vow of silence; can still be heard chewing.'],
+    wizard: ['News: wizard tower turns the mayor into a macaron, briefly.', 'News: spell to summon cookies works too well; town "mostly fine".'],
+    shipment: ['News: cookie planet discovered, already half eaten.', 'News: shipment lost in space; recovered cookies "slightly stale".'],
+    alchemy: ['News: alchemists turn gold into cookies; gold prices collapse.', 'News: philosopher\'s stone revealed to be a very old cookie.'],
+    portal: ['News: things from the Cookieverse "seem friendly enough".', 'News: portal opens in a cafeteria; lunch "improved".'],
+    timemachine: ['News: history books revised to include more cookies.', 'News: time traveller eats tomorrow\'s cookies today, causes paradox.'],
+    antimatter: ['News: antimatter cookies taste "about the same".', 'News: physicists split a cookie atom; "we each got half".'],
+    prism: ['News: rainbows now come in chocolate.', 'News: light itself now slightly crunchy.'],
+    chancemaker: ['News: four-leaf clovers sell out nationwide.', 'News: man wins the lottery twice, buys only cookies.'],
+    fractal: ['News: cookie found inside a cookie inside a cookie.', 'News: mathematicians prove there are infinitely many cookies; then eat them.'],
+    console: ['News: bakery source code leaked; it is just cookies all the way down.', 'News: bug in the cookie code fixed by adding more cookies.'],
+    idleverse: ['News: parallel universes report missing bakeries.', 'News: alternate {name} says hi, wants their cookies back.'],
+    cortex: ['News: giant brain dreams of cookies, wakes up hungry.', 'News: cortex baker solves world peace, then forgets because of cookies.'],
+    you: ['News: there are now several of {name}. They all want cookies.', 'News: "which one is the real one?" asks confused bakery staff.'],
   };
 
   function ckNews() {
     if (!ck) return;
     var name = myUsername || 'you';
-    var pool = CK_NEWS.filter(function (n) { return ck.bakedAll >= n[0]; }).slice(-3).map(function (n) { return n[1]; });
-    CK_BUILDINGS.forEach(function (b) { if (ckOwned(CK_BUILDINGS.indexOf(b)) && CK_BUILDING_NEWS[b.id]) pool.push(CK_BUILDING_NEWS[b.id]); });
+    var pool = CK_NEWS.filter(function (n) { return ck.bakedAll >= n[0]; }).slice(-8).map(function (n) { return n[1]; });
+    if (ck.bakedAll >= 1e3) pool = pool.concat(CK_ANY_NEWS);
+    CK_BUILDINGS.forEach(function (b, i) {
+      if (ckOwned(i) && CK_BUILDING_NEWS[b.id]) pool = pool.concat(CK_BUILDING_NEWS[b.id]);
+    });
     if (ckBuffMult(ckNow()) > 1) pool.push('News: cookie production goes into a frenzy; nobody can explain the glitter.');
+    if (ck.gcClicks) pool.push('News: golden cookies reported falling from the sky. Experts say "grab them".');
     var choices = pool.filter(function (t) { return t !== ckNewsLast; });
-    var text = (choices.length ? choices : pool)[Math.floor(Math.random() * (choices.length || pool.length))] || '';
+    var text = choices.length ? choices[Math.floor(Math.random() * choices.length)] : (pool[0] || '');
     ckNewsLast = text;
+    text = text.replace(/\{name\}/g, name);
+    ckTickerEl.getAnimations && ckTickerEl.getAnimations().forEach(function (an) { an.cancel(); });
     ckTickerEl.classList.remove('is-in');
+    ckTickerEl.textContent = text;
+    ckTickerEl.title = text;
     void ckTickerEl.offsetWidth;
-    ckTickerEl.textContent = text.replace(/\{name\}/g, name);
     ckTickerEl.classList.add('is-in');
+    // Too long for the strip: hold, scroll to the end, hold.
+    var over = ckTickerEl.scrollWidth - ckTickerEl.parentNode.clientWidth;
+    var hold = 9000;
+    if (over > 4 && ckTickerEl.animate) {
+      var travel = over / 45 * 1000;
+      hold = Math.max(9000, travel + 5000);
+      ckTickerEl.animate(
+        [{ transform: 'translateX(0)' }, { transform: 'translateX(0)', offset: 1800 / hold },
+          { transform: 'translateX(' + (-over) + 'px)', offset: (1800 + travel) / hold }, { transform: 'translateX(' + (-over) + 'px)' }],
+        { duration: hold, easing: 'linear', fill: 'forwards' }
+      );
+    }
+    ckTickerEl.style.animationDuration = hold + 'ms';
+    ckNewsHold = hold;
   }
 
   function ckBurst(x, y) {
@@ -8585,7 +8761,7 @@
       ckCheckAch();
       ckMaybeGolden();
       ckRain();
-      if (nowMs - ckNewsAt > 9000) { ckNewsAt = nowMs; ckNews(); }
+      if (nowMs - ckNewsAt > ckNewsHold) { ckNewsAt = nowMs; ckNews(); }
       if (ckPane === 'stats') ckRenderStats();
       else if (ckPane === 'legacy') ckRenderLegacy();
     }

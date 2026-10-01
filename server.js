@@ -100,8 +100,8 @@ const MAX_COOKIE_SAVE_BYTES = 32 * 1024;
 const COOKIE_AWAY_RATE = 0.05;
 const COOKIE_AWAY_CAP_MS = 60 * 60 * 1000;
 // Bumped when every bakery is rescaled at once; older saves are turned away.
-const COOKIE_EPOCH = 2;
-const COOKIE_EPOCH_CUTS = { 2: 0.3 };
+const COOKIE_EPOCH = 3;
+const COOKIE_EPOCH_CUTS = { 2: 0.3, 3: 0.6 };
 
 function cookieAwayGain(cps, ms) {
   return cps * COOKIE_AWAY_RATE * Math.min(Math.max(0, ms), COOKIE_AWAY_CAP_MS) / 1000;
@@ -932,7 +932,8 @@ function migrateCookieEpochs() {
         const s = rec && rec.save;
         if (!s || typeof s !== 'object') continue;
         // Counted up to now at the rate the board was showing, then cut.
-        const made = (Number(s.cps) || 0) * Math.max(0, now - (Number(rec.at) || now)) / 1000;
+        const since = Math.max(0, now - (Number(rec.at) || now));
+        const made = e === 2 ? (Number(s.cps) || 0) * since / 1000 : cookieAwayGain(Number(s.cps) || 0, since);
         const before = Math.max((Number(s.bakedAll) || 0) + made, board[key] ? board[key].score / cut : 0);
         s.cookies = ((Number(s.cookies) || 0) + made) * cut;
         s.baked = ((Number(s.baked) || 0) + made) * cut;
