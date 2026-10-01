@@ -96,6 +96,16 @@ const MIN_TIMED_MS = { sprint: 5000, cheese18: 3000, cheese100: 15000 };
 const MAX_TIMED_MS = 2 * 60 * 60 * 1000;
 const MAX_COOKIE_SCORE = 1e300;
 const MAX_COOKIE_SAVE_BYTES = 32 * 1024;
+// Away from the game a bakery runs at 5%, and only for its first hour.
+const COOKIE_AWAY_RATE = 0.05;
+const COOKIE_AWAY_CAP_MS = 60 * 60 * 1000;
+// Bumped when every bakery is rescaled at once; older saves are turned away.
+const COOKIE_EPOCH = 2;
+const COOKIE_EPOCH_CUTS = { 2: 0.3 };
+
+function cookieAwayGain(cps, ms) {
+  return cps * COOKIE_AWAY_RATE * Math.min(Math.max(0, ms), COOKIE_AWAY_CAP_MS) / 1000;
+}
 // Closed set of activity codes. Never free text: the client re-labels these for display.
 const ACTIVITY_CODES = [
   'chat', 'essay', 'arcade', 'spotify', 'idle',
@@ -612,10 +622,27 @@ function cookieBakedNow(roomState, usernameKey) {
   const stored = roomState.scores.cookie[usernameKey];
   let best = stored ? stored.score : 0;
   if (rec) {
-    const projected = rec.save.bakedAll + rec.save.cps * Math.max(0, Date.now() - rec.at) / 1000;
+    const projected = rec.save.bakedAll + cookieAwayGain(rec.save.cps, Date.now() - rec.at);
     if (projected > best) best = projected;
   }
   return Math.floor(Math.min(best, MAX_COOKIE_SCORE));
+}
+
+/** What the admin sees of someone's bakery, counted forward to now. */
+function bakeryFor(roomState, usernameKey) {
+  const rec = roomState.cookieSaves[usernameKey];
+  if (!rec) return null;
+  const s = rec.save;
+  const made = cookieAwayGain(s.cps, Date.now() - rec.at);
+  return {
+    cookies: Math.min(s.cookies + made, MAX_COOKIE_SCORE),
+    cps: s.cps,
+    owned: s.owned,
+    upgrades: s.upgrades.length,
+    feats: s.ach.length,
+    prestige: s.prestige,
+    savedAt: rec.at,
+  };
 }
 
 function bestScoresFor(roomState, usernameKey) {
@@ -649,13 +676,68 @@ function topScores(roomState) {
   return out;
 }
 
+// @mentions are filed under a token only the room's own browsers can make
+// (an HMAC of the name under the room key), so this server never learns who
+// was mentioned, only that someone with that token was.
+const PING_TOKEN_RE = /^[0-9a-f]{32}$/;
+const MAX_PINGS_KEPT = 50;
+const MAX_PING_TOKENS = 2000;
+
+function pingsPathFor(roomId) {
+  return path.join(DATA_DIR, 'pings-' + roomId + '.json');
+}
+
+function loadPings(roomId) {
+  const out = Object.create(null);
+  let stored = null;
+  try { stored = JSON.parse(fs.readFileSync(pingsPathFor(roomId), 'utf8')); } catch (e) { stored = null; }
+  if (!stored || typeof stored !== 'object') return out;
+  for (const token of Object.keys(stored)) {
+    const rec = stored[token];
+    if (!PING_TOKEN_RE.test(token) || !rec || !Array.isArray(rec.list)) continue;
+    const list = rec.list.filter((p) => p && REPLY_ID_RE.test(p.id || '') && typeof p.from === 'string' &&
+      USERNAME_RE.test(p.from) && typeof p.ts === 'number').slice(-MAX_PINGS_KEPT);
+    out[token] = { list, readAt: Number(rec.readAt) || 0 };
+  }
+  return out;
+}
+
+function addPing(roomState, token, ping) {
+  let rec = roomState.pings[token];
+  if (!rec) {
+    const tokens = Object.keys(roomState.pings);
+    if (tokens.length >= MAX_PING_TOKENS) delete roomState.pings[tokens[0]];
+    rec = roomState.pings[token] = { list: [], readAt: 0 };
+  }
+  rec.list.push(ping);
+  if (rec.list.length > MAX_PINGS_KEPT) rec.list.splice(0, rec.list.length - MAX_PINGS_KEPT);
+  roomState.pingsDirty = true;
+}
+
+/** One message by id, from memory or from its day file, as it reads now. */
+function findMessage(roomState, id, ts) {
+  const cleared = roomState.clearedAt || 0;
+  const live = roomState.byId.get(id);
+  if (live) return live.ts > cleared ? live : null;
+  if (!(ts > cleared)) return null;
+  const { messages } = readArchiveDay(roomState.id, dayKeyFor(ts), 0, 100000);
+  let found = null;
+  for (const m of messages) {
+    if (m.id !== id) continue;
+    if (!m.kind) found = Object.assign({}, m);
+    else if (m.kind === 'edit' && found) { found.text = m.text; found.editedAt = m.ts; }
+  }
+  if (found && roomState.reactions[id]) found.reactions = roomState.reactions[id];
+  return found;
+}
+
 function cookieSavesPathFor(roomId) {
   return path.join(DATA_DIR, 'cookie-' + roomId + '.json');
 }
 
 const COOKIE_SAVE_NUMBERS = [
   'cookies', 'baked', 'bakedAll', 'handmade', 'clicks', 'runClicks', 'gcClicks', 'prestige', 'ascensions',
-  'started', 'runStarted', 'played', 'offline', 'cps', 'savedAt',
+  'started', 'runStarted', 'played', 'offline', 'cps', 'savedAt', 'epoch',
 ];
 
 /** Only the shape is checked, the same trust every other score gets; anything
@@ -825,6 +907,54 @@ migrateLegacyOverwatchData();
 /** roomId -> { messages, byId, dirty, spotifyTokens, spotifyDirty,
  *  avatarsDir, chatImagesDir, avatarExtByUser, chatImageExtById,
  *  usernameOwners } */
+/** One-time rescales of every bakery, applied to whatever data/ holds before
+ * any of it is loaded. Leaderboard records for the cookie board go with them. */
+function migrateCookieEpochs() {
+  const file = path.join(DATA_DIR, 'epochs.json');
+  let epochs = {};
+  try { epochs = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (e) { epochs = {}; }
+  let epoch = Number(epochs.cookie) || 1;
+  if (epoch >= COOKIE_EPOCH) return;
+  const now = Date.now();
+  for (const room of ROOMS) {
+    let saves = {};
+    let scores = {};
+    try { saves = JSON.parse(fs.readFileSync(cookieSavesPathFor(room.id), 'utf8')) || {}; } catch (e) { saves = {}; }
+    try { scores = JSON.parse(fs.readFileSync(scoresPathFor(room.id), 'utf8')) || {}; } catch (e) { scores = {}; }
+    const board = scores.cookie && typeof scores.cookie === 'object' ? scores.cookie : {};
+    for (let e = epoch + 1; e <= COOKIE_EPOCH; e++) {
+      const cut = COOKIE_EPOCH_CUTS[e] || 1;
+      for (const key of Object.keys(board)) {
+        if (board[key] && typeof board[key].score === 'number') board[key].score = Math.floor(board[key].score * cut);
+      }
+      for (const key of Object.keys(saves)) {
+        const rec = saves[key];
+        const s = rec && rec.save;
+        if (!s || typeof s !== 'object') continue;
+        // Counted up to now at the rate the board was showing, then cut.
+        const made = (Number(s.cps) || 0) * Math.max(0, now - (Number(rec.at) || now)) / 1000;
+        const before = Math.max((Number(s.bakedAll) || 0) + made, board[key] ? board[key].score / cut : 0);
+        s.cookies = ((Number(s.cookies) || 0) + made) * cut;
+        s.baked = ((Number(s.baked) || 0) + made) * cut;
+        s.bakedAll = before * cut;
+        s.epoch = e;
+        rec.at = now;
+        if (board[key]) board[key].score = Math.floor(s.bakedAll);
+        else board[key] = { username: rec.username, score: Math.floor(s.bakedAll), ts: now };
+      }
+    }
+    scores.cookie = board;
+    try {
+      if (Object.keys(saves).length) fs.writeFileSync(cookieSavesPathFor(room.id), JSON.stringify(saves), { mode: 0o600 });
+      if (Object.keys(board).length) fs.writeFileSync(scoresPathFor(room.id), JSON.stringify(scores));
+    } catch (e) { /* best effort */ }
+  }
+  epochs.cookie = COOKIE_EPOCH;
+  try { fs.writeFileSync(file, JSON.stringify(epochs), { mode: 0o600 }); } catch (e) { /* best effort */ }
+}
+
+migrateCookieEpochs();
+
 const rooms = Object.create(null);
 
 for (const room of ROOMS) {
@@ -870,6 +1000,8 @@ for (const room of ROOMS) {
     scores: loadScores(room.id),
     cookieSaves: loadCookieSaves(room.id),
     cookieDirty: false,
+    pings: loadPings(room.id),
+    pingsDirty: false,
     id: room.id,
     archiveIndex: loadArchiveIndex(room.id),
     archiveDirty: false,
@@ -949,6 +1081,10 @@ setInterval(() => {
       r.cookieDirty = false;
       fs.writeFile(cookieSavesPathFor(roomId), JSON.stringify(r.cookieSaves), { mode: 0o600 }, () => {});
     }
+    if (r.pingsDirty) {
+      r.pingsDirty = false;
+      fs.writeFile(pingsPathFor(roomId), JSON.stringify(r.pings), { mode: 0o600 }, () => {});
+    }
     if (r.spotifyDirty) {
       r.spotifyDirty = false;
       fs.writeFile(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens), { mode: 0o600 }, () => {});
@@ -977,6 +1113,7 @@ function flushSaveSync() {
       fs.writeFileSync(messagesPathFor(roomId), JSON.stringify(rooms[roomId].messages));
       fs.writeFileSync(scoresPathFor(roomId), JSON.stringify(rooms[roomId].scores));
       fs.writeFileSync(cookieSavesPathFor(roomId), JSON.stringify(rooms[roomId].cookieSaves), { mode: 0o600 });
+      fs.writeFileSync(pingsPathFor(roomId), JSON.stringify(rooms[roomId].pings), { mode: 0o600 });
       fs.writeFileSync(spotifyTokensPathFor(roomId), JSON.stringify(rooms[roomId].spotifyTokens), { mode: 0o600 });
       fs.writeFileSync(bansPathFor(roomId), JSON.stringify(rooms[roomId].bans), { mode: 0o600 });
     } catch (e) { /* best effort on shutdown */ }
@@ -2455,6 +2592,10 @@ async function handleApi(req, res, pathname) {
     const msg = { id: crypto.randomUUID(), username: session.username, type: 'text', text, ts: now };
     const replyTo = resolveReplyTo(roomState, body.replyTo);
     if (replyTo) msg.replyTo = replyTo;
+    const tokens = Array.isArray(body.pings)
+      ? Array.from(new Set(body.pings.filter((t) => typeof t === 'string' && PING_TOKEN_RE.test(t)))).slice(0, 10)
+      : [];
+    for (const token of tokens) addPing(roomState, token, { id: msg.id, from: session.username, ts: now });
     roomState.messages.push(msg);
     roomState.byId.set(msg.id, msg);
     archiveMessage(roomState, msg);
@@ -2465,6 +2606,58 @@ async function handleApi(req, res, pathname) {
     }
     scheduleSave(session.room);
     return sendJson(res, 200, { ok: true, message: msg });
+  }
+
+  // GET /api/pings?t= — who has mentioned the holder of this token
+  if (pathname === '/api/pings' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const token = new URL(req.url, 'http://internal').searchParams.get('t') || '';
+    if (!PING_TOKEN_RE.test(token)) return sendJson(res, 400, { error: 'Invalid request' });
+    const roomState = rooms[session.room];
+    const rec = roomState.pings[token];
+    const cleared = roomState.clearedAt || 0;
+    return sendJson(res, 200, {
+      pings: rec ? rec.list.filter((p) => p.ts > cleared).slice(-30) : [],
+      readAt: rec ? rec.readAt : 0,
+    });
+  }
+
+  // GET /api/people/names — everyone who has signed in here, for @ completion
+  if (pathname === '/api/people/names' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const roster = rooms[session.room].bans.roster;
+    const names = Object.keys(roster)
+      .sort((a, b) => (roster[b].lastAt || 0) - (roster[a].lastAt || 0))
+      .slice(0, 500)
+      .map((k) => roster[k].username);
+    return sendJson(res, 200, { names });
+  }
+
+  // POST /api/pings/read — mentions up to this moment have been seen
+  if (pathname === '/api/pings/read' && req.method === 'POST') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    if (!requireCsrf(req, session)) return sendJson(res, 403, { error: 'Invalid request token' });
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
+    const token = typeof body.t === 'string' ? body.t : '';
+    if (!PING_TOKEN_RE.test(token)) return sendJson(res, 400, { error: 'Invalid request' });
+    const roomState = rooms[session.room];
+    const rec = roomState.pings[token];
+    if (rec) {
+      const upTo = Math.min(Number(body.upTo) || 0, Date.now());
+      if (upTo > rec.readAt) { rec.readAt = upTo; roomState.pingsDirty = true; }
+    }
+    return sendJson(res, 200, { ok: true, readAt: rec ? rec.readAt : 0 });
+  }
+
+  // GET /api/chat/find?id=&ts= — one message, however old, for a mention
+  if (pathname === '/api/chat/find' && req.method === 'GET') {
+    if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
+    const url = new URL(req.url, 'http://internal');
+    const id = url.searchParams.get('id') || '';
+    const ts = Number(url.searchParams.get('ts')) || 0;
+    if (!REPLY_ID_RE.test(id)) return sendJson(res, 400, { error: 'Invalid message id' });
+    return sendJson(res, 200, { message: findMessage(rooms[session.room], id, ts) });
   }
 
   // POST /api/chat/edit — the author rewrites one of their own text messages.
@@ -2755,6 +2948,7 @@ async function handleApi(req, res, pathname) {
         messagesToday: todayCounts[key] || 0,
         messagesWeek: weekCounts[key] || 0,
         best: bestScoresFor(roomState, key),
+        bakery: bakeryFor(roomState, key),
         banned: !!bans.usernames[key],
         online: online.has(key),
         inRoom: !!now,
@@ -2948,6 +3142,8 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 400, { error: 'Invalid score.' });
     }
     const roomState = rooms[session.room];
+    // The cookie board is fed by the bakeries themselves.
+    if (game === 'cookie') return sendJson(res, 200, { ok: true, scores: topScores(roomState) });
     const key = session.username.toLowerCase();
     const clean = Math.floor(score);
     const current = roomState.scores[game][key];
@@ -2962,7 +3158,7 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/games/cookie' && req.method === 'GET') {
     if (session.stage !== 'active') return sendJson(res, 403, { error: 'Not authorized' });
     const rec = rooms[session.room].cookieSaves[session.username.toLowerCase()];
-    return sendJson(res, 200, { save: rec ? rec.save : null, at: rec ? rec.at : 0, now: Date.now() });
+    return sendJson(res, 200, { save: rec ? rec.save : null, at: rec ? rec.at : 0, now: Date.now(), epoch: COOKIE_EPOCH });
   }
 
   // POST /api/games/cookie — keep this name's bakery
@@ -2977,6 +3173,7 @@ async function handleApi(req, res, pathname) {
     try { body = await readJsonBody(req, MAX_COOKIE_SAVE_BYTES); } catch (e) { return sendJson(res, e.status || 400, { error: e.message }); }
     const save = cleanCookieSave(body && body.save);
     if (!save) return sendJson(res, 400, { error: 'Invalid save.' });
+    if (!(save.epoch >= COOKIE_EPOCH)) return sendJson(res, 200, { ok: false, stale: true });
     session.lastCookieSaveAt = now;
     const roomState = rooms[session.room];
     const key = session.username.toLowerCase();
@@ -3789,6 +3986,7 @@ function syncFiles() {
     add(spotifyTokensPathFor(roomId), JSON.stringify(r.spotifyTokens));
     add(bansPathFor(roomId), JSON.stringify(r.bans));
     add(cookieSavesPathFor(roomId), JSON.stringify(r.cookieSaves));
+    add(pingsPathFor(roomId), JSON.stringify(r.pings));
     add(path.join(archiveDirFor(roomId), 'index.json'), JSON.stringify(r.archiveIndex));
     add(path.join(archiveDirFor(roomId), 'reactions.json'), JSON.stringify(r.reactions));
   }

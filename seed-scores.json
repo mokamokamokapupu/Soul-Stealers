@@ -17,7 +17,7 @@
       },
       {
         "username": "copper",
-        "score": 540
+        "score": 570
       },
       {
         "username": "x",
@@ -32,12 +32,12 @@
         "score": 150
       },
       {
-        "username": "ab",
-        "score": 100
+        "username": "a4",
+        "score": 110
       },
       {
-        "username": "a4",
-        "score": 70
+        "username": "ab",
+        "score": 100
       },
       {
         "username": "sigmachan",
@@ -122,6 +122,34 @@
         "score": 1200
       }
     ],
+    "sprint": [
+      {
+        "username": "sss",
+        "score": 86967
+      },
+      {
+        "username": "Kaban",
+        "score": 113014
+      },
+      {
+        "username": "sparks",
+        "score": 181311
+      }
+    ],
+    "cheese18": [
+      {
+        "username": "Kaban",
+        "score": 85029
+      },
+      {
+        "username": "sss",
+        "score": 97738
+      },
+      {
+        "username": "Dr goon",
+        "score": 102548
+      }
+    ],
     "mines": [
       {
         "username": "copper",
@@ -144,56 +172,56 @@
     ],
     "cookie": [
       {
-        "username": "copper",
-        "score": 210300000
-      },
-      {
         "username": "sparks",
-        "score": 100600000
-      },
-      {
-        "username": "a4",
-        "score": 46500000
-      },
-      {
-        "username": "fatty",
-        "score": 29400000
+        "score": 51090000000
       },
       {
         "username": "Kaban",
-        "score": 6700000
+        "score": 15030000000
       },
       {
-        "username": "doom",
-        "score": 6100000
-      },
-      {
-        "username": "sss",
-        "score": 5000000
-      },
-      {
-        "username": "Jamorant",
-        "score": 262000
+        "username": "copper",
+        "score": 5790000000
       },
       {
         "username": "x",
-        "score": 18000
+        "score": 3480000000
       },
       {
-        "username": "Overwatch",
-        "score": 6900
+        "username": "a4",
+        "score": 1740000000
       },
       {
-        "username": "Dr goon",
-        "score": 5300
+        "username": "fatty",
+        "score": 1530000000
+      },
+      {
+        "username": "sss",
+        "score": 450000000
       },
       {
         "username": "sigmachan",
-        "score": 1800
+        "score": 97740000
+      },
+      {
+        "username": "Jamorant",
+        "score": 94050000
+      },
+      {
+        "username": "doom",
+        "score": 1830000
+      },
+      {
+        "username": "Overwatch",
+        "score": 2070
+      },
+      {
+        "username": "Dr goon",
+        "score": 1590
       },
       {
         "username": "ab",
-        "score": 246
+        "score": 73
       }
     ],
     "roster": [

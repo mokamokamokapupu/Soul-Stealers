@@ -124,11 +124,13 @@
     if (presenceTimer) return;
     presenceTimer = setInterval(function () { sendPresence(true); }, PRESENCE_INTERVAL_MS);
     sendPresence(true);
+    startPings();
   }
 
   function stopPresence() {
     if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
     lastPresenceKey = '';
+    stopPings();
   }
 
   function nudgePresence() {
@@ -1173,6 +1175,7 @@
   function hideSuggestions() {
     suggestEl.hidden = true;
     suggestHits = [];
+    if (typeof hideGhost === 'function') hideGhost();
   }
 
   function renderSuggestions() {
@@ -1181,6 +1184,20 @@
       var item = document.createElement('div');
       item.className = 'emoji-suggest-item' + (i === suggestIndex ? ' is-active' : '');
       item.setAttribute('role', 'option');
+      if (row.mention) {
+        var face = document.createElement('img');
+        face.className = 'avatar emoji-suggest-avatar';
+        face.alt = '';
+        setAvatar(face, row.mention);
+        var who = document.createElement('span');
+        who.textContent = '@' + row.mention;
+        item.appendChild(face);
+        item.appendChild(who);
+        if (row.online) item.classList.add('is-online');
+        item.addEventListener('mousedown', function (e) { e.preventDefault(); pickSuggestion(i); });
+        suggestEl.appendChild(item);
+        return;
+      }
       var glyph = document.createElement('span');
       glyph.className = 'emoji-suggest-glyph';
       glyph.textContent = row[0];
@@ -1196,6 +1213,17 @@
   }
 
   function updateSuggestions() {
+    var who = mentionBeforeCaret();
+    if (who) {
+      loadEveryone();
+      suggestHits = mentionSuggestions(who.query);
+      suggestIndex = 0;
+      renderSuggestions();
+      var top = suggestHits[0];
+      showGhost(who.query && top && top.mention.toLowerCase().indexOf(who.query) === 0 ? top.mention.slice(who.query.length) : '');
+      return;
+    }
+    hideGhost();
     var at = shortcodeBeforeCaret();
     if (!at) { hideSuggestions(); return; }
     if (!emojiData) {
@@ -1208,8 +1236,14 @@
   }
 
   function pickSuggestion(i) {
-    var at = shortcodeBeforeCaret();
     var row = suggestHits[i];
+    if (row && row.mention) {
+      var who = mentionBeforeCaret();
+      hideSuggestions();
+      if (who) replaceRange(who.start, who.end, '@' + row.mention + ' ');
+      return;
+    }
+    var at = shortcodeBeforeCaret();
     hideSuggestions();
     if (!at || !row) return;
     replaceRange(at.start, at.end, row[0]);
@@ -1312,6 +1346,7 @@
       return;
     }
     renderedIds[m.id] = true;
+    notePerson(m.username);
 
     // Consecutive messages from the same person render as one stream: no
     // repeated avatar or name, just the bubble, aligned under the first.
@@ -1405,8 +1440,12 @@
       } else {
         var text = document.createElement('div');
         text.className = 'text';
-        text.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
-        if (plain === null) text.classList.add('is-locked');
+        if (plain === null) {
+          text.textContent = '🔒 Unable to decrypt this message';
+          text.classList.add('is-locked');
+        } else if (fillMessageText(text, plain)) {
+          wrap.classList.add('mentions-me');
+        }
         body.appendChild(text);
         body.appendChild(buildEditedBadge(m));
         previewForReply = plain === null ? '🔒 message' : plain;
@@ -1762,7 +1801,8 @@
     if (prev && prev.text === m.text && prev.editedAt === m.editedAt) return;
 
     var plain = await plaintextOf(m.text);
-    entry.textEl.textContent = plain === null ? '🔒 Unable to decrypt this message' : plain;
+    if (plain === null) entry.textEl.textContent = '🔒 Unable to decrypt this message';
+    else entry.el.classList.toggle('mentions-me', fillMessageText(entry.textEl, plain));
     entry.textEl.classList.toggle('is-locked', plain === null);
     if (cryptoAvailable) entry.el.setAttribute('data-cipher', m.text);
     var badge = entry.body.querySelector('.msg-edited');
@@ -1962,6 +2002,7 @@
       // scroll position has to grow with it.
       var beforeHeight = messagesEl.scrollHeight;
       var beforeTop = messagesEl.scrollTop;
+      list.forEach(function (m) { notePerson(m.username); });
       var batch = { anchor: messagesEl.firstChild, lastAuthor: null };
       for (var i = 0; i < list.length; i++) await renderOne(list[i], batch);
       messagesEl.style.scrollBehavior = 'auto';
@@ -1998,6 +2039,7 @@
     if (wasEmpty) wasEmpty.remove();
 
     var stickToBottom = isNearBottom();
+    list.forEach(function (m) { notePerson(m.username); });
     for (var i = 0; i < list.length; i++) {
       await renderOne(list[i]);
     }
@@ -2074,7 +2116,7 @@
     olderBusy = false;
     setOlderLabel('');
     messagesEl.innerHTML = '<p class="empty-state">It\'s quiet. Say something.</p>';
-    poll().then(function () { scrollToBottom(false); });
+    chatFirstPoll = poll().then(function () { scrollToBottom(false); });
     pollTimer = setInterval(poll, 1800);
   }
 
@@ -2102,6 +2144,16 @@
         e.preventDefault();
         suggestIndex = (suggestIndex + (e.key === 'ArrowDown' ? 1 : -1) + suggestHits.length) % suggestHits.length;
         renderSuggestions();
+        var cur = suggestHits[suggestIndex];
+        var at = mentionBeforeCaret();
+        if (cur && cur.mention && at) {
+          showGhost(at.query && cur.mention.toLowerCase().indexOf(at.query) === 0 ? cur.mention.slice(at.query.length) : '');
+        }
+        return;
+      }
+      if (e.key === 'ArrowRight' && !ghostEl.hidden && suggestHits[suggestIndex] && suggestHits[suggestIndex].mention) {
+        e.preventDefault();
+        pickSuggestion(suggestIndex);
         return;
       }
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -2167,11 +2219,12 @@
     try {
       text = await expandShortcodes(text);
       var payloadText = cryptoAvailable ? await encryptText(text) : text;
+      var pings = await pingTokensFor(text);
       var res = await fetch('/api/chat/send', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-        body: JSON.stringify({ text: payloadText, replyTo: pendingReplyTo }),
+        body: JSON.stringify({ text: payloadText, replyTo: pendingReplyTo, pings: pings.length ? pings : undefined }),
       });
       if (res.status === 403) { roomClosed(); return; }
       var data = await res.json();
@@ -2583,6 +2636,8 @@
   }
 
   function updateActiveUsers(list) {
+    latestActive = (list || []).map(function (e) { return e && e.name; }).filter(Boolean);
+    latestActive.forEach(notePerson);
     var people = (list || []).map(presenceOf).filter(Boolean);
 
     // Presence beats carry versions too, so an avatar change still lands on
@@ -2836,14 +2891,17 @@
         who.className = 'ban-row-name';
         var detail = document.createElement('div');
         detail.className = 'ban-row-detail';
+        var bakery = document.createElement('div');
+        bakery.className = 'ban-row-detail ban-row-bakery';
         var action = document.createElement('button');
         action.type = 'button';
         action.className = 'msg-edit-cancel ban-lift-btn';
         li.appendChild(meta);
         li.appendChild(who);
         li.appendChild(detail);
+        li.appendChild(bakery);
         li.appendChild(action);
-        row = rows[key] = { li: li, meta: meta, who: who, detail: detail, action: action, wired: '' };
+        row = rows[key] = { li: li, meta: meta, who: who, detail: detail, bakery: bakery, action: action, wired: '' };
       }
       return row;
     }
@@ -2855,6 +2913,17 @@
       return Object.keys(best || {}).map(function (g) {
         return (names[g] || g) + ' ' + (TIMED_BOARDS[g] ? fmtRaceTime(best[g]) : formatCount(best[g]));
       }).join(', ');
+    }
+
+    function bakeryLine(b) {
+      if (!b) return '';
+      var built = CK_BUILDINGS.filter(function (bd) { return b.owned && b.owned[bd.id] > 0; });
+      var total = built.reduce(function (sum, bd) { return sum + b.owned[bd.id]; }, 0);
+      var count = function (n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); };
+      var head = '🍪 ' + ckShort(b.cookies) + ' in the bank · ' + ckShort(b.cps) + '/s · ' + count(total, 'building') + ' · ' +
+        count(b.upgrades, 'upgrade') + ' · ' + count(b.feats, 'feat') + (b.prestige ? ' · prestige ' + b.prestige : '');
+      var list = built.map(function (bd) { return bd.name + ' ' + b.owned[bd.id]; }).join(', ');
+      return head + (list ? '\n' + list : '');
     }
 
     function formatCount(n) {
@@ -2887,6 +2956,8 @@
         var best = bestLine(person.best);
         if (best) bits.push(best);
         setText(row.detail, bits.join(' · '));
+        setText(row.bakery, bakeryLine(person.bakery));
+        row.bakery.hidden = !person.bakery;
 
         var wants = person.banned ? 'lift' : ((person.isAdmin || person.username === myUsername) ? '' : 'ban');
         if (row.wired !== wants) {
@@ -3003,9 +3074,20 @@
         body.className = 'admin-day-messages';
         body.hidden = true;
         var loaded = false;
+        btn.setAttribute('aria-expanded', 'false');
         btn.addEventListener('click', async function () {
-          body.hidden = !body.hidden;
-          if (loaded || body.hidden) return;
+          var opening = body.hidden;
+          Array.prototype.forEach.call(historyPane.querySelectorAll('.admin-day.is-open'), function (other) {
+            if (other === row) return;
+            other.classList.remove('is-open');
+            other.querySelector('.admin-day-messages').hidden = true;
+            other.querySelector('.admin-day-btn').setAttribute('aria-expanded', 'false');
+          });
+          body.hidden = !opening;
+          row.classList.toggle('is-open', opening);
+          btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+          if (opening) row.scrollIntoView({ block: 'nearest' });
+          if (loaded || !opening) return;
           loaded = true;
           body.textContent = 'Opening…';
           await loadDay(d.day, body);
@@ -3267,6 +3349,9 @@
 
   function renderLeaderboard(scores) {
     lastScores = scores || {};
+    Object.keys(lastScores).forEach(function (g) {
+      (lastScores[g] || []).forEach(function (row) { notePerson(row.username); });
+    });
     renderActiveLb();
   }
 
@@ -3376,6 +3461,7 @@
     renderActiveLb();
     if (name === 'cookie' && ck) ckRenderAll();
     else ckHideTip();
+    if (name === 'snake' && !snake) drawSnakePreview();
     nudgePresence();
   }
 
@@ -3386,6 +3472,8 @@
   function enterGames() {
     gamesWho.textContent = myUsername || '—';
     ckEnter();
+    loadSnakeBest();
+    if (activeGame === 'snake' && !snake) drawSnakePreview();
     loadTetrisCfg();
     initPoker();
     if (!minesBuilt) newMines();
@@ -4817,169 +4905,562 @@
   });
 
   // ---------------------------------------------------------------------
-  // Snake — speed and apple count are adjustable, Google-style
+  // Snake — Google-style: smooth movement, customizable, juicy
   // ---------------------------------------------------------------------
 
   var snakeCanvas = document.getElementById('snake-canvas');
   var snakeCtx = snakeCanvas.getContext('2d');
+  var snakeWrap = document.getElementById('sn-wrap');
   var snakeOverlay = document.getElementById('snake-overlay');
   var snakeMsg = document.getElementById('snake-msg');
   var snakeStartBtn = document.getElementById('snake-start');
   var snakeScoreEl = document.getElementById('snake-score');
   var snakeBestEl = document.getElementById('snake-best');
-  var SNAKE_CELLS = 19;
-  var SNAKE_PX = 20;
-  var SNAKE_HINT = 'arrows or WASD · eat, grow, don\'t die';
-  var SNAKE_SPEEDS = { slow: 170, normal: 125, fast: 85 };
+  var snakeLengthEl = document.getElementById('snake-length');
+  var snakeBoostEl = document.getElementById('sn-boost');
+  var snakeHudFruit = document.getElementById('sn-hud-fruit');
+  var snakeSetupEl = document.getElementById('sn-setup');
+  var snakeOverEl = document.getElementById('sn-over');
+  var snakeFruitNote = document.getElementById('sn-fruit-note');
+  var SNAKE_HINT = 'arrows, WASD or swipe';
+  var SNAKE_SPEEDS = { slow: 165, normal: 120, fast: 82 };
+  var SNAKE_SIZES = { small: 10, medium: 15, large: 20 };
+  var SNAKE_FRUITS = {
+    apple: { color: '#ef4b3f', points: 10, note: 'Apples: 10 points each.' },
+    banana: { color: '#ffd23f', points: 10, boostMs: 4000, note: 'Bananas: 10 points and a few seconds of extra speed.' },
+    pepper: { color: '#ff4a2a', points: 20, pace: 0.62, note: 'Peppers: ultra-fast the whole game, but every pepper is worth double.' },
+  };
   var SNAKE_OPTS_KEY = 'ss_snake_opts';
-  var snakeOpts = { speed: 'normal', apples: 1 };
+  var snakeOpts = { speed: 'normal', size: 'medium', walls: 'classic', fruit: 'apple', apples: 1 };
   var snake = null;
-  var snakeTimer = null;
+  var snakeRaf = null;
+  var snakeLastTs = 0;
   var snakeBest = 0;
+  var snakeBoard = null;
+  var snakeView = { px: 440, dpr: 1 };
+
+  function snakeBestKey() {
+    return 'ss_snake_best_' + (myRoom || '') + '_' + (myUsername || '').toLowerCase();
+  }
 
   function saveSnakeOpts() {
     prefs.set(SNAKE_OPTS_KEY, JSON.stringify(snakeOpts));
   }
 
+  var SNAKE_GROUPS = [['speed', 'speed'], ['size', 'size'], ['walls', 'walls'], ['fruit', 'fruit'], ['apples', 'apples']];
+
   function refreshSnakeOptButtons() {
-    document.querySelectorAll('#snake-speed button').forEach(function (b) {
-      b.classList.toggle('is-active', b.dataset.speed === snakeOpts.speed);
+    SNAKE_GROUPS.forEach(function (g) {
+      document.querySelectorAll('#snake-' + g[0] + ' button').forEach(function (b) {
+        b.classList.toggle('is-active', String(b.dataset[g[1]]) === String(snakeOpts[g[1]]));
+        b.setAttribute('aria-pressed', b.classList.contains('is-active') ? 'true' : 'false');
+      });
     });
-    document.querySelectorAll('#snake-apples button').forEach(function (b) {
-      b.classList.toggle('is-active', Number(b.dataset.apples) === snakeOpts.apples);
-    });
+    snakeFruitNote.textContent = SNAKE_FRUITS[snakeOpts.fruit].note + (snakeOpts.walls === 'portal' ? ' Walls wrap around.' : '');
+    snakeHudFruit.innerHTML = document.querySelector('#snake-fruit [data-fruit="' + snakeOpts.fruit + '"] .sn-ico').innerHTML;
+    if (!snake) { snakeBoard = null; drawSnakePreview(); }
   }
 
-  document.querySelectorAll('#snake-speed button').forEach(function (b) {
-    b.addEventListener('click', function () {
-      snakeOpts.speed = b.dataset.speed;
-      saveSnakeOpts();
-      refreshSnakeOptButtons();
-      if (snake) snake.delay = SNAKE_SPEEDS[snakeOpts.speed];
+  SNAKE_GROUPS.forEach(function (g) {
+    document.querySelectorAll('#snake-' + g[0] + ' button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        if (snake && snake.alive) return;
+        var v = b.dataset[g[1]];
+        snakeOpts[g[1]] = g[1] === 'apples' ? Number(v) : v;
+        saveSnakeOpts();
+        refreshSnakeOptButtons();
+      });
     });
   });
-  document.querySelectorAll('#snake-apples button').forEach(function (b) {
-    b.addEventListener('click', function () {
-      snakeOpts.apples = Number(b.dataset.apples);
-      saveSnakeOpts();
-      refreshSnakeOptButtons();
-      if (snake) {
-        while (snake.foods.length < snakeOpts.apples) snake.foods.push(snakeSpawnFood(snake));
-        snake.foods.length = Math.min(snake.foods.length, snakeOpts.apples);
-        drawSnake();
-      }
-    });
-  });
-  refreshSnakeOptButtons();
+
   prefs.ready(function () {
     try {
-      var savedSnake = JSON.parse(prefs.get(SNAKE_OPTS_KEY) || '{}');
-      if (SNAKE_SPEEDS[savedSnake.speed]) snakeOpts.speed = savedSnake.speed;
-      if ([1, 3, 5].indexOf(savedSnake.apples) !== -1) snakeOpts.apples = savedSnake.apples;
+      var saved = JSON.parse(prefs.get(SNAKE_OPTS_KEY) || '{}');
+      if (SNAKE_SPEEDS[saved.speed]) snakeOpts.speed = saved.speed;
+      if (SNAKE_SIZES[saved.size]) snakeOpts.size = saved.size;
+      if (saved.walls === 'classic' || saved.walls === 'portal') snakeOpts.walls = saved.walls;
+      if (SNAKE_FRUITS[saved.fruit]) snakeOpts.fruit = saved.fruit;
+      if ([1, 3, 5].indexOf(saved.apples) !== -1) snakeOpts.apples = saved.apples;
     } catch (e) { /* defaults */ }
     refreshSnakeOptButtons();
   });
 
-  function snakeSpawnFood(s) {
-    while (true) {
-      var p = {
-        x: Math.floor(Math.random() * SNAKE_CELLS),
-        y: Math.floor(Math.random() * SNAKE_CELLS),
-      };
-      var clash = s.body.some(function (b) { return b.x === p.x && b.y === p.y; }) ||
-        s.foods.some(function (f) { return f.x === p.x && f.y === p.y; });
-      if (!clash) return p;
+  function loadSnakeBest() {
+    snakeBest = Number(prefs.get(snakeBestKey())) || 0;
+    snakeBestEl.textContent = String(snakeBest);
+  }
+
+  function snakeSize() {
+    var w = Math.max(200, Math.min(snakeWrap.clientWidth || 440, 520));
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (w === snakeView.px && dpr === snakeView.dpr) return;
+    snakeView.px = w;
+    snakeView.dpr = dpr;
+    snakeCanvas.width = Math.round(w * dpr);
+    snakeCanvas.height = Math.round(w * dpr);
+    snakeCanvas.style.width = w + 'px';
+    snakeCanvas.style.height = w + 'px';
+    snakeBoard = null;
+    if (!snakeRaf) drawSnakePreview();
+  }
+
+  if (window.ResizeObserver) new ResizeObserver(function () { if (activeGame === 'snake') snakeSize(); }).observe(snakeWrap);
+
+  // The checkerboard only changes with the map size, so it is drawn once.
+  function snakeBoardImage(n) {
+    if (snakeBoard && snakeBoard.n === n && snakeBoard.px === snakeView.px && snakeBoard.dpr === snakeView.dpr) return snakeBoard.canvas;
+    var c = document.createElement('canvas');
+    c.width = snakeCanvas.width;
+    c.height = snakeCanvas.height;
+    var g = c.getContext('2d');
+    var cell = c.width / n;
+    for (var y = 0; y < n; y++) {
+      for (var x = 0; x < n; x++) {
+        g.fillStyle = (x + y) % 2 ? '#a2d149' : '#aad751';
+        g.fillRect(Math.floor(x * cell), Math.floor(y * cell), Math.ceil(cell), Math.ceil(cell));
+      }
     }
+    snakeBoard = { n: n, px: snakeView.px, dpr: snakeView.dpr, canvas: c };
+    return c;
   }
 
-  function themeColor(name, fallback) {
-    var v = getComputedStyle(document.body).getPropertyValue(name).trim();
-    return v || fallback;
+  function snakeFree(s) {
+    var free = [];
+    for (var y = 0; y < s.n; y++) {
+      for (var x = 0; x < s.n; x++) {
+        if (s.body.some(function (b) { return b.x === x && b.y === y; })) continue;
+        if (s.foods.some(function (f) { return f.x === x && f.y === y; })) continue;
+        free.push({ x: x, y: y });
+      }
+    }
+    return free;
   }
 
-  function drawSnake() {
-    snakeCtx.clearRect(0, 0, snakeCanvas.width, snakeCanvas.height);
+  function snakeSpawnFood(s, now) {
+    var free = snakeFree(s);
+    if (!free.length) return null;
+    var p = free[Math.floor(Math.random() * free.length)];
+    p.born = now || performance.now();
+    return p;
+  }
+
+  function newSnakeState(now) {
+    var n = SNAKE_SIZES[snakeOpts.size];
+    var mid = Math.floor(n / 2);
+    var x0 = Math.max(3, Math.floor(n / 4) + 1);
+    var body = [{ x: x0, y: mid }, { x: x0 - 1, y: mid }, { x: x0 - 2, y: mid }];
+    var s = {
+      n: n, body: body, prev: body.map(function (b) { return { x: b.x, y: b.y }; }),
+      dir: { x: 1, y: 0 }, queue: [], foods: [], score: 0, eaten: 0, alive: true,
+      delay: SNAKE_SPEEDS[snakeOpts.speed], acc: 0, started: now, endedAt: 0,
+      angle: 0, prevAngle: 0, squashAt: -1e9, pulses: [], particles: [], boostUntil: 0, deathAt: 0,
+      fruit: snakeOpts.fruit, wrap: snakeOpts.walls === 'portal',
+    };
+    for (var i = 0; i < snakeOpts.apples; i++) {
+      var f = snakeSpawnFood(s, now);
+      if (f) s.foods.push(f);
+    }
+    return s;
+  }
+
+  function snakeDelay(s, now) {
+    var d = s.delay;
+    if (s.fruit === 'pepper') d *= SNAKE_FRUITS.pepper.pace;
+    if (now < s.boostUntil) d *= 0.6;
+    return Math.max(d, 40);
+  }
+
+  function snakeQueueTurn(d) {
+    if (!snake || !snake.alive) return;
+    var last = snake.queue.length ? snake.queue[snake.queue.length - 1] : snake.dir;
+    if ((d.x === last.x && d.y === last.y) || (d.x === -last.x && d.y === -last.y)) return;
+    if (snake.queue.length < 3) snake.queue.push(d);
+  }
+
+  function snakeStep(now) {
+    var s = snake;
+    if (s.queue.length) {
+      s.prevAngle = Math.atan2(s.dir.y, s.dir.x);
+      s.dir = s.queue.shift();
+    } else {
+      s.prevAngle = Math.atan2(s.dir.y, s.dir.x);
+    }
+    s.angle = Math.atan2(s.dir.y, s.dir.x);
+    var head = s.body[0];
+    var nx = head.x + s.dir.x;
+    var ny = head.y + s.dir.y;
+    if (s.wrap) {
+      nx = (nx + s.n) % s.n;
+      ny = (ny + s.n) % s.n;
+    } else if (nx < 0 || ny < 0 || nx >= s.n || ny >= s.n) {
+      return snakeDie(now);
+    }
+    var ate = -1;
+    for (var i = 0; i < s.foods.length; i++) {
+      if (s.foods[i].x === nx && s.foods[i].y === ny) { ate = i; break; }
+    }
+    var solid = ate === -1 ? s.body.slice(0, -1) : s.body;
+    if (solid.some(function (b) { return b.x === nx && b.y === ny; })) return snakeDie(now);
+    s.prev = s.body.map(function (b) { return { x: b.x, y: b.y }; });
+    s.body.unshift({ x: nx, y: ny });
+    if (ate === -1) {
+      s.body.pop();
+    } else {
+      var kind = SNAKE_FRUITS[s.fruit];
+      s.prev.push({ x: s.prev[s.prev.length - 1].x, y: s.prev[s.prev.length - 1].y });
+      s.score += kind.points;
+      s.eaten++;
+      s.squashAt = now;
+      s.pulses.push(now);
+      if (kind.boostMs) s.boostUntil = now + kind.boostMs;
+      if (s.delay > 65) s.delay -= 2;
+      snakeBurst(s, nx + 0.5, ny + 0.5, kind.color, now);
+      var next = snakeSpawnFood(s, now);
+      if (next) s.foods[ate] = next; else s.foods.splice(ate, 1);
+      snakeScoreEl.textContent = String(s.score);
+      snakeScoreEl.classList.remove('is-bump');
+      void snakeScoreEl.offsetWidth;
+      snakeScoreEl.classList.add('is-bump');
+      if (!s.foods.length) return snakeDie(now, true);
+    }
+    snakeLengthEl.textContent = String(s.body.length);
+  }
+
+  function snakeBurst(s, x, y, color, now) {
+    for (var i = 0; i < 14; i++) {
+      var a = Math.random() * Math.PI * 2;
+      var v = 1.6 + Math.random() * 2.6;
+      s.particles.push({
+        x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1.2, born: now,
+        life: 420 + Math.random() * 300, size: 0.1 + Math.random() * 0.12, rot: Math.random() * 6, color: color,
+      });
+    }
+    if (s.particles.length > 120) s.particles.splice(0, s.particles.length - 120);
+  }
+
+  function snakeDie(now, won) {
+    var s = snake;
+    s.alive = false;
+    s.deathAt = now;
+    s.won = !!won;
+    s.endedAt = now;
+    setTimeout(function () { if (snake === s) endSnake(); }, won ? 500 : 750);
+  }
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function lerpAngle(a, b, t) {
+    var d = b - a;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return a + d * t;
+  }
+
+  function drawSnakeFruit(ctx, kind, cx, cy, r, t) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    var bob = 1 + Math.sin(t / 260) * 0.05;
+    ctx.scale(bob, bob);
+    if (kind === 'banana') {
+      ctx.rotate(-0.5);
+      ctx.fillStyle = '#ffd23f';
+      ctx.beginPath();
+      ctx.arc(0, -r * 0.35, r * 0.95, 0.35 * Math.PI, 0.95 * Math.PI);
+      ctx.arc(-r * 0.12, -r * 0.75, r * 1.2, 0.86 * Math.PI, 0.4 * Math.PI, true);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#6b4423';
+      ctx.fillRect(-r * 0.95, -r * 0.1, r * 0.22, r * 0.22);
+    } else if (kind === 'pepper') {
+      ctx.rotate(0.6);
+      ctx.fillStyle = '#ff4a2a';
+      ctx.beginPath();
+      ctx.ellipse(0, r * 0.1, r * 0.48, r * 0.92, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.18, -r * 0.1, r * 0.1, r * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#4fb04a';
+      ctx.beginPath();
+      ctx.ellipse(0, -r * 0.8, r * 0.42, r * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(-r * 0.06, -r * 1.15, r * 0.14, r * 0.38);
+    } else {
+      ctx.fillStyle = '#ef4b3f';
+      ctx.beginPath();
+      ctx.arc(-r * 0.32, r * 0.05, r * 0.66, 0, Math.PI * 2);
+      ctx.arc(r * 0.32, r * 0.05, r * 0.66, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.45, -r * 0.12, r * 0.14, r * 0.24, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#6b4423';
+      ctx.lineWidth = r * 0.14;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, -r * 0.5);
+      ctx.lineTo(r * 0.12, -r * 0.92);
+      ctx.stroke();
+      ctx.fillStyle = '#58c35a';
+      ctx.beginPath();
+      ctx.ellipse(r * 0.38, -r * 0.82, r * 0.28, r * 0.13, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawSnake(now) {
+    var s = snake;
+    var ctx = snakeCtx;
+    var dpr = snakeView.dpr;
+    var px = snakeView.px;
+    var n = s ? s.n : SNAKE_SIZES[snakeOpts.size];
+    var cell = px / n;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    var shake = s && !s.alive && !s.won ? Math.max(0, 1 - (now - s.deathAt) / 320) : 0;
+    if (shake) ctx.translate((Math.random() - 0.5) * 8 * shake * dpr, (Math.random() - 0.5) * 8 * shake * dpr);
+    ctx.drawImage(snakeBoardImage(n), 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (shake) ctx.translate((Math.random() - 0.5) * 8 * shake, (Math.random() - 0.5) * 8 * shake);
+    if (!s) return;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, px, px);
+    ctx.clip();
+
+    s.foods.forEach(function (f, i) {
+      var grow = Math.min(1, (now - (f.born || 0)) / 260);
+      var pop = grow < 1 ? 0.4 + 0.6 * (1 - Math.pow(1 - grow, 3)) * (1 + Math.sin(grow * Math.PI) * 0.25) : 1;
+      drawSnakeFruit(ctx, s.fruit, (f.x + 0.5) * cell, (f.y + 0.5) * cell, cell * 0.36 * pop, now + i * 300);
+    });
+
+    var p = s.alive ? Math.min(1, s.acc / snakeDelay(s, now)) : 1;
+    var pts = s.body.map(function (b, i) {
+      var from = s.prev[i] || b;
+      var dx = b.x - from.x;
+      var dy = b.y - from.y;
+      if (Math.abs(dx) > 1) dx = -Math.sign(dx);
+      if (Math.abs(dy) > 1) dy = -Math.sign(dy);
+      return { x: (b.x - dx * (1 - p) + 0.5) * cell, y: (b.y - dy * (1 - p) + 0.5) * cell, dx: dx, dy: dy };
+    });
+
+    var len = pts.length;
+    var base = cell * 0.7;
+    var widths = pts.map(function (pt, i) {
+      var w = base * (1 - (i / Math.max(len, 1)) * 0.22);
+      s.pulses.forEach(function (t0) {
+        var k = (now - t0) / 38;
+        var d = i - k;
+        if (d > -2.5 && d < 2.5) w += cell * 0.22 * Math.exp(-d * d / 1.6);
+      });
+      return w;
+    });
+    s.pulses = s.pulses.filter(function (t0) { return (now - t0) / 38 < len + 3; });
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (var i = len - 1; i >= 1; i--) {
+      var a = pts[i];
+      var b = pts[i - 1];
+      var t = i / len;
+      ctx.strokeStyle = 'rgb(' + Math.round(lerp(78, 44, t)) + ',' + Math.round(lerp(124, 86, t)) + ',' + Math.round(lerp(246, 204, t)) + ')';
+      ctx.lineWidth = widths[i];
+      ctx.beginPath();
+      if (Math.abs(a.x - b.x) > cell * 1.5 || Math.abs(a.y - b.y) > cell * 1.5) {
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(a.x + b.dx * cell, a.y + b.dy * cell);
+        ctx.moveTo(b.x - b.dx * cell, b.y - b.dy * cell);
+        ctx.lineTo(b.x, b.y);
+      } else {
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+      }
+      ctx.stroke();
+    }
+
+    var head = pts[0];
+    var angle = lerpAngle(s.prevAngle, s.angle, Math.min(1, p * 1.8));
+    var sq = (now - s.squashAt) / 260;
+    var stretch = sq >= 0 && sq < 1 ? Math.sin(sq * Math.PI) * (1 - sq) : 0;
+    ctx.save();
+    ctx.translate(head.x, head.y);
+    ctx.rotate(angle);
+    ctx.scale(1 + stretch * 0.45, 1 - stretch * 0.3);
+    var hr = widths[0] * 0.56;
+    ctx.fillStyle = '#4e7cf6';
+    ctx.beginPath();
+    ctx.ellipse(hr * 0.12, 0, hr * 1.08, hr, 0, 0, Math.PI * 2);
+    ctx.fill();
+    var dead = !s.alive && !s.won;
+    [-1, 1].forEach(function (side) {
+      var ex = hr * 0.42;
+      var ey = side * hr * 0.48;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(ex, ey, hr * 0.34, 0, Math.PI * 2);
+      ctx.fill();
+      if (dead) {
+        ctx.strokeStyle = '#1f2b4d';
+        ctx.lineWidth = hr * 0.12;
+        ctx.beginPath();
+        ctx.moveTo(ex - hr * 0.16, ey - hr * 0.16);
+        ctx.lineTo(ex + hr * 0.16, ey + hr * 0.16);
+        ctx.moveTo(ex + hr * 0.16, ey - hr * 0.16);
+        ctx.lineTo(ex - hr * 0.16, ey + hr * 0.16);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = '#1f2b4d';
+        ctx.beginPath();
+        ctx.arc(ex + hr * 0.1, ey, hr * 0.17, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+    ctx.restore();
+
+    s.particles = s.particles.filter(function (q) { return now - q.born < q.life; });
+    s.particles.forEach(function (q) {
+      var age = (now - q.born) / 1000;
+      var life = (now - q.born) / q.life;
+      var x = (q.x + q.vx * age) * cell;
+      var y = (q.y + q.vy * age + 2.2 * age * age) * cell;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - life);
+      ctx.translate(x, y);
+      ctx.rotate(q.rot + age * 8);
+      ctx.fillStyle = q.color;
+      var sz = q.size * cell * (1 - life * 0.5);
+      ctx.fillRect(-sz / 2, -sz / 4, sz, sz / 2);
+      ctx.restore();
+    });
+
+    if (!s.alive && !s.won) {
+      var fade = Math.min(1, (now - s.deathAt) / 400);
+      ctx.fillStyle = 'rgba(214,61,46,' + (0.22 * (1 - Math.abs(fade - 0.3))) + ')';
+      ctx.fillRect(0, 0, px, px);
+    }
+    ctx.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  function drawSnakePreview() {
+    snakeSize();
+    var now = performance.now();
+    var keep = snake;
+    if (!keep) {
+      snake = newSnakeState(now);
+      snake.foods.forEach(function (f) { f.born = -1e9; });
+    }
+    drawSnake(now);
+    if (!keep) snake = null;
+  }
+
+  function snakeFrame(ts) {
+    snakeRaf = null;
     if (!snake) return;
-    var accent = themeColor('--verdigris', '#6f8f76');
-    var bright = themeColor('--verdigris-bright', '#93b89a');
-    snakeCtx.fillStyle = themeColor('--danger', '#a65b4b');
-    snake.foods.forEach(function (f) {
-      snakeCtx.beginPath();
-      snakeCtx.arc(f.x * SNAKE_PX + 10, f.y * SNAKE_PX + 10, 7, 0, Math.PI * 2);
-      snakeCtx.fill();
-    });
-    snake.body.forEach(function (b, i) {
-      snakeCtx.fillStyle = i === 0 ? bright : accent;
-      snakeCtx.fillRect(b.x * SNAKE_PX + 1, b.y * SNAKE_PX + 1, SNAKE_PX - 2, SNAKE_PX - 2);
-    });
+    var dt = snakeLastTs ? Math.min(ts - snakeLastTs, 100) : 16;
+    snakeLastTs = ts;
+    if (snake.alive) {
+      snake.acc += dt;
+      var d = snakeDelay(snake, ts);
+      while (snake.alive && snake.acc >= d) {
+        snake.acc -= d;
+        snakeStep(ts);
+        d = snakeDelay(snake, ts);
+      }
+      var boosted = ts < snake.boostUntil;
+      if (snakeBoostEl.hidden === boosted) snakeBoostEl.hidden = !boosted;
+    }
+    drawSnake(ts);
+    if (snake) snakeRaf = requestAnimationFrame(snakeFrame);
   }
 
   function startSnake() {
-    snake = {
-      body: [{ x: 9, y: 9 }, { x: 8, y: 9 }, { x: 7, y: 9 }],
-      dir: { x: 1, y: 0 },
-      nextDir: { x: 1, y: 0 },
-      score: 0,
-      foods: [],
-      delay: SNAKE_SPEEDS[snakeOpts.speed],
-    };
-    for (var i = 0; i < snakeOpts.apples; i++) snake.foods.push(snakeSpawnFood(snake));
+    if (snakeRaf) cancelAnimationFrame(snakeRaf);
+    snakeSize();
+    snake = newSnakeState(performance.now());
+    snakeLastTs = 0;
     snakeScoreEl.textContent = '0';
+    snakeLengthEl.textContent = String(snake.body.length);
+    snakeOverlay.classList.add('is-hidden');
     snakeOverlay.hidden = true;
-    drawSnake();
-    snakeTimer = setTimeout(snakeTick, snake.delay);
+    snakeRaf = requestAnimationFrame(snakeFrame);
   }
 
-  function snakeTick() {
-    snakeTimer = null;
-    if (!snake) return;
-    snake.dir = snake.nextDir;
-    var head = { x: snake.body[0].x + snake.dir.x, y: snake.body[0].y + snake.dir.y };
-    var hitWall = head.x < 0 || head.y < 0 || head.x >= SNAKE_CELLS || head.y >= SNAKE_CELLS;
-    var hitSelf = snake.body.some(function (b) { return b.x === head.x && b.y === head.y; });
-    if (hitWall || hitSelf) { endSnake(); return; }
-    snake.body.unshift(head);
-    var ate = -1;
-    for (var i = 0; i < snake.foods.length; i++) {
-      if (snake.foods[i].x === head.x && snake.foods[i].y === head.y) { ate = i; break; }
-    }
-    if (ate !== -1) {
-      snake.score += 10;
-      snakeScoreEl.textContent = String(snake.score);
-      snake.foods[ate] = snakeSpawnFood(snake);
-      if (snake.delay > 65) snake.delay -= 2;
-    } else {
-      snake.body.pop();
-    }
-    drawSnake();
-    snakeTimer = setTimeout(snakeTick, snake.delay);
+  function fmtSnakeTime(ms) {
+    var secs = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
   }
 
   function endSnake() {
-    if (snakeTimer) { clearTimeout(snakeTimer); snakeTimer = null; }
-    var finalScore = snake ? snake.score : 0;
-    snake = null;
-    if (finalScore > snakeBest) {
+    var s = snake;
+    if (snakeRaf) { cancelAnimationFrame(snakeRaf); snakeRaf = null; }
+    var finalScore = s ? s.score : 0;
+    var isBest = finalScore > snakeBest;
+    if (isBest) {
       snakeBest = finalScore;
       snakeBestEl.textContent = String(finalScore);
+      prefs.set(snakeBestKey(), String(finalScore));
     }
-    snakeMsg.textContent = 'game over · score ' + finalScore;
-    snakeStartBtn.textContent = 'play again';
+    document.getElementById('sn-final').textContent = String(finalScore);
+    document.getElementById('sn-final-best').textContent = String(snakeBest);
+    document.getElementById('sn-final-length').textContent = String(s ? s.body.length : 0);
+    document.getElementById('sn-final-time').textContent = fmtSnakeTime(s ? s.endedAt - s.started : 0);
+    document.getElementById('sn-over-title').textContent = s && s.won ? 'you filled the board!' : isBest && finalScore > 0 ? 'new best!' : 'game over';
+    snakeOverEl.classList.toggle('is-best', isBest && finalScore > 0);
+    snakeSetupEl.hidden = true;
+    snakeOverEl.hidden = false;
+    snakeBoostEl.hidden = true;
     snakeOverlay.hidden = false;
+    snakeOverlay.classList.remove('is-hidden');
+    snakeOverEl.classList.remove('is-in');
+    void snakeOverEl.offsetWidth;
+    snakeOverEl.classList.add('is-in');
+    snake = s;
+    if (s) { s.particles = []; drawSnake(performance.now()); }
+    snake = null;
     submitScore('snake', finalScore);
   }
 
   function stopSnake(abandon) {
-    if (snakeTimer) { clearTimeout(snakeTimer); snakeTimer = null; }
+    if (snakeRaf) { cancelAnimationFrame(snakeRaf); snakeRaf = null; }
     if (!snake) return;
     if (abandon && snake.score > 0) submitScore('snake', snake.score);
     snake = null;
+    snakeBoostEl.hidden = true;
+    showSnakeSetup();
+  }
+
+  function showSnakeSetup() {
     snakeMsg.textContent = SNAKE_HINT;
-    snakeStartBtn.textContent = 'play';
+    snakeOverEl.hidden = true;
+    snakeSetupEl.hidden = false;
     snakeOverlay.hidden = false;
+    snakeOverlay.classList.remove('is-hidden');
+    drawSnakePreview();
   }
 
   snakeStartBtn.addEventListener('click', startSnake);
+  document.getElementById('sn-again').addEventListener('click', startSnake);
+  document.getElementById('sn-settings').addEventListener('click', showSnakeSetup);
+
+  var snakeTouch = null;
+  snakeWrap.addEventListener('touchstart', function (e) {
+    if (!snake || !snake.alive || e.touches.length !== 1) return;
+    snakeTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }, { passive: true });
+  snakeWrap.addEventListener('touchmove', function (e) {
+    if (!snakeTouch || !snake) return;
+    var dx = e.touches[0].clientX - snakeTouch.x;
+    var dy = e.touches[0].clientY - snakeTouch.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 22) return;
+    e.preventDefault();
+    snakeQueueTurn(Math.abs(dx) > Math.abs(dy) ? { x: Math.sign(dx), y: 0 } : { x: 0, y: Math.sign(dy) });
+    snakeTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }, { passive: false });
+  snakeWrap.addEventListener('touchend', function () { snakeTouch = null; });
 
   var SNAKE_DIRS = {
     arrowup: { x: 0, y: -1 }, w: { x: 0, y: -1 },
@@ -6697,9 +7178,26 @@
   var ckTip = document.getElementById('ck-tip');
   var ckToasts = document.getElementById('ck-toasts');
   var ckTabs = Array.prototype.slice.call(ckStage.querySelectorAll('.ck-tab'));
+  var ckRainEl = document.getElementById('ck-rain');
+  var ckMilkEl = document.getElementById('ck-milk');
+  var ckTickerEl = document.getElementById('ck-ticker');
+  var ckClickRateEl = document.getElementById('ck-clickrate');
+  var ckClickLog = [];
+  var CK_CLICK_WINDOW = 2500;
+  var ckRainLive = 0;
+  var ckNewsAt = 0;
+  var ckNewsLast = '';
+  var ckAchSeen = false;
 
   // Golden cookies every 5–9 minutes; true makes it 30–60 seconds for testing.
   var CK_GOLDEN_TEST = false;
+  // Away from the arcade (or with it hidden) the bakery runs at 5%, and only
+  // for the first hour; anything under 10 seconds counts as still here.
+  var CK_AWAY_RATE = 0.05;
+  var CK_AWAY_CAP = 60 * 60 * 1000;
+  var CK_AWAY_GAP = 10 * 1000;
+  var CK_EPOCH = 2;
+  var CK_EPOCH_CUTS = { 2: 0.3 };
 
   var CK_BUILDINGS = [
     { id: 'cursor', name: 'Cursor', plural: 'Cursors', icon: '👆', base: 15, cps: 0.1, desc: 'Auto-clicks the big cookie.' },
@@ -7126,8 +7624,12 @@
     ckCheckAch();
     var row = ckBuildingRows[i];
     row.btn.classList.remove('bought');
+    row.owned.classList.remove('pop');
     void row.btn.offsetWidth;
     row.btn.classList.add('bought');
+    row.owned.classList.add('pop');
+    var rr = row.cost.getBoundingClientRect();
+    ckPop(rr.left + 30, rr.top, '−' + ckShort(q.cost), false, 'is-spend');
     ckRenderCounter();
     ckRenderStore(true);
     ckRefreshTip();
@@ -7145,6 +7647,11 @@
     if (ck.cookies < u.price) return;
     ck.cookies = Math.max(0, ck.cookies - u.price);
     ck.upgrades[id] = true;
+    var tile = ckUpgradesEl.querySelector('[data-up="' + id + '"]');
+    if (tile) {
+      var tr = tile.getBoundingClientRect();
+      ckPop(tr.left + tr.width / 2, tr.top, u.name + '!', false, 'is-upgrade');
+    }
     ckServerDirty = true;
     ckRecalc();
     ckCheckAch();
@@ -7217,9 +7724,9 @@
     setTimeout(dismiss, 5200);
   }
 
-  function ckPop(x, y, text, big) {
+  function ckPop(x, y, text, big, extra) {
     var el = document.createElement('span');
-    el.className = 'ck-pop' + (big ? ' is-big' : '');
+    el.className = 'ck-pop' + (big ? ' is-big' : '') + (extra ? ' ' + extra : '');
     el.textContent = text;
     el.style.left = x + 'px';
     el.style.top = y + 'px';
@@ -7325,6 +7832,7 @@
     return {
       cookies: 0, baked: 0, bakedAll: 0, handmade: 0, clicks: 0, runClicks: 0, gcClicks: 0, prestige: 0, ascensions: 0,
       started: now, runStarted: now, played: 0, offline: 0, owned: {}, upgrades: {}, ach: {}, buffs: [], lastTick: now,
+      epoch: CK_EPOCH,
     };
   }
 
@@ -7338,6 +7846,7 @@
     if (!(st.started > 0)) st.started = now;
     if (!(st.runStarted > 0)) st.runStarted = st.started;
     st.prestige = Math.floor(st.prestige);
+    st.epoch = Math.floor(Number(p.epoch)) || 1;
     if (p.owned && typeof p.owned === 'object') {
       CK_BUILDINGS.forEach(function (b) {
         var n = Math.floor(Number(p.owned[b.id]) || 0);
@@ -7358,6 +7867,7 @@
     var out = { v: 2 };
     CK_NUMBERS.forEach(function (f) { out[f] = ck[f]; });
     out.cps = ckD.baseCps;
+    out.epoch = ck.epoch;
     out.savedAt = ck.lastTick;
     out.owned = Object.assign({}, ck.owned);
     out.upgrades = Object.keys(ck.upgrades).map(Number);
@@ -7393,6 +7903,7 @@
         st.cookies = Math.max(0, Number(p.cookies) || 0);
         st.baked = st.bakedAll = Math.max(0, Number(p.total) || 0);
         st.runClicks = 999;
+        st.epoch = 1;
         if (p.owned && typeof p.owned === 'object') {
           ['cursor', 'grandma', 'farm', 'factory', 'bank', 'temple'].forEach(function (id) {
             var n = Math.floor(Number(p.owned[id]) || 0);
@@ -7457,13 +7968,13 @@
     if (!ck || key !== ckKey || !data) return;
     var t1 = Date.now();
     if (typeof data.now === 'number' && isFinite(data.now)) ckClockOffset = data.now - (t0 + t1) / 2;
-    ckAdvance(ckNow());
+    ckCatchUp();
     var s = data.save;
     if (s && typeof s === 'object') {
       var at = Number(data.at) || 0;
-      var projected = (Number(s.bakedAll) || 0) + (Number(s.cps) || 0) * Math.max(0, ckNow() - at) / 1000;
+      var projected = (Number(s.bakedAll) || 0) + ckAwayGain(Number(s.cps) || 0, ckNow() - at);
       ckSynced = true;
-      if (projected > ck.bakedAll + Math.max(1, ck.bakedAll * 1e-6)) {
+      if (ck.epoch < CK_EPOCH || projected > ck.bakedAll + Math.max(1, ck.bakedAll * 1e-6)) {
         var feats = ck.ach;
         ck = ckFromSave(s, at);
         Object.keys(feats).forEach(function (id) { ck.ach[id] = true; });
@@ -7476,21 +7987,45 @@
         return;
       }
     }
+    if (ck.epoch < CK_EPOCH) {
+      ckApplyCuts(ck);
+      ckRenderAll();
+      ckSaveLocal();
+    }
     ckSynced = true;
     ckServerDirty = true;
     ckSaveServer(true);
   }
 
+  function ckAwayGain(cps, ms) {
+    return (cps || 0) * CK_AWAY_RATE * Math.min(Math.max(0, ms), CK_AWAY_CAP) / 1000;
+  }
+
   function ckCatchUp() {
     var now = ckNow();
     var away = now - ck.lastTick;
-    var gained = ckAdvance(now);
+    if (away <= CK_AWAY_GAP) { ckAdvance(now); return; }
+    ck.buffs = ck.buffs.filter(function (b) { return b.until > now; });
+    var gained = ckAwayGain(ckD.baseCps, away);
+    ck.lastTick = now;
+    if (gained > 0) ckEarn(gained);
     if (away >= 60000 && gained >= 1) {
       ck.offline += gained;
-      ckShowNote('While you were away for ' + ckDuration(away) + ', your bakery baked ' + ckFmt(gained) + ' cookies.');
-      if (away >= 3600000) ckAward(90);
-      if (away >= 8 * 3600000) ckAward(91);
+      ckShowNote('While you were away for ' + ckDuration(away) + ', your bakery kept going at 5% for ' +
+        (away > CK_AWAY_CAP ? 'the first hour' : 'that time') + ': +' + ckFmt(gained) + ' cookies.');
     }
+    if (away >= 3600000) ckAward(90);
+    if (away >= 8 * 3600000) ckAward(91);
+  }
+
+  function ckApplyCuts(st) {
+    for (var e = (st.epoch || 1) + 1; e <= CK_EPOCH; e++) {
+      var cut = CK_EPOCH_CUTS[e] || 1;
+      st.cookies *= cut;
+      st.baked *= cut;
+      st.bakedAll *= cut;
+    }
+    st.epoch = CK_EPOCH;
   }
 
   function ckEl(tag, cls, text) {
@@ -7550,12 +8085,124 @@
 
   function ckSetText(el, text) { if (el.textContent !== text) el.textContent = text; }
 
+  function ckClickRate() {
+    var nowMs = Date.now();
+    while (ckClickLog.length && nowMs - ckClickLog[0][0] > CK_CLICK_WINDOW) ckClickLog.shift();
+    var sum = 0;
+    for (var i = 0; i < ckClickLog.length; i++) sum += ckClickLog[i][1];
+    return sum / (CK_CLICK_WINDOW / 1000);
+  }
+
   function ckRenderCounter() {
     if (!ck) return;
     ckSetText(ckCookiesEl, ckFmt(ck.cookies));
     var cps = ckCps();
-    ckSetText(ckCpsEl, ckFmt(cps, 1));
-    ckCpsEl.parentNode.classList.toggle('is-frenzy', cps > ckD.baseCps);
+    var clicking = ckClickRate();
+    ckSetText(ckCpsEl, ckFmt(cps + clicking, 1));
+    var rate = ckCpsEl.parentNode;
+    rate.classList.toggle('is-frenzy', cps > ckD.baseCps);
+    rate.classList.toggle('is-clicking', clicking > 0);
+    if (clicking > 0) ckSetText(ckClickRateEl, '+' + ckShort(clicking) + '/s from clicks');
+    ckClickRateEl.hidden = !(clicking > 0);
+  }
+
+  function ckRenderMilk() {
+    if (!ck) return;
+    var level = Math.min(1, ckD.milk / 4);
+    ckMilkEl.style.height = (5 + level * 20).toFixed(1) + '%';
+    ckMilkEl.classList.toggle('is-empty', ckD.milk <= 0);
+  }
+
+  // A few cookies fall behind the big one, more as the bakery speeds up.
+  function ckRain() {
+    var cps = ckCps() + ckClickRate();
+    if (!(cps >= 1) || ckRainLive >= 14) return;
+    var count = Math.min(3, Math.floor(Math.log10(cps + 1) / 2) + 1);
+    for (var i = 0; i < count && ckRainLive < 14; i++) {
+      if (Math.random() > 0.65) continue;
+      var drop = ckEl('span', 'ck-drop', '🍪');
+      var size = 12 + Math.random() * 14;
+      drop.style.left = (Math.random() * 94 + 3).toFixed(1) + '%';
+      drop.style.fontSize = size.toFixed(0) + 'px';
+      drop.style.animationDuration = (3.2 + Math.random() * 2.6).toFixed(2) + 's';
+      drop.style.setProperty('--spin', Math.round(Math.random() * 360 - 180) + 'deg');
+      ckRainLive++;
+      drop.addEventListener('animationend', function () { this.remove(); ckRainLive--; });
+      ckRainEl.appendChild(drop);
+    }
+  }
+
+  var CK_NEWS = [
+    [0, 'You feel like making cookies. But nobody wants to eat your cookies.'],
+    [10, 'Your first batch goes to the trash. The neighbourhood raccoon barely touches it.'],
+    [100, 'Your cookies are popular with the neighbourhood kids.'],
+    [1e3, 'People are starting to talk about your cookies.'],
+    [1e4, 'Your cookies are talked about for miles around.'],
+    [1e5, 'Your cookies are renowned in the whole town!'],
+    [1e6, 'News: local bakery breaks records; grandmas everywhere grow suspicious.'],
+    [1e8, 'News: cookie stocks soar as {name} opens yet another wing.'],
+    [1e9, 'News: cookies now outnumber people in town, say baffled scientists.'],
+    [1e10, 'News: cookie-backed currency proposed; economists ask for a cookie.'],
+    [1e11, 'News: the moon confirmed to be mostly dough.'],
+    [1e12, 'News: the universe is slowly turning into cookies. Experts are fine with it.'],
+    [1e14, 'News: time travellers report the past now smells of chocolate chips.'],
+    [1e16, 'News: other dimensions file noise complaints about {name}.'],
+    [1e20, 'News: reality now runs on {name}\'s JavaScript console.'],
+  ];
+  var CK_BUILDING_NEWS = {
+    grandma: 'News: grandmas call it "the best job ever", ask for more knitting breaks.',
+    farm: 'News: cookie crops blamed for a light chocolate drizzle downtown.',
+    mine: 'News: miners strike a chocolate vein, refuse to share.',
+    factory: 'News: factory smoke described as "suspiciously delicious".',
+    bank: 'News: banks now accept cookies as collateral.',
+    temple: 'News: new faith worships a great cookie in the sky.',
+    wizard: 'News: wizard tower turns the mayor into a macaron, briefly.',
+    shipment: 'News: cookie planet discovered, already half eaten.',
+    alchemy: 'News: alchemists turn gold into cookies; gold prices collapse.',
+    portal: 'News: things from the Cookieverse "seem friendly enough".',
+    timemachine: 'News: history books revised to include more cookies.',
+    antimatter: 'News: antimatter cookies taste "about the same".',
+    prism: 'News: rainbows now come in chocolate.',
+    chancemaker: 'News: four-leaf clovers sell out nationwide.',
+    fractal: 'News: cookie found inside a cookie inside a cookie.',
+    console: 'News: bakery source code leaked; it is just cookies all the way down.',
+    idleverse: 'News: parallel universes report missing bakeries.',
+    cortex: 'News: giant brain dreams of cookies, wakes up hungry.',
+    you: 'News: there are now several of {name}. They all want cookies.',
+  };
+
+  function ckNews() {
+    if (!ck) return;
+    var name = myUsername || 'you';
+    var pool = CK_NEWS.filter(function (n) { return ck.bakedAll >= n[0]; }).slice(-3).map(function (n) { return n[1]; });
+    CK_BUILDINGS.forEach(function (b) { if (ckOwned(CK_BUILDINGS.indexOf(b)) && CK_BUILDING_NEWS[b.id]) pool.push(CK_BUILDING_NEWS[b.id]); });
+    if (ckBuffMult(ckNow()) > 1) pool.push('News: cookie production goes into a frenzy; nobody can explain the glitter.');
+    var choices = pool.filter(function (t) { return t !== ckNewsLast; });
+    var text = (choices.length ? choices : pool)[Math.floor(Math.random() * (choices.length || pool.length))] || '';
+    ckNewsLast = text;
+    ckTickerEl.classList.remove('is-in');
+    void ckTickerEl.offsetWidth;
+    ckTickerEl.textContent = text.replace(/\{name\}/g, name);
+    ckTickerEl.classList.add('is-in');
+  }
+
+  function ckBurst(x, y) {
+    var ring = ckEl('span', 'ck-ripple');
+    ring.style.left = x + 'px';
+    ring.style.top = y + 'px';
+    ckStage.appendChild(ring);
+    setTimeout(function () { ring.remove(); }, 600);
+    for (var i = 0; i < 3; i++) {
+      var crumb = ckEl('span', 'ck-crumb');
+      var a = Math.random() * Math.PI * 2;
+      var d = 24 + Math.random() * 30;
+      crumb.style.left = x + 'px';
+      crumb.style.top = y + 'px';
+      crumb.style.setProperty('--tx', Math.round(Math.cos(a) * d) + 'px');
+      crumb.style.setProperty('--ty', Math.round(Math.sin(a) * d + 30) + 'px');
+      ckStage.appendChild(crumb);
+      setTimeout(function (c) { c.remove(); }.bind(null, crumb), 700);
+    }
   }
 
   function ckRenderStore(force) {
@@ -7575,7 +8222,15 @@
         row.name.textContent = known ? b.name : '???';
         st.known = known;
       }
-      if (st.can !== can) { row.btn.classList.toggle('can', can); st.can = can; }
+      if (st.can !== can) {
+        row.btn.classList.toggle('can', can);
+        if (can && st.can === false) {
+          row.btn.classList.remove('just-can');
+          void row.btn.offsetWidth;
+          row.btn.classList.add('just-can');
+        }
+        st.can = can;
+      }
       var costText = '🍪 ' + ckShort(q.cost) + (q.n > 1 ? ' · ×' + q.n : '');
       if (st.cost !== costText) { row.cost.textContent = costText; st.cost = costText; }
       var owned = ckOwned(i);
@@ -7654,8 +8309,13 @@
       var has = !!ck.ach[a.id];
       if (has) won++;
       var tile = ckAchTiles[a.id];
-      if (tile) tile.classList.toggle('is-won', has);
+      if (tile) {
+        if (has && !tile.classList.contains('is-won') && ckAchSeen) tile.classList.add('is-new');
+        tile.classList.toggle('is-won', has);
+      }
     });
+    ckAchSeen = true;
+    ckRenderMilk();
     ckSetText(ckAchCount, String(won));
     ckSetText(ckAchNote, won + ' of ' + CK_ACH.length + ' feats · each one is 4% milk, which kittens turn into cookies.');
   }
@@ -7695,6 +8355,8 @@
     ckRenderAch();
     ckRenderStats();
     ckRenderLegacy();
+    ckRenderMilk();
+    if (!ckTickerEl.textContent) { ckNewsAt = Date.now(); ckNews(); }
   }
 
   function ckTipContent(target) {
@@ -7860,7 +8522,10 @@
       x = r.left + r.width / 2;
       y = r.top + r.height / 3;
     }
+    ckClickLog.push([Date.now(), v]);
+    if (ckClickLog.length > 400) ckClickLog.shift();
     ckPop(x, y, '+' + ckShort(v));
+    if (ckPops.length < 20) ckBurst(x, y);
     ckRenderCounter();
   });
 
@@ -7899,7 +8564,12 @@
     var nowMs = Date.now();
     var now = ckNow();
     var dt = now - ck.lastTick;
-    ckAdvance(now);
+    if (document.hidden) {
+      if (nowMs - ckLastLocalSave >= 10000) ckSaveLocal();
+      return;
+    }
+    if (dt > CK_AWAY_GAP) ckCatchUp();
+    else ckAdvance(now);
     var visible = ckVisible();
     ckTickN++;
     if (visible) {
@@ -7914,6 +8584,8 @@
     if (ckTickN % 10 === 0 && visible) {
       ckCheckAch();
       ckMaybeGolden();
+      ckRain();
+      if (nowMs - ckNewsAt > 9000) { ckNewsAt = nowMs; ckNews(); }
       if (ckPane === 'stats') ckRenderStats();
       else if (ckPane === 'legacy') ckRenderLegacy();
     }
@@ -7969,7 +8641,7 @@
 
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) ckFlush();
-    else if (ck && ckTimer) ckRenderAll();
+    else if (ck && ckTimer) { ckCatchUp(); ckRenderAll(); }
   });
   window.addEventListener('pagehide', function () {
     ckFlush();
@@ -8007,7 +8679,7 @@
       var d = SNAKE_DIRS[e.key ? e.key.toLowerCase() : ''];
       if (d) {
         e.preventDefault();
-        if (d.x !== -snake.dir.x || d.y !== -snake.dir.y) snake.nextDir = d;
+        snakeQueueTurn(d);
       }
       return;
     }
@@ -8087,6 +8759,477 @@
       tetris.softHeld = false;
     }
   });
+
+  // ---------------------------------------------------------------------
+  // @mentions — a ping pops up wherever you are in the room, and waits in
+  // the @ inbox if you were away. The server only sees opaque tokens.
+  // ---------------------------------------------------------------------
+
+  var knownPeople = Object.create(null);
+  var pingButtons = Array.prototype.slice.call(document.querySelectorAll('.pings-btn'));
+  var pingState = { token: null, tokenFor: null, list: [], readAt: 0, shown: Object.create(null), timer: null, busy: false };
+  var pingPreviews = Object.create(null);
+  var pingHmac = null;
+  var pingHmacFor = null;
+  var pingPanel = null;
+  var pingToasts = null;
+  var chatFirstPoll = null;
+  var latestActive = [];
+
+  function notePerson(name) {
+    if (typeof name === 'string' && name) knownPeople[name.toLowerCase()] = name;
+  }
+
+  function regexEscape(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  // Every "@name" in the text that is someone this browser has heard of,
+  // longest names first so "@Dr goon" beats "@Dr".
+  function mentionMatches(text) {
+    if (!text || text.indexOf('@') === -1) return [];
+    if (myUsername) notePerson(myUsername);
+    var names = Object.keys(knownPeople).map(function (k) { return knownPeople[k]; })
+      .sort(function (a, b) { return b.length - a.length; });
+    var lower = text.toLowerCase();
+    var out = [];
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] !== '@') continue;
+      if (i > 0 && !/[\s(\[{"'>]/.test(text[i - 1])) continue;
+      for (var j = 0; j < names.length; j++) {
+        var n = names[j].toLowerCase();
+        if (lower.substr(i + 1, n.length) !== n) continue;
+        var after = text.charAt(i + 1 + n.length);
+        if (after && /[A-Za-z0-9_]/.test(after)) continue;
+        out.push({ start: i, end: i + 1 + n.length, name: names[j] });
+        i += n.length;
+        break;
+      }
+    }
+    return out;
+  }
+
+  function fillMessageText(el, plain) {
+    el.textContent = '';
+    var hits = mentionMatches(plain);
+    var at = 0;
+    var mine = false;
+    hits.forEach(function (h) {
+      if (h.start > at) el.appendChild(document.createTextNode(plain.slice(at, h.start)));
+      var chip = document.createElement('span');
+      chip.className = 'mention';
+      if (isMe(h.name)) { chip.classList.add('is-me'); mine = true; }
+      chip.textContent = plain.slice(h.start, h.end);
+      el.appendChild(chip);
+      at = h.end;
+    });
+    if (at < plain.length) el.appendChild(document.createTextNode(plain.slice(at)));
+    return mine;
+  }
+
+  async function pingKey() {
+    if (!cryptoAvailable || !roomKey) return null;
+    if (pingHmac && pingHmacFor === roomKey) return pingHmac;
+    var raw = await crypto.subtle.exportKey('raw', roomKey);
+    pingHmac = await crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    pingHmacFor = roomKey;
+    return pingHmac;
+  }
+
+  async function pingToken(name) {
+    var key = await pingKey();
+    if (!key) return null;
+    var sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('ping:' + String(name).toLowerCase()));
+    var bytes = new Uint8Array(sig).slice(0, 16);
+    var hex = '';
+    bytes.forEach(function (b) { hex += (b < 16 ? '0' : '') + b.toString(16); });
+    return hex;
+  }
+
+  async function pingTokensFor(text) {
+    var seen = Object.create(null);
+    var names = mentionMatches(text).map(function (h) { return h.name.toLowerCase(); }).filter(function (n) {
+      if (seen[n] || isMe(n)) return false;
+      seen[n] = true;
+      return true;
+    }).slice(0, 10);
+    var tokens = [];
+    for (var i = 0; i < names.length; i++) {
+      var t = await pingToken(names[i]);
+      if (t) tokens.push(t);
+    }
+    return tokens;
+  }
+
+  async function myPingToken() {
+    if (!myUsername) return null;
+    if (pingState.token && pingState.tokenFor === myRoom + '|' + myUsername.toLowerCase()) return pingState.token;
+    pingState.token = await pingToken(myUsername);
+    pingState.tokenFor = myRoom + '|' + myUsername.toLowerCase();
+    return pingState.token;
+  }
+
+  function unreadPings() {
+    return pingState.list.filter(function (p) { return p.ts > pingState.readAt; });
+  }
+
+  function renderPingBadges() {
+    var n = unreadPings().length;
+    pingButtons.forEach(function (btn) {
+      var badge = btn.querySelector('.pings-badge');
+      badge.textContent = n > 9 ? '9+' : String(n);
+      badge.hidden = !n;
+      btn.classList.toggle('has-pings', n > 0);
+    });
+  }
+
+  async function pingPreview(p) {
+    if (pingPreviews[p.id]) return pingPreviews[p.id];
+    var entry = rendered[p.id];
+    var text = null;
+    if (entry && entry.textEl) {
+      text = entry.textEl.textContent;
+    } else {
+      try {
+        var res = await fetch('/api/chat/find?id=' + encodeURIComponent(p.id) + '&ts=' + p.ts, { credentials: 'same-origin' });
+        var data = res.ok ? await res.json() : null;
+        var m = data && data.message;
+        if (m && m.type === 'image') text = '📷 Photo';
+        else if (m) {
+          var plain = cryptoAvailable ? await decryptText(m.text) : m.text;
+          text = plain === null ? '🔒 message' : (parseGif(plain) ? '🎞 GIF' : plain);
+        }
+      } catch (e) { text = null; }
+    }
+    var out = text === null ? 'That message is gone.' : truncate(String(text).replace(/\s+/g, ' '), 140);
+    pingPreviews[p.id] = out;
+    return out;
+  }
+
+  async function markPingsRead(upTo) {
+    if (!pingState.token || !(upTo > pingState.readAt)) return;
+    pingState.readAt = upTo;
+    renderPingBadges();
+    if (pingPanel && !pingPanel.hidden) renderPingPanel();
+    try {
+      await fetch('/api/pings/read', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ t: pingState.token, upTo: upTo }),
+      });
+    } catch (e) { /* the next refresh brings it back */ }
+  }
+
+  function agoText(ts) {
+    var secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (secs < 45) return 'just now';
+    return relativeTime(ts);
+  }
+
+  function pingToastBox() {
+    if (!pingToasts) {
+      pingToasts = document.createElement('div');
+      pingToasts.className = 'ping-toasts';
+      pingToasts.setAttribute('aria-live', 'polite');
+      document.body.appendChild(pingToasts);
+    }
+    return pingToasts;
+  }
+
+  async function showPingToast(p) {
+    var box = pingToastBox();
+    var toast = document.createElement('div');
+    toast.className = 'ping-toast';
+    toast.setAttribute('role', 'button');
+    toast.tabIndex = 0;
+    var img = document.createElement('img');
+    img.className = 'avatar';
+    img.alt = '';
+    setAvatar(img, p.from);
+    var body = document.createElement('div');
+    body.className = 'ping-toast-body';
+    var head = document.createElement('div');
+    head.className = 'ping-toast-head';
+    var who = document.createElement('b');
+    who.textContent = p.from;
+    var what = document.createElement('span');
+    what.textContent = ' mentioned you · ' + agoText(p.ts);
+    head.appendChild(who);
+    head.appendChild(what);
+    var text = document.createElement('p');
+    text.textContent = '…';
+    var go = document.createElement('span');
+    go.className = 'ping-toast-go';
+    go.textContent = currentView === 'chat' ? 'show me →' : 'back to chat →';
+    body.appendChild(head);
+    body.appendChild(text);
+    body.appendChild(go);
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'ping-toast-close';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    toast.appendChild(img);
+    toast.appendChild(body);
+    toast.appendChild(close);
+    var gone = false;
+    function dismiss() {
+      if (gone) return;
+      gone = true;
+      toast.classList.add('is-out');
+      setTimeout(function () { toast.remove(); }, 350);
+    }
+    close.addEventListener('click', function (e) { e.stopPropagation(); dismiss(); });
+    toast.addEventListener('click', function () { dismiss(); jumpToPing(p); });
+    toast.addEventListener('keydown', function (e) { if (e.key === 'Enter') { dismiss(); jumpToPing(p); } });
+    box.appendChild(toast);
+    while (box.children.length > 3) box.firstChild.remove();
+    void toast.offsetWidth;
+    toast.classList.add('is-in');
+    setTimeout(dismiss, 10000);
+    text.textContent = await pingPreview(p);
+  }
+
+  async function refreshPings() {
+    if (pingState.busy || !myUsername || !csrfToken) return;
+    pingState.busy = true;
+    try {
+      var token = await myPingToken();
+      if (!token) return;
+      var res = await fetch('/api/pings?t=' + token, { credentials: 'same-origin' });
+      if (!res.ok) return;
+      var data = await res.json();
+      pingState.list = (data.pings || []).filter(function (p) { return p && p.id && p.from; });
+      pingState.readAt = Math.max(pingState.readAt, Number(data.readAt) || 0);
+      pingState.list.forEach(function (p) { notePerson(p.from); });
+      renderPingBadges();
+      if (pingPanel && !pingPanel.hidden) renderPingPanel();
+      if (document.hidden) return;
+      var fresh = unreadPings().filter(function (p) { return !pingState.shown[p.id]; });
+      var lookingAt = [];
+      fresh.forEach(function (p) {
+        pingState.shown[p.id] = true;
+        if (currentView === 'chat' && rendered[p.id] && isNearBottom()) lookingAt.push(p);
+      });
+      // Already on screen in the chat: the highlight says it, no popup.
+      if (lookingAt.length && lookingAt.length === fresh.length) {
+        markPingsRead(lookingAt[lookingAt.length - 1].ts);
+        return;
+      }
+      fresh.filter(function (p) { return lookingAt.indexOf(p) === -1; }).slice(-3).forEach(showPingToast);
+    } catch (e) { /* the next beat retries */ }
+    finally { pingState.busy = false; }
+  }
+
+  function startPings() {
+    loadEveryone();
+    if (pingState.timer) return;
+    pingState.timer = setInterval(refreshPings, 6000);
+    refreshPings();
+  }
+
+  function stopPings() {
+    if (pingState.timer) { clearInterval(pingState.timer); pingState.timer = null; }
+    pingState.token = null;
+    pingState.tokenFor = null;
+    pingState.list = [];
+    pingState.readAt = 0;
+    renderPingBadges();
+    if (pingPanel) pingPanel.hidden = true;
+  }
+
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && pingState.timer) refreshPings(); });
+
+  async function jumpToPing(p) {
+    if (pingPanel) pingPanel.hidden = true;
+    markPingsRead(p.ts);
+    if (currentView !== 'chat') showView('chat');
+    if (chatFirstPoll) { try { await chatFirstPoll; } catch (e) { /* carry on */ } }
+    var target = null;
+    for (var tries = 0; tries < 25; tries++) {
+      target = messagesEl.querySelector('[data-msg-id="' + CSS.escape(p.id) + '"]');
+      if (target || olderDone || currentView !== 'chat') break;
+      await loadOlderMessages();
+    }
+    if (!target) {
+      setChatStatus('That message is no longer in the chat.', true);
+      setTimeout(function () { setChatStatus(''); }, 3000);
+      return;
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.remove('is-pinged');
+    void target.offsetWidth;
+    target.classList.add('is-pinged');
+    setTimeout(function () { target.classList.remove('is-pinged'); }, 2600);
+  }
+
+  function renderPingPanel() {
+    var list = pingPanel.querySelector('.pings-list');
+    list.textContent = '';
+    var items = pingState.list.slice().reverse();
+    if (!items.length) {
+      var empty = document.createElement('p');
+      empty.className = 'pings-empty';
+      empty.textContent = 'Nobody has mentioned you yet. When someone types @' + (myUsername || 'you') + ', it shows up here.';
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(function (p) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'pings-item' + (p.ts > pingState.readAt ? ' is-unread' : '');
+      var img = document.createElement('img');
+      img.className = 'avatar';
+      img.alt = '';
+      setAvatar(img, p.from);
+      var body = document.createElement('span');
+      body.className = 'pings-item-body';
+      var head = document.createElement('span');
+      head.className = 'pings-item-head';
+      var who = document.createElement('b');
+      who.textContent = p.from;
+      var when = document.createElement('em');
+      when.textContent = agoText(p.ts);
+      head.appendChild(who);
+      head.appendChild(when);
+      var text = document.createElement('span');
+      text.className = 'pings-item-text';
+      text.textContent = pingPreviews[p.id] || '…';
+      if (!pingPreviews[p.id]) pingPreview(p).then(function (t) { text.textContent = t; });
+      body.appendChild(head);
+      body.appendChild(text);
+      row.appendChild(img);
+      row.appendChild(body);
+      row.addEventListener('click', function () { jumpToPing(p); });
+      list.appendChild(row);
+    });
+  }
+
+  function openPingPanel(anchor) {
+    if (!pingPanel) {
+      pingPanel = document.createElement('div');
+      pingPanel.className = 'pings-panel';
+      pingPanel.hidden = true;
+      var head = document.createElement('div');
+      head.className = 'pings-head';
+      var title = document.createElement('b');
+      title.textContent = 'Mentions';
+      var clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'pings-clear';
+      clear.textContent = 'mark all read';
+      clear.addEventListener('click', function () {
+        var last = pingState.list[pingState.list.length - 1];
+        if (last) markPingsRead(last.ts);
+      });
+      head.appendChild(title);
+      head.appendChild(clear);
+      var list = document.createElement('div');
+      list.className = 'pings-list';
+      pingPanel.appendChild(head);
+      pingPanel.appendChild(list);
+      document.body.appendChild(pingPanel);
+      document.addEventListener('click', function (e) {
+        if (!pingPanel.hidden && !pingPanel.contains(e.target) && !e.target.closest('.pings-btn')) pingPanel.hidden = true;
+      });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pingPanel.hidden = true; });
+    }
+    if (!pingPanel.hidden) { pingPanel.hidden = true; return; }
+    renderPingPanel();
+    var r = anchor.getBoundingClientRect();
+    pingPanel.style.top = Math.round(r.bottom + 8) + 'px';
+    pingPanel.style.right = Math.max(8, Math.round(window.innerWidth - r.right - 8)) + 'px';
+    pingPanel.hidden = false;
+    pingPanel.classList.remove('is-in');
+    void pingPanel.offsetWidth;
+    pingPanel.classList.add('is-in');
+    refreshPings();
+  }
+
+  pingButtons.forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openPingPanel(btn);
+    });
+  });
+
+  // Typing "@" offers the people this browser knows, like Discord does.
+  function mentionBeforeCaret() {
+    var pos = msgInput.selectionStart;
+    if (pos == null || pos !== msgInput.selectionEnd) return null;
+    var m = /(^|[\s(])@([^\s@]{0,20})$/.exec(msgInput.value.slice(0, pos));
+    if (!m) return null;
+    return { start: pos - m[2].length - 1, end: pos, query: m[2].toLowerCase() };
+  }
+
+  // Everyone who has ever signed in to the room, most recently seen first.
+  var everyoneRank = Object.create(null);
+  var everyoneAt = 0;
+
+  async function loadEveryone() {
+    if (!myUsername || Date.now() - everyoneAt < 60000) return;
+    everyoneAt = Date.now();
+    try {
+      var res = await fetch('/api/people/names', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      var data = await res.json();
+      everyoneRank = Object.create(null);
+      (data.names || []).forEach(function (n, i) {
+        notePerson(n);
+        everyoneRank[n.toLowerCase()] = i;
+      });
+      if (mentionBeforeCaret()) updateSuggestions();
+    } catch (e) { everyoneAt = 0; }
+  }
+
+  function mentionSuggestions(query) {
+    var online = Object.create(null);
+    (latestActive || []).forEach(function (n) { online[n.toLowerCase()] = true; });
+    var rank = function (k) { return k in everyoneRank ? everyoneRank[k] : 1e6; };
+    return Object.keys(knownPeople)
+      .filter(function (k) { return !isMe(k) && (!query || k.indexOf(query) === 0 || k.indexOf(' ' + query) !== -1); })
+      .sort(function (a, b) {
+        var pa = query && a.indexOf(query) === 0 ? 0 : 1;
+        var pb = query && b.indexOf(query) === 0 ? 0 : 1;
+        return pa - pb || (online[b] ? 1 : 0) - (online[a] ? 1 : 0) || rank(a) - rank(b) || a.localeCompare(b);
+      })
+      .slice(0, 8)
+      .map(function (k) { return { mention: knownPeople[k], online: !!online[k] }; });
+  }
+
+  // The rest of the best match, faint, after the caret; Enter or → takes it.
+  var ghostEl = document.createElement('div');
+  ghostEl.className = 'composer-ghost';
+  ghostEl.hidden = true;
+  ghostEl.setAttribute('aria-hidden', 'true');
+  var ghostPre = document.createElement('span');
+  ghostPre.className = 'composer-ghost-pre';
+  var ghostSuf = document.createElement('span');
+  ghostSuf.className = 'composer-ghost-suf';
+  ghostEl.appendChild(ghostPre);
+  ghostEl.appendChild(ghostSuf);
+  composer.appendChild(ghostEl);
+
+  function hideGhost() { ghostEl.hidden = true; }
+
+  function showGhost(suffix) {
+    if (!suffix || msgInput.selectionStart !== msgInput.value.length) { hideGhost(); return; }
+    var cs = getComputedStyle(msgInput);
+    ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'wordSpacing',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+      'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth'].forEach(function (k) {
+      ghostEl.style[k] = cs[k];
+    });
+    ghostEl.style.left = msgInput.offsetLeft + 'px';
+    ghostEl.style.top = msgInput.offsetTop + 'px';
+    ghostEl.style.width = msgInput.offsetWidth + 'px';
+    ghostEl.style.height = msgInput.offsetHeight + 'px';
+    ghostPre.textContent = msgInput.value;
+    ghostSuf.textContent = suffix;
+    ghostEl.hidden = false;
+    ghostEl.scrollTop = msgInput.scrollTop;
+  }
+
+  msgInput.addEventListener('scroll', function () { if (!ghostEl.hidden) ghostEl.scrollTop = msgInput.scrollTop; });
 
   var COMBOS = [
     { keys: ['g', 'a', 'm', 'e'], from: ['chat'], fired: false, go: function () { showView('games'); } },

@@ -75,23 +75,23 @@ function removeDir(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* nothing there */ }
 }
 
-function pull() {
-  const base = process.env.RENDER_EXTERNAL_URL || process.env.SOUL_STUDIES_SYNC_FROM || '';
-  if (!SYNC_KEY || !/^https?:\/\//.test(base)) return Promise.resolve(false);
+function pullOnce(base) {
   removeDir(INCOMING_DIR);
   fs.mkdirSync(INCOMING_DIR, { recursive: true });
 
   return new Promise((resolve) => {
     let settled = false;
     let req = null;
-    const finish = (ok) => {
+    let files = 0;
+    let bytes = 0;
+    const finish = (ok, reason, retry) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
       if (!ok) {
         if (req) req.destroy();
         removeDir(INCOMING_DIR);
-        return resolve(false);
+        return resolve({ ok: false, reason, retry: !!retry });
       }
       try {
         const old = DATA_DIR + '.old';
@@ -99,23 +99,30 @@ function pull() {
         if (fs.existsSync(DATA_DIR)) fs.renameSync(DATA_DIR, old);
         fs.renameSync(INCOMING_DIR, DATA_DIR);
         removeDir(old);
-        resolve(true);
+        resolve({ ok: true, files, bytes });
       } catch (e) {
         removeDir(INCOMING_DIR);
-        resolve(false);
+        resolve({ ok: false, reason: 'could not swap data/ in' });
       }
     };
-    const deadline = setTimeout(() => finish(false), 120 * 1000);
+    const deadline = setTimeout(() => finish(false, 'took too long', true), 120 * 1000);
 
     const stamp = String(Date.now());
     const nonce = crypto.randomBytes(16).toString('hex');
     const url = new URL(SYNC_PATH, base);
     req = (url.protocol === 'https:' ? https : http).request(url, {
       method: 'POST',
-      headers: { [SYNC_HEADER]: stamp + '.' + nonce + '.' + sign(stamp, nonce), 'Content-Length': 0 },
+      headers: {
+        [SYNC_HEADER]: stamp + '.' + nonce + '.' + sign(stamp, nonce),
+        'Content-Length': 0,
+        'User-Agent': 'soul-studies',
+      },
       timeout: 8 * 1000,
     }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return finish(false); }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return finish(false, 'answered ' + res.statusCode, res.statusCode >= 500 || res.statusCode === 429);
+      }
       let buf = Buffer.alloc(0);
       let fd = null;
       let remaining = 0;
@@ -124,7 +131,7 @@ function pull() {
       res.on('data', (chunk) => {
         if (settled) return;
         received += chunk.length;
-        if (received > MAX_TOTAL_BYTES + 16 * 1024 * 1024) return finish(false);
+        if (received > MAX_TOTAL_BYTES + 16 * 1024 * 1024) return finish(false, 'too large');
         buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
         try {
           while (buf.length && !ended) {
@@ -132,8 +139,9 @@ function pull() {
               const take = Math.min(remaining, buf.length);
               fs.writeSync(fd, buf, 0, take);
               remaining -= take;
+              bytes += take;
               buf = buf.subarray(take);
-              if (remaining === 0) { fs.closeSync(fd); fd = null; }
+              if (remaining === 0) { fs.closeSync(fd); fd = null; files++; }
               continue;
             }
             const nl = buf.indexOf(10);
@@ -150,28 +158,46 @@ function pull() {
             fs.mkdirSync(path.dirname(dest), { recursive: true });
             fd = fs.openSync(dest, 'w', 0o600);
             remaining = head.n;
-            if (remaining === 0) { fs.closeSync(fd); fd = null; }
+            if (remaining === 0) { fs.closeSync(fd); fd = null; files++; }
           }
         } catch (e) {
           if (fd !== null) { try { fs.closeSync(fd); } catch (e2) { /* gone */ } fd = null; }
-          finish(false);
+          finish(false, 'unreadable transfer');
         }
       });
-      res.on('end', () => finish(ended && fd === null));
-      res.on('error', () => finish(false));
-      res.on('aborted', () => finish(false));
+      res.on('end', () => (ended && fd === null ? finish(true) : finish(false, 'cut off', true)));
+      res.on('error', () => finish(false, 'cut off', true));
+      res.on('aborted', () => finish(false, 'cut off', true));
     });
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => finish(false));
+    req.on('timeout', () => { req.destroy(); finish(false, 'no answer', true); });
+    req.on('error', (e) => finish(false, 'unreachable (' + (e.code || e.message) + ')', true));
     req.end();
   });
+}
+
+async function pull() {
+  const base = process.env.RENDER_EXTERNAL_URL || process.env.SOUL_STUDIES_SYNC_FROM || '';
+  if (!SYNC_KEY || !/^https?:\/\//.test(base)) return { ok: false, reason: 'off' };
+  let result = await pullOnce(base);
+  if (!result.ok && result.retry) {
+    await new Promise((r) => setTimeout(r, 1500));
+    result = await pullOnce(base);
+  }
+  return result;
 }
 
 module.exports = { SYNC_PATH, accepts, send };
 
 if (require.main === module) {
   pull()
-    .then((ok) => { if (ok) console.log('[soul-studies] Picked up data/ from the instance being replaced.'); })
+    .then((r) => {
+      if (r.ok) {
+        console.log('[soul-studies] Picked up data/ from the instance being replaced: ' + r.files + ' files, ' +
+          (r.bytes / 1048576).toFixed(1) + ' MB.');
+      } else if (r.reason !== 'off') {
+        console.log('[soul-studies] Nothing handed over (' + r.reason + '); starting from what is on disk.');
+      }
+    })
     .catch(() => {})
     .then(() => require('./server.js'));
 }
