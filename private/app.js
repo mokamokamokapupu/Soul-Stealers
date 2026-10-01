@@ -4909,7 +4909,7 @@
   // ---------------------------------------------------------------------
 
   var snakeCanvas = document.getElementById('snake-canvas');
-  var snakeCtx = snakeCanvas.getContext('2d');
+  var snakeCtx = snakeCanvas.getContext('2d', { alpha: false });
   var snakeWrap = document.getElementById('sn-wrap');
   var snakeOverlay = document.getElementById('snake-overlay');
   var snakeMsg = document.getElementById('snake-msg');
@@ -5002,9 +5002,13 @@
     snakeBestEl.textContent = String(snakeBest);
   }
 
+  // Laptops that can't keep up get a lighter board: a lower-resolution
+  // canvas, no shadow pass, fewer sparks. Judged from real frame times.
+  var snakePerf = { draw: 4, gap: 16, frames: 0, low: false };
+
   function snakeSize() {
     var w = Math.max(200, Math.min(snakeWrap.clientWidth || 440, 520));
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var dpr = snakePerf.low ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
     if (w === snakeView.px && dpr === snakeView.dpr) return;
     snakeView.px = w;
     snakeView.dpr = dpr;
@@ -5037,13 +5041,12 @@
   }
 
   function snakeFree(s) {
+    var taken = new Uint8Array(s.n * s.n);
+    s.body.forEach(function (b) { taken[b.y * s.n + b.x] = 1; });
+    s.foods.forEach(function (f) { taken[f.y * s.n + f.x] = 1; });
     var free = [];
-    for (var y = 0; y < s.n; y++) {
-      for (var x = 0; x < s.n; x++) {
-        if (s.body.some(function (b) { return b.x === x && b.y === y; })) continue;
-        if (s.foods.some(function (f) { return f.x === x && f.y === y; })) continue;
-        free.push({ x: x, y: y });
-      }
+    for (var i = 0; i < taken.length; i++) {
+      if (!taken[i]) free.push({ x: i % s.n, y: Math.floor(i / s.n) });
     }
     return free;
   }
@@ -5111,8 +5114,10 @@
     for (var i = 0; i < s.foods.length; i++) {
       if (s.foods[i].x === nx && s.foods[i].y === ny) { ate = i; break; }
     }
-    var solid = ate === -1 ? s.body.slice(0, -1) : s.body;
-    if (solid.some(function (b) { return b.x === nx && b.y === ny; })) return snakeDie(now);
+    var solidLen = ate === -1 ? s.body.length - 1 : s.body.length;
+    for (var bi = 0; bi < solidLen; bi++) {
+      if (s.body[bi].x === nx && s.body[bi].y === ny) return snakeDie(now);
+    }
     s.prev = s.body.map(function (b) { return { x: b.x, y: b.y }; });
     s.body.unshift({ x: nx, y: ny });
     if (ate === -1) {
@@ -5147,7 +5152,8 @@
         life: 420 + Math.random() * 300, size: 0.1 + Math.random() * 0.12, rot: Math.random() * 6, color: color,
       });
     }
-    if (s.particles.length > 120) s.particles.splice(0, s.particles.length - 120);
+    var cap = snakePerf.low ? 30 : 90;
+    if (s.particles.length > cap) s.particles.splice(0, s.particles.length - cap);
   }
 
   function snakeDie(now, won) {
@@ -5303,13 +5309,15 @@
     }
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.save();
-    ctx.translate(0, cell * 0.07);
-    tracePath();
-    ctx.strokeStyle = 'rgba(30,60,10,0.28)';
-    ctx.lineWidth = width;
-    ctx.stroke();
-    ctx.restore();
+    if (!snakePerf.low) {
+      ctx.save();
+      ctx.translate(0, cell * 0.07);
+      tracePath();
+      ctx.strokeStyle = 'rgba(30,60,10,0.28)';
+      ctx.lineWidth = width;
+      ctx.stroke();
+      ctx.restore();
+    }
     tracePath();
     ctx.strokeStyle = skin.dark;
     ctx.lineWidth = width;
@@ -5506,7 +5514,8 @@
   function snakeFrame(ts) {
     snakeRaf = null;
     if (!snake) return;
-    var dt = snakeLastTs ? Math.min(ts - snakeLastTs, 100) : 16;
+    var gap = snakeLastTs ? ts - snakeLastTs : 16;
+    var dt = Math.min(gap, 100);
     snakeLastTs = ts;
     if (snake.alive) {
       snake.acc += dt;
@@ -5519,7 +5528,16 @@
       var boosted = ts < snake.boostUntil;
       if (snakeBoostEl.hidden === boosted) snakeBoostEl.hidden = !boosted;
     }
+    var t0 = performance.now();
     drawSnake(ts);
+    if (!document.hidden && gap < 250) {
+      snakePerf.draw = snakePerf.draw * 0.92 + (performance.now() - t0) * 0.08;
+      snakePerf.gap = snakePerf.gap * 0.92 + gap * 0.08;
+      if (++snakePerf.frames > 90 && !snakePerf.low && (snakePerf.draw > 7 || snakePerf.gap > 26)) {
+        snakePerf.low = true;
+        snakeSize();
+      }
+    }
     if (snake) snakeRaf = requestAnimationFrame(snakeFrame);
   }
 
@@ -6376,12 +6394,10 @@
     ctx.clearRect(0, 0, tetrisCanvas.width, tetrisCanvas.height);
     ctx.strokeStyle = 'rgba(233,225,208,0.06)';
     ctx.lineWidth = 1;
-    for (var gx = 1; gx < T_COLS; gx++) {
-      ctx.beginPath(); ctx.moveTo(gx * T_PX + 0.5, 0); ctx.lineTo(gx * T_PX + 0.5, T_ROWS * T_PX); ctx.stroke();
-    }
-    for (var gy = 1; gy < T_ROWS; gy++) {
-      ctx.beginPath(); ctx.moveTo(0, gy * T_PX + 0.5); ctx.lineTo(T_COLS * T_PX, gy * T_PX + 0.5); ctx.stroke();
-    }
+    ctx.beginPath();
+    for (var gx = 1; gx < T_COLS; gx++) { ctx.moveTo(gx * T_PX + 0.5, 0); ctx.lineTo(gx * T_PX + 0.5, T_ROWS * T_PX); }
+    for (var gy = 1; gy < T_ROWS; gy++) { ctx.moveTo(0, gy * T_PX + 0.5); ctx.lineTo(T_COLS * T_PX, gy * T_PX + 0.5); }
+    ctx.stroke();
     if (!tetris) return;
     for (var y = 0; y < T_ROWS; y++) {
       for (var x = 0; x < T_COLS; x++) {
