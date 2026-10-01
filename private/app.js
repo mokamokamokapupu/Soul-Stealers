@@ -7359,8 +7359,8 @@
   var CK_AWAY_RATE = 0.05;
   var CK_AWAY_CAP = 60 * 60 * 1000;
   var CK_AWAY_GAP = 10 * 1000;
-  var CK_EPOCH = 4;
-  var CK_EPOCH_CUTS = { 2: 0.3, 3: 0.6, 4: 0.6 };
+  var CK_EPOCH = 5;
+  var CK_EPOCH_CUTS = { 2: 0.3, 3: 0.6, 4: 0.6, 5: 0.7 };
 
   var CK_BUILDINGS = [
     { id: 'cursor', name: 'Cursor', plural: 'Cursors', icon: '👆', base: 15, cps: 0.1, desc: 'Auto-clicks the big cookie.' },
