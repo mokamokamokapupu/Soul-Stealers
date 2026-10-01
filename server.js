@@ -100,8 +100,8 @@ const MAX_COOKIE_SAVE_BYTES = 32 * 1024;
 const COOKIE_AWAY_RATE = 0.05;
 const COOKIE_AWAY_CAP_MS = 60 * 60 * 1000;
 // Bumped when every bakery is rescaled at once; older saves are turned away.
-const COOKIE_EPOCH = 3;
-const COOKIE_EPOCH_CUTS = { 2: 0.3, 3: 0.6 };
+const COOKIE_EPOCH = 4;
+const COOKIE_EPOCH_CUTS = { 2: 0.3, 3: 0.6, 4: 0.6 };
 
 function cookieAwayGain(cps, ms) {
   return cps * COOKIE_AWAY_RATE * Math.min(Math.max(0, ms), COOKIE_AWAY_CAP_MS) / 1000;

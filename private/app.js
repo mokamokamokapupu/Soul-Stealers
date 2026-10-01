@@ -5156,7 +5156,14 @@
     s.deathAt = now;
     s.won = !!won;
     s.endedAt = now;
-    setTimeout(function () { if (snake === s) endSnake(); }, won ? 500 : 750);
+    if (!won) {
+      // Where the head hit: the edge between its square and the next.
+      var h = s.body[0];
+      s.crash = { x: h.x + 0.5 + s.dir.x * 0.5, y: h.y + 0.5 + s.dir.y * 0.5 };
+      snakeBurst(s, s.crash.x, s.crash.y, '#ffffff', now);
+      snakeBurst(s, s.crash.x, s.crash.y, '#ffd36b', now);
+    }
+    setTimeout(function () { if (snake === s) endSnake(); }, won ? 500 : 1150);
   }
 
   function lerp(a, b, t) { return a + (b - a) * t; }
@@ -5239,7 +5246,7 @@
     var n = s ? s.n : SNAKE_SIZES[snakeOpts.size];
     var cell = px / n;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    var shake = s && !s.alive && !s.won ? Math.max(0, 1 - (now - s.deathAt) / 320) : 0;
+    var shake = s && !s.alive && !s.won ? Math.max(0, 1 - (now - s.deathAt) / 460) : 0;
     if (shake) ctx.translate((Math.random() - 0.5) * 8 * shake * dpr, (Math.random() - 0.5) * 8 * shake * dpr);
     ctx.drawImage(snakeBoardImage(n), 0, 0);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -5311,6 +5318,13 @@
     ctx.strokeStyle = skin.body;
     ctx.lineWidth = width * 0.84;
     ctx.stroke();
+    var crashAge = !s.alive && !s.won ? now - s.deathAt : -1;
+    if (crashAge >= 120 && crashAge < 960 && Math.floor((crashAge - 120) / 140) % 2 === 0) {
+      tracePath();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = width * 0.84;
+      ctx.stroke();
+    }
 
     function pointAt(k) {
       var i0 = Math.max(0, Math.min(verts.length - 1, Math.floor(k)));
@@ -5361,23 +5375,40 @@
     });
     var dead = !s.alive && !s.won;
     var hr = width * 0.6;
+    // The tongue eases out as food gets close and back in as it goes.
+    var tdt = Math.min(60, Math.max(0, now - (s.tongueTs || now)));
+    s.tongueTs = now;
+    var wantTongue = s.alive && near && nearD < 2.6 ? 1 : 0;
+    s.tongue = (s.tongue || 0) + (wantTongue - (s.tongue || 0)) * Math.min(1, tdt / (wantTongue ? 110 : 70));
+    // On a crash the head lunges into what it hit, then squashes back.
+    var lunge = 0;
+    var squash = 0;
+    if (dead) {
+      var ca = now - s.deathAt;
+      if (ca < 260) lunge = Math.sin(ca / 260 * Math.PI) * cell * 0.3;
+      squash = ca < 520 ? Math.sin(Math.min(1, ca / 520) * Math.PI) * (1 - ca / 520) : 0;
+    }
     ctx.save();
     ctx.translate(head.x, head.y);
     ctx.rotate(angle);
-    ctx.scale(1 + stretch * 0.45, 1 - stretch * 0.3);
-    if (!dead && s.alive && near && nearD < 2.6) {
-      var flick = 0.55 + 0.45 * Math.abs(Math.sin(now / 70));
-      var tl = hr * (0.7 + 0.9 * flick);
+    ctx.translate(lunge, 0);
+    ctx.scale((1 + stretch * 0.45) * (1 - squash * 0.35), (1 - stretch * 0.3) * (1 + squash * 0.3));
+    if (s.tongue > 0.02 && !dead) {
+      var t = s.tongue;
+      var flick = 0.85 + 0.15 * Math.sin(now / 75);
+      var tl = hr * (0.2 + 1.3 * t * t * (3 - 2 * t)) * (t > 0.9 ? flick : 1);
+      var fork = hr * 0.26 * t;
       ctx.strokeStyle = '#e8364a';
       ctx.lineWidth = hr * 0.14;
       ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.beginPath();
-      ctx.moveTo(hr * 0.8, 0);
-      ctx.lineTo(hr * 0.8 + tl, 0);
-      ctx.moveTo(hr * 0.8 + tl, 0);
-      ctx.lineTo(hr * 0.8 + tl + hr * 0.3, -hr * 0.2);
-      ctx.moveTo(hr * 0.8 + tl, 0);
-      ctx.lineTo(hr * 0.8 + tl + hr * 0.3, hr * 0.2);
+      ctx.moveTo(hr * 0.75, 0);
+      ctx.lineTo(hr * 0.75 + tl, 0);
+      ctx.moveTo(hr * 0.75 + tl, 0);
+      ctx.lineTo(hr * 0.75 + tl + fork, -fork * 0.7);
+      ctx.moveTo(hr * 0.75 + tl, 0);
+      ctx.lineTo(hr * 0.75 + tl + fork, fork * 0.7);
       ctx.stroke();
     }
     ctx.fillStyle = skin.dark;
@@ -5441,6 +5472,16 @@
       ctx.restore();
     });
 
+    if (s.crash && !s.alive && !s.won) {
+      var ring = (now - s.deathAt) / 420;
+      if (ring < 1) {
+        ctx.strokeStyle = 'rgba(255,255,255,' + (0.8 * (1 - ring)) + ')';
+        ctx.lineWidth = cell * 0.12 * (1 - ring) + 1;
+        ctx.beginPath();
+        ctx.arc(s.crash.x * cell, s.crash.y * cell, cell * (0.2 + ring * 1.4), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
     if (!s.alive && !s.won) {
       var fade = Math.min(1, (now - s.deathAt) / 400);
       ctx.fillStyle = 'rgba(214,61,46,' + (0.22 * (1 - Math.abs(fade - 0.3))) + ')';
@@ -7302,8 +7343,8 @@
   var CK_AWAY_RATE = 0.05;
   var CK_AWAY_CAP = 60 * 60 * 1000;
   var CK_AWAY_GAP = 10 * 1000;
-  var CK_EPOCH = 3;
-  var CK_EPOCH_CUTS = { 2: 0.3, 3: 0.6 };
+  var CK_EPOCH = 4;
+  var CK_EPOCH_CUTS = { 2: 0.3, 3: 0.6, 4: 0.6 };
 
   var CK_BUILDINGS = [
     { id: 'cursor', name: 'Cursor', plural: 'Cursors', icon: '👆', base: 15, cps: 0.1, desc: 'Auto-clicks the big cookie.' },
